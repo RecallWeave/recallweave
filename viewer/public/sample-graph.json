@@ -1,0 +1,459 @@
+{
+  "schema_version": "recallweave.viewer.v1",
+  "title": "Northstar Studio — synthetic excerpt-rich demonstration",
+  "generated_at": "2026-07-29T00:00:00Z",
+  "sample_notice": "Synthetic, hand-authored, excerpt-rich demonstration fixture; not an exporter output.",
+  "nodes": [
+    {
+      "id": "strategy/north-star.md",
+      "title": "Product North Star",
+      "path": "strategy/north-star.md",
+      "status": "canonical",
+      "domain": "Strategy",
+      "summary": "The durable outcome the product should create: faster confident decisions with less context hunting.",
+      "tags": ["strategy", "product", "canon"],
+      "section_count": 6
+    },
+    {
+      "id": "strategy/principles.md",
+      "title": "Operating Principles",
+      "path": "strategy/principles.md",
+      "status": "canonical",
+      "domain": "Strategy",
+      "summary": "Small set of constraints used to resolve product and operating tradeoffs.",
+      "tags": ["principles", "decisions"],
+      "section_count": 8
+    },
+    {
+      "id": "strategy/pricing-hypotheses.md",
+      "title": "Pricing Hypotheses",
+      "path": "strategy/pricing-hypotheses.md",
+      "status": "working",
+      "domain": "Strategy",
+      "summary": "Current beliefs about value metrics, packaging, and willingness to pay.",
+      "tags": ["pricing", "experiments"],
+      "section_count": 5
+    },
+    {
+      "id": "research/customer-interviews.md",
+      "title": "Customer Interview Synthesis",
+      "path": "research/customer-interviews.md",
+      "status": "canonical",
+      "domain": "Research",
+      "summary": "Recurring jobs, anxieties, and language from twelve customer conversations.",
+      "tags": ["research", "voice-of-customer"],
+      "section_count": 11
+    },
+    {
+      "id": "research/churn-signals.md",
+      "title": "Early Churn Signals",
+      "path": "research/churn-signals.md",
+      "status": "working",
+      "domain": "Research",
+      "summary": "Patterns that appear in the two weeks before a workspace becomes inactive.",
+      "tags": ["retention", "signals"],
+      "section_count": 7
+    },
+    {
+      "id": "research/support-patterns.md",
+      "title": "Support Pattern Review",
+      "path": "research/support-patterns.md",
+      "status": "working",
+      "domain": "Research",
+      "summary": "Themes from support conversations, grouped by friction and user intent.",
+      "tags": ["support", "research"],
+      "section_count": 9
+    },
+    {
+      "id": "research/onboarding-findings.md",
+      "title": "Onboarding Findings",
+      "path": "research/onboarding-findings.md",
+      "status": "canonical",
+      "domain": "Research",
+      "summary": "What helps a new workspace reach the first useful map in under ten minutes.",
+      "tags": ["onboarding", "activation"],
+      "section_count": 8
+    },
+    {
+      "id": "product/system-map.md",
+      "title": "System Map",
+      "path": "product/system-map.md",
+      "status": "canonical",
+      "domain": "Product",
+      "summary": "The product architecture, information boundaries, and critical dependencies.",
+      "tags": ["architecture", "systems"],
+      "section_count": 12
+    },
+    {
+      "id": "product/search-model.md",
+      "title": "Search & Retrieval Model",
+      "path": "product/search-model.md",
+      "status": "working",
+      "domain": "Product",
+      "summary": "How lexical evidence, authored links, and candidates combine without collapsing trust levels.",
+      "tags": ["retrieval", "evidence"],
+      "section_count": 10
+    },
+    {
+      "id": "product/evidence-drawer.md",
+      "title": "Evidence Drawer",
+      "path": "product/evidence-drawer.md",
+      "status": "working",
+      "domain": "Product",
+      "summary": "Interaction design for explaining why a connection exists and where it came from.",
+      "tags": ["ux", "citations"],
+      "section_count": 6
+    },
+    {
+      "id": "product/launch-checklist.md",
+      "title": "Launch Checklist",
+      "path": "product/launch-checklist.md",
+      "status": "canonical",
+      "domain": "Product",
+      "summary": "Release gates covering privacy, recovery, evidence quality, and the public demo.",
+      "tags": ["launch", "quality"],
+      "section_count": 7
+    },
+    {
+      "id": "operations/decision-log.md",
+      "title": "Decision Log",
+      "path": "operations/decision-log.md",
+      "status": "canonical",
+      "domain": "Governance",
+      "summary": "Dated decisions with rationale, alternatives considered, and supersession notes.",
+      "tags": ["decisions", "history"],
+      "section_count": 14
+    },
+    {
+      "id": "operations/experiment-ledger.md",
+      "title": "Experiment Ledger",
+      "path": "operations/experiment-ledger.md",
+      "status": "working",
+      "domain": "Learning",
+      "summary": "What was tested, what happened, and which assumptions changed.",
+      "tags": ["experiments", "learning"],
+      "section_count": 13
+    },
+    {
+      "id": "operations/weekly-review.md",
+      "title": "Weekly Review",
+      "path": "operations/weekly-review.md",
+      "status": "working",
+      "domain": "Operations",
+      "summary": "A recurring scan for stale beliefs, unresolved links, and forgotten ideas.",
+      "tags": ["cadence", "review"],
+      "section_count": 5
+    },
+    {
+      "id": "brand/voice-tone.md",
+      "title": "Voice & Tone",
+      "path": "brand/voice-tone.md",
+      "status": "canonical",
+      "domain": "Brand",
+      "summary": "Language principles: precise, curious, evidence-backed, and never artificially certain.",
+      "tags": ["brand", "writing"],
+      "section_count": 6
+    },
+    {
+      "id": "brand/story.md",
+      "title": "Product Story",
+      "path": "brand/story.md",
+      "status": "working",
+      "domain": "Brand",
+      "summary": "The narrative from scattered notes to a living, inspectable map of institutional memory.",
+      "tags": ["narrative", "launch"],
+      "section_count": 7
+    }
+  ],
+  "edges": [
+    {
+      "id": "e01",
+      "source": "strategy/north-star.md",
+      "target": "strategy/principles.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "strategy/north-star.md:18-20",
+        "source_text": "The North Star is constrained by the operating principles, especially evidence before confidence."
+      }
+    },
+    {
+      "id": "e02",
+      "source": "strategy/north-star.md",
+      "target": "research/customer-interviews.md",
+      "kind": "markdown_link",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "strategy/north-star.md:31-33",
+        "source_text": "This outcome is grounded in the customer interview synthesis."
+      }
+    },
+    {
+      "id": "e03",
+      "source": "research/customer-interviews.md",
+      "target": "research/onboarding-findings.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "research/customer-interviews.md:82-86",
+        "source_text": "First-session anxiety is explored further in the onboarding findings."
+      }
+    },
+    {
+      "id": "e04",
+      "source": "research/support-patterns.md",
+      "target": "research/onboarding-findings.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "research/support-patterns.md:44-47",
+        "source_text": "Three repeated setup questions map directly to onboarding friction."
+      }
+    },
+    {
+      "id": "e05",
+      "source": "research/churn-signals.md",
+      "target": "research/support-patterns.md",
+      "kind": "markdown_link",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "research/churn-signals.md:25-28",
+        "source_text": "Support silence after repeated retrieval friction is an early churn signal."
+      }
+    },
+    {
+      "id": "e06",
+      "source": "product/system-map.md",
+      "target": "product/search-model.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "product/system-map.md:71-75",
+        "source_text": "The retrieval boundary is specified in Search & Retrieval Model."
+      }
+    },
+    {
+      "id": "e07",
+      "source": "product/search-model.md",
+      "target": "product/evidence-drawer.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "product/search-model.md:108-112",
+        "source_text": "Every result exposes its reasoning through the evidence drawer."
+      }
+    },
+    {
+      "id": "e08",
+      "source": "product/launch-checklist.md",
+      "target": "product/system-map.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "product/launch-checklist.md:14-19",
+        "source_text": "Architecture and information boundaries must be current before release."
+      }
+    },
+    {
+      "id": "e09",
+      "source": "operations/decision-log.md",
+      "target": "strategy/principles.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "operations/decision-log.md:8-11",
+        "source_text": "Every durable decision cites the principle used to resolve the tradeoff."
+      }
+    },
+    {
+      "id": "e10",
+      "source": "operations/experiment-ledger.md",
+      "target": "operations/decision-log.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "operations/experiment-ledger.md:120-124",
+        "source_text": "Experiments that change a durable belief produce a decision-log entry."
+      }
+    },
+    {
+      "id": "e11",
+      "source": "operations/weekly-review.md",
+      "target": "operations/experiment-ledger.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "operations/weekly-review.md:29-33",
+        "source_text": "Review open experiments and record the resulting evidence."
+      }
+    },
+    {
+      "id": "e12",
+      "source": "brand/story.md",
+      "target": "brand/voice-tone.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "brand/story.md:62-64",
+        "source_text": "Launch language follows the Voice & Tone constraints."
+      }
+    },
+    {
+      "id": "e13",
+      "source": "brand/story.md",
+      "target": "product/launch-checklist.md",
+      "kind": "wikilink",
+      "verified": true,
+      "score": 1,
+      "evidence": {
+        "citation": "brand/story.md:73-76",
+        "source_text": "The public story ships with the launch checklist."
+      }
+    },
+    {
+      "id": "c01",
+      "source": "research/churn-signals.md",
+      "target": "product/evidence-drawer.md",
+      "kind": "discovery_candidate",
+      "verified": false,
+      "score": 0.78,
+      "evidence": {
+        "explanation": "Candidate only: both notes repeatedly connect trust, explanation, and abandonment.",
+        "shared_terms": ["trust", "explanation", "friction", "evidence"],
+        "source_evidence": {
+          "citation": "research/churn-signals.md:41-48",
+          "passage": "Workspaces often go quiet after repeated retrieval friction leaves people unsure why a result appeared."
+        },
+        "target_evidence": {
+          "citation": "product/evidence-drawer.md:22-28",
+          "passage": "The evidence drawer must make each connection inspectable before a person decides whether it is useful."
+        }
+      }
+    },
+    {
+      "id": "c02",
+      "source": "strategy/pricing-hypotheses.md",
+      "target": "research/customer-interviews.md",
+      "kind": "discovery_candidate",
+      "verified": false,
+      "score": 0.72,
+      "evidence": {
+        "explanation": "Candidate only: pricing language overlaps with interview language about confidence and time saved.",
+        "shared_terms": ["confidence", "time", "value", "decision"],
+        "source_evidence": {
+          "citation": "strategy/pricing-hypotheses.md:38-45",
+          "passage": "The strongest pricing signal is confidence gained and decision time returned, not the number of notes indexed."
+        },
+        "target_evidence": {
+          "citation": "research/customer-interviews.md:54-60",
+          "passage": "Interviewees described value as reaching a confident next decision without rebuilding context from scratch."
+        }
+      }
+    },
+    {
+      "id": "c03",
+      "source": "operations/weekly-review.md",
+      "target": "research/churn-signals.md",
+      "kind": "discovery_candidate",
+      "verified": false,
+      "score": 0.67,
+      "evidence": {
+        "explanation": "Candidate only: both notes discuss silence, inactivity, and stale state.",
+        "shared_terms": ["inactive", "stale", "signal", "review"],
+        "source_evidence": {
+          "citation": "operations/weekly-review.md:51-58",
+          "passage": "The weekly review should call out quiet projects and beliefs that have not received a fresh signal."
+        },
+        "target_evidence": {
+          "citation": "research/churn-signals.md:41-48",
+          "passage": "A workspace becoming quiet is often preceded by stale searches and fewer evidence checks."
+        }
+      }
+    },
+    {
+      "id": "c04",
+      "source": "strategy/north-star.md",
+      "target": "brand/story.md",
+      "kind": "discovery_candidate",
+      "verified": false,
+      "score": 0.66,
+      "evidence": {
+        "explanation": "Candidate only: the product story may be a public expression of the internal North Star.",
+        "shared_terms": ["context", "memory", "decision", "useful"],
+        "source_evidence": {
+          "citation": "strategy/north-star.md:24-30",
+          "passage": "The North Star is a faster, more confident decision made with inspectable context."
+        },
+        "target_evidence": {
+          "citation": "brand/story.md:14-21",
+          "passage": "RecallWeave turns scattered memory into a living map people can inspect before they decide."
+        }
+      }
+    },
+    {
+      "id": "c05",
+      "source": "product/search-model.md",
+      "target": "operations/weekly-review.md",
+      "kind": "discovery_candidate",
+      "verified": false,
+      "score": 0.64,
+      "evidence": {
+        "explanation": "Candidate only: weekly review could become the human calibration loop for discovery quality.",
+        "shared_terms": ["review", "candidate", "quality", "calibration"],
+        "source_evidence": {
+          "citation": "product/search-model.md:133-138",
+          "passage": "Candidate quality improves when useful and misleading connections are reviewed as separate evidence."
+        },
+        "target_evidence": {
+          "citation": "operations/weekly-review.md:70-76",
+          "passage": "Weekly review records which surfaced connections were useful, surprising, or safely ignored."
+        }
+      }
+    },
+    {
+      "id": "c06",
+      "source": "research/onboarding-findings.md",
+      "target": "brand/voice-tone.md",
+      "kind": "discovery_candidate",
+      "verified": false,
+      "score": 0.59,
+      "evidence": {
+        "explanation": "Candidate only: onboarding success correlates with plain, low-jargon explanations.",
+        "shared_terms": ["plain", "language", "confidence", "first"],
+        "source_evidence": {
+          "citation": "research/onboarding-findings.md:61-69",
+          "passage": "New users reached a first useful map sooner when explanations avoided graph terminology."
+        },
+        "target_evidence": {
+          "citation": "brand/voice-tone.md:19-25",
+          "passage": "Use plain language, name uncertainty directly, and make the next action easy to understand."
+        }
+      }
+    }
+  ],
+  "diagnostics": {
+    "unresolved_links": 9
+  },
+  "privacy": {
+    "export_profile": "graph_with_bounded_passage_text",
+    "requested_profile": "with_bounded_passage_text",
+    "metadata_only": false,
+    "includes_excerpts": true,
+    "includes_passage_text": true,
+    "includes_note_derived_terms": true,
+    "includes_paths_titles_tags": true,
+    "generated_locally": false
+  }
+}

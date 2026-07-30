@@ -1,0 +1,420 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+from recallweave.cli import main as cli_main
+from recallweave.index import build_index
+from recallweave.policy import IndexPolicy
+from recallweave.viewer import (
+    VIEWER_SCHEMA_VERSION,
+    build_viewer_document,
+    export_viewer_graph,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
+VAULT = ROOT / "examples" / "synthetic-vault"
+
+
+class ViewerExportTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(
+            dir=Path(tempfile.gettempdir()).resolve()
+        )
+        self.database = Path(self.temporary.name) / "index.sqlite"
+        build_index(
+            VAULT,
+            self.database,
+            policy=IndexPolicy(deny_frontmatter={"sensitivity": ["sealed"]}),
+            minimum_candidate_score=0.08,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_fixture_uses_canonical_temp_path(self) -> None:
+        root = Path(self.temporary.name)
+        self.assertEqual(root, root.resolve())
+
+    def test_document_separates_verified_and_candidate_edges(self) -> None:
+        document = build_viewer_document(self.database)
+        self.assertEqual(document["schema_version"], VIEWER_SCHEMA_VERSION)
+        self.assertEqual(len(document["nodes"]), 6)
+        self.assertTrue(any(edge["verified"] for edge in document["edges"]))
+        self.assertTrue(any(not edge["verified"] for edge in document["edges"]))
+        self.assertTrue(all(node["summary"] == "" for node in document["nodes"]))
+        self.assertFalse(document["privacy"]["includes_excerpts"])
+        self.assertFalse(document["privacy"]["includes_passage_text"])
+        self.assertTrue(document["privacy"]["includes_note_derived_terms"])
+        self.assertFalse(document["privacy"]["metadata_only"])
+        self.assertEqual(
+            document["privacy"]["export_profile"],
+            "graph_metadata_and_note_derived_terms",
+        )
+        candidate = next(edge for edge in document["edges"] if not edge["verified"])
+        self.assertIn("citation", candidate["evidence"]["source_evidence"])
+        self.assertIn("citation", candidate["evidence"]["target_evidence"])
+        self.assertNotIn("passage", candidate["evidence"]["source_evidence"])
+        self.assertNotIn("passage", candidate["evidence"]["target_evidence"])
+
+        verified = build_viewer_document(
+            self.database,
+            include_candidates=False,
+            include_excerpts=True,
+        )
+        self.assertTrue(verified["edges"])
+        self.assertTrue(all(edge["verified"] for edge in verified["edges"]))
+        self.assertTrue(any(node["summary"] for node in verified["nodes"]))
+        self.assertTrue(verified["privacy"]["includes_excerpts"])
+        self.assertTrue(verified["privacy"]["includes_passage_text"])
+
+        with_excerpts = build_viewer_document(self.database, include_excerpts=True)
+        excerpt_candidate = next(
+            edge for edge in with_excerpts["edges"] if not edge["verified"]
+        )
+        self.assertIn("passage", excerpt_candidate["evidence"]["source_evidence"])
+        self.assertIn("passage", excerpt_candidate["evidence"]["target_evidence"])
+
+    def test_export_refuses_overwrite_without_force(self) -> None:
+        output = Path(self.temporary.name) / "graph.json"
+        receipt = export_viewer_graph(self.database, output)
+        self.assertEqual(receipt["notes"], 6)
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], VIEWER_SCHEMA_VERSION)
+
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            export_viewer_graph(self.database, output)
+
+        replacement = export_viewer_graph(
+            self.database,
+            output,
+            include_candidates=False,
+            force=True,
+        )
+        self.assertFalse(replacement["candidate_edges_included"])
+        self.assertFalse(replacement["candidate_edges_requested"])
+        self.assertFalse(replacement["passage_text_included"])
+        self.assertTrue(replacement["paths_titles_tags_included"])
+        self.assertEqual(replacement["replacement_mode"], "two_phase_recoverable")
+        retained_backup = Path(replacement["replacement_backup"])
+        self.assertTrue(retained_backup.is_file())
+        self.assertEqual(
+            json.loads(retained_backup.read_text(encoding="utf-8"))["schema_version"],
+            VIEWER_SCHEMA_VERSION,
+        )
+
+    def test_successful_force_replacement_never_auto_deletes_backup(self) -> None:
+        output = Path(self.temporary.name) / "retained-force.json"
+        output.write_text("approved old output", encoding="utf-8")
+
+        receipt = export_viewer_graph(self.database, output, force=True)
+
+        backup = Path(receipt["replacement_backup"])
+        self.assertIn(".backup.", backup.parent.name)
+        self.assertTrue(backup.is_file())
+        self.assertEqual(backup.read_text(encoding="utf-8"), "approved old output")
+        self.assertNotEqual(output.read_text(encoding="utf-8"), "approved old output")
+
+    def test_export_cannot_replace_database(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot replace"):
+            export_viewer_graph(self.database, self.database, force=True)
+
+    def test_export_refuses_dangling_file_symlink(self) -> None:
+        target = Path(self.temporary.name) / "elsewhere" / "graph.json"
+        output = Path(self.temporary.name) / "dangling.json"
+        try:
+            output.symlink_to(target)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+
+        with self.assertRaisesRegex(ValueError, "symlink or junction"):
+            export_viewer_graph(self.database, output)
+        self.assertFalse(target.exists())
+        self.assertTrue(output.is_symlink())
+
+    def test_export_refuses_symlinked_parent(self) -> None:
+        real_parent = Path(self.temporary.name) / "real"
+        real_parent.mkdir()
+        linked_parent = Path(self.temporary.name) / "linked"
+        try:
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"directory symlink creation unavailable: {error}")
+
+        with self.assertRaisesRegex(ValueError, "symlinked parent"):
+            export_viewer_graph(self.database, linked_parent / "graph.json")
+        self.assertFalse((real_parent / "graph.json").exists())
+
+    def test_export_reports_regular_file_parent_consistently(self) -> None:
+        parent = Path(self.temporary.name) / "not-a-directory"
+        parent.write_text("ordinary file", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "parent is not a directory"):
+            export_viewer_graph(self.database, parent / "graph.json")
+        self.assertEqual(parent.read_text(encoding="utf-8"), "ordinary file")
+
+    def test_export_refuses_database_hardlink(self) -> None:
+        output = Path(self.temporary.name) / "database-alias.json"
+        try:
+            os.link(self.database, output)
+        except OSError as error:
+            self.skipTest(f"hardlink creation unavailable: {error}")
+        before = self.database.read_bytes()
+
+        with self.assertRaisesRegex(ValueError, "cannot replace"):
+            export_viewer_graph(self.database, output, force=True)
+        self.assertEqual(self.database.read_bytes(), before)
+
+    def test_cli_index_requires_explicit_policy_choice(self) -> None:
+        database = Path(self.temporary.name) / "cli-default.sqlite"
+        error = StringIO()
+        with redirect_stderr(error):
+            exit_code = cli_main(
+                ["index", str(VAULT), "--database", str(database)]
+            )
+        self.assertEqual(exit_code, 2)
+        self.assertIn("explicit policy choice", error.getvalue())
+        self.assertIn("--config", error.getvalue())
+        self.assertIn("--no-policy", error.getvalue())
+        self.assertFalse(database.exists())
+
+    def test_cli_policy_acknowledgement_cannot_be_abbreviated(self) -> None:
+        for abbreviation in ("--n", "--no", "--no-p"):
+            with self.subTest(abbreviation=abbreviation):
+                error = StringIO()
+                with redirect_stderr(error), self.assertRaises(SystemExit) as raised:
+                    cli_main(["index", str(VAULT), abbreviation])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("unrecognized arguments", error.getvalue())
+
+    def test_cli_no_policy_is_an_explicit_opt_out(self) -> None:
+        database = Path(self.temporary.name) / "cli-no-policy.sqlite"
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = cli_main(
+                [
+                    "index",
+                    str(VAULT),
+                    "--database",
+                    str(database),
+                    "--no-policy",
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        receipt = json.loads(output.getvalue())
+        self.assertEqual(receipt["notes_indexed"], 7)
+        self.assertEqual(receipt["policy_mode"], "none")
+
+    def test_cli_config_applies_policy(self) -> None:
+        database = Path(self.temporary.name) / "cli-policy.sqlite"
+        config = Path(self.temporary.name) / "policy.json"
+        config.write_text(
+            json.dumps({"deny_frontmatter": {"sensitivity": ["sealed"]}}),
+            encoding="utf-8",
+        )
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = cli_main(
+                [
+                    "index",
+                    str(VAULT),
+                    "--database",
+                    str(database),
+                    "--config",
+                    str(config),
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        receipt = json.loads(output.getvalue())
+        self.assertEqual(receipt["notes_indexed"], 6)
+        self.assertEqual(receipt["policy_mode"], "config")
+        self.assertEqual(
+            receipt["policy_config_sha256"],
+            hashlib.sha256(config.read_bytes()).hexdigest(),
+        )
+        self.assertNotIn("policy_config", receipt)
+
+    def test_cli_config_accepts_utf8_bom_and_hashes_exact_bytes(self) -> None:
+        database = Path(self.temporary.name) / "cli-bom.sqlite"
+        config = Path(self.temporary.name) / "policy-bom.json"
+        config_bytes = (
+            b"\xef\xbb\xbf"
+            b'{"deny_frontmatter":{"sensitivity":["sealed"]}}'
+        )
+        config.write_bytes(config_bytes)
+        output = StringIO()
+        with redirect_stdout(output):
+            exit_code = cli_main(
+                [
+                    "index",
+                    str(VAULT),
+                    "--database",
+                    str(database),
+                    "--config",
+                    str(config),
+                ]
+            )
+        self.assertEqual(exit_code, 0)
+        receipt = json.loads(output.getvalue())
+        self.assertEqual(receipt["notes_indexed"], 6)
+        self.assertEqual(
+            receipt["policy_config_sha256"],
+            hashlib.sha256(config_bytes).hexdigest(),
+        )
+
+    def test_export_does_not_overwrite_file_created_during_build(self) -> None:
+        output = Path(self.temporary.name) / "raced.json"
+        document = build_viewer_document(self.database)
+
+        def create_competing_output(*args: object, **kwargs: object) -> dict:
+            output.write_text("competing writer", encoding="utf-8")
+            return document
+
+        with patch(
+            "recallweave.viewer.build_viewer_document",
+            side_effect=create_competing_output,
+        ):
+            with self.assertRaisesRegex(ValueError, "appeared during export"):
+                export_viewer_graph(self.database, output)
+        self.assertEqual(output.read_text(encoding="utf-8"), "competing writer")
+
+    def test_export_refuses_parent_identity_change_during_build(self) -> None:
+        output_parent = Path(self.temporary.name) / "exports"
+        output_parent.mkdir()
+        output = output_parent / self.database.name
+        moved_parent = Path(self.temporary.name) / "exports-original"
+        document = build_viewer_document(self.database)
+
+        def replace_parent(*args: object, **kwargs: object) -> dict:
+            output_parent.rename(moved_parent)
+            output_parent.mkdir()
+            return document
+
+        with patch(
+            "recallweave.viewer.build_viewer_document",
+            side_effect=replace_parent,
+        ):
+            with self.assertRaisesRegex(ValueError, "parent changed during export"):
+                export_viewer_graph(self.database, output, force=True)
+        self.assertFalse(output.exists())
+        self.assertTrue(self.database.exists())
+
+    def test_empty_export_flags_actual_content_not_requested_mode(self) -> None:
+        empty_vault = Path(self.temporary.name) / "empty-vault"
+        empty_vault.mkdir()
+        empty_database = Path(self.temporary.name) / "empty.sqlite"
+        build_index(empty_vault, empty_database)
+
+        document = build_viewer_document(empty_database, include_excerpts=True)
+        privacy = document["privacy"]
+        self.assertEqual(privacy["requested_profile"], "with_bounded_passage_text")
+        self.assertEqual(privacy["export_profile"], "empty_graph")
+        self.assertFalse(privacy["includes_excerpts"])
+        self.assertFalse(privacy["includes_passage_text"])
+        self.assertFalse(privacy["includes_note_derived_terms"])
+        self.assertFalse(privacy["includes_paths_titles_tags"])
+        self.assertTrue(privacy["metadata_only"])
+
+        output = Path(self.temporary.name) / "empty.json"
+        receipt = export_viewer_graph(
+            empty_database,
+            output,
+            include_excerpts=True,
+        )
+        self.assertTrue(receipt["excerpts_requested"])
+        self.assertFalse(receipt["excerpts_included"])
+        self.assertFalse(receipt["passage_text_included"])
+        self.assertFalse(receipt["note_derived_terms_included"])
+        self.assertFalse(receipt["paths_titles_tags_included"])
+
+    def test_force_replacement_detects_post_verify_victim_swap(self) -> None:
+        output = Path(self.temporary.name) / "force-race.json"
+        output.write_text("approved old output", encoding="utf-8")
+        approved_elsewhere = Path(self.temporary.name) / "approved-elsewhere.json"
+        victim = Path(self.temporary.name) / "victim.json"
+        victim.write_text("late unapproved file", encoding="utf-8")
+        original_rename = os.rename
+        swapped = False
+
+        def swap_before_rotation(source: object, destination: object) -> None:
+            nonlocal swapped
+            source_path = Path(source)
+            if not swapped and source_path == output:
+                swapped = True
+                original_rename(output, approved_elsewhere)
+                original_rename(victim, output)
+            original_rename(source, destination)
+
+        with patch("recallweave.viewer.os.rename", side_effect=swap_before_rotation):
+            with self.assertRaisesRegex(
+                ValueError,
+                "rotated file was restored",
+            ):
+                export_viewer_graph(self.database, output, force=True)
+
+        self.assertEqual(output.read_text(encoding="utf-8"), "late unapproved file")
+        self.assertEqual(
+            approved_elsewhere.read_text(encoding="utf-8"),
+            "approved old output",
+        )
+
+    def test_force_replacement_rolls_back_if_install_fails(self) -> None:
+        output = Path(self.temporary.name) / "force-rollback.json"
+        output.write_text("approved old output", encoding="utf-8")
+        original_install = __import__(
+            "recallweave.viewer", fromlist=["_install_non_replacing"]
+        )._install_non_replacing
+        failed = False
+
+        def fail_new_install(source: Path, destination: Path) -> None:
+            nonlocal failed
+            if not failed and source.suffix == ".tmp":
+                failed = True
+                raise OSError("injected installation failure")
+            original_install(source, destination)
+
+        with patch(
+            "recallweave.viewer._install_non_replacing",
+            side_effect=fail_new_install,
+        ):
+            with self.assertRaisesRegex(ValueError, "previous output was restored"):
+                export_viewer_graph(self.database, output, force=True)
+        self.assertEqual(output.read_text(encoding="utf-8"), "approved old output")
+
+    def test_force_replacement_retains_backup_when_rollback_is_blocked(self) -> None:
+        output = Path(self.temporary.name) / "force-retained.json"
+        output.write_text("approved old output", encoding="utf-8")
+        original_install = __import__(
+            "recallweave.viewer", fromlist=["_install_non_replacing"]
+        )._install_non_replacing
+        injected = False
+
+        def block_install_and_restore(source: Path, destination: Path) -> None:
+            nonlocal injected
+            if not injected and source.suffix == ".tmp":
+                injected = True
+                destination.write_text("late competing file", encoding="utf-8")
+                raise OSError("injected installation failure")
+            original_install(source, destination)
+
+        with patch(
+            "recallweave.viewer._install_non_replacing",
+            side_effect=block_install_and_restore,
+        ):
+            with self.assertRaisesRegex(ValueError, "Backup retained at:") as raised:
+                export_viewer_graph(self.database, output, force=True)
+        backup = Path(str(raised.exception).split("Backup retained at: ", 1)[1])
+        self.assertEqual(output.read_text(encoding="utf-8"), "late competing file")
+        self.assertEqual(backup.read_text(encoding="utf-8"), "approved old output")
+
+
+if __name__ == "__main__":
+    unittest.main()

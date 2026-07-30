@@ -1,0 +1,48 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+/build/
+dist/
+.venv/
+venv/
+.env
+.env.*
+node_modules/
+.next/
+.wrangler/
+
+# Local vault configuration and derived indexes must never be committed.
+.recallweave/
+*.sqlite
+*.sqlite3
+*.db
+index-output/
+local-config.json
+private/
+REVIEW-*.md
+REMEDIATION-*.md
+
+# Graph exports describe a real vault. Even the default structure-only profile
+# carries relative paths, titles, tags, status, domains, citations, and
+# note-derived candidate terms -- see viewer/README.md. `recallweave
+# export-viewer` documents `recallweave-graph.json` as its output name, so the
+# documented happy path would otherwise leave a real graph committable in the
+# repository root, and viewer/public/ is where one would naturally be dropped to
+# preview it locally.
+#
+# The bundled synthetic fixture is the only graph that belongs in this repo.
+# Prefer exporting to a path OUTSIDE this working tree; graph-exports/ exists as
+# a local convenience for when that is impractical.
+/recallweave-graph.json
+*-graph.json
+!viewer/public/sample-graph.json
+graph-exports/
+
+# Editors and operating systems.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

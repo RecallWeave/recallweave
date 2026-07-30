@@ -1,0 +1,47 @@
+{
+  "name": "recallweave-atlas",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "vinext dev",
+    "build": "vinext build",
+    "start": "vinext start",
+    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs && node --experimental-strip-types --test tests/graph-data.test.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --max-warnings 0",
+    "typecheck": "tsc --noEmit --incremental false"
+  },
+  "dependencies": {
+    "next": "16.2.12",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.48.0",
+    "@eslint/js": "10.0.1",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "eslint": "10.8.0",
+    "eslint-plugin-react-a11y": "2.1.7",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.8.0",
+    "react-server-dom-webpack": "19.2.8",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0",
+    "vinext": "0.0.53",
+    "vite": "8.1.5",
+    "wrangler": "4.115.0"
+  },
+  "type": "module",
+  "overrides": {
+    "postcss": "8.5.25",
+    "sharp": "0.35.3"
+  }
+}

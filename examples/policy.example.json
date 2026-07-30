@@ -1,0 +1,24 @@
+{
+  "include_paths": [
+    "Projects/Growth Atlas.md",
+    "Operations/Review Cadence.md"
+  ],
+  "exclude_globs": [
+    ".git/**",
+    ".obsidian/**",
+    ".trash/**",
+    ".recallweave/**",
+    "Private/**"
+  ],
+  "deny_path_terms": [
+    "credentials",
+    "sealed"
+  ],
+  "deny_frontmatter": {
+    "sensitivity": [
+      "sealed",
+      "restricted"
+    ]
+  },
+  "max_file_bytes": 2000000
+}

@@ -1,0 +1,177 @@
+import assert from "node:assert/strict";
+import { readFile, readdir } from "node:fs/promises";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { startProdServer } from "vinext/server/prod-server";
+
+import { inlineScriptBodies } from "../worker/html-scripts.ts";
+
+async function render() {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  return worker.fetch(
+    new Request("http://localhost/", {
+      headers: { accept: "text/html" },
+    }),
+    {
+      ASSETS: {
+        fetch: async () => new Response("Not found", { status: 404 }),
+      },
+    },
+    {
+      waitUntil() {},
+      passThroughOnException() {},
+    },
+  );
+}
+
+async function readRuntimeSources(directory) {
+  const sources = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const child = new URL(
+      `${entry.name}${entry.isDirectory() ? "/" : ""}`,
+      directory,
+    );
+    if (entry.isDirectory()) {
+      sources.push(...await readRuntimeSources(child));
+    } else if (/\.(?:ts|tsx|js|mjs)$/u.test(entry.name)) {
+      sources.push(await readFile(child, "utf8"));
+    }
+  }
+  return sources;
+}
+
+test("server-renders the RecallWeave Atlas shell", async () => {
+  const response = await render();
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.equal(response.headers.get("strict-transport-security"), "max-age=63072000; includeSubDomains");
+  assert.equal(response.headers.get("cross-origin-opener-policy"), "same-origin");
+  assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");
+  assert.equal(response.headers.get("content-encoding"), null);
+  assert.match(response.headers.get("permissions-policy") ?? "", /clipboard-write=\(self\)/);
+  const csp = response.headers.get("content-security-policy") ?? "";
+  const scriptDirective = csp.split(";").find((directive) => directive.trim().startsWith("script-src"));
+  assert.ok(scriptDirective);
+  assert.doesNotMatch(scriptDirective, /unsafe-inline/);
+  assert.match(scriptDirective, /'sha256-[A-Za-z0-9+/]+=*'/);
+
+  const html = await response.text();
+  assert.match(html, /<title>RecallWeave Atlas/);
+  assert.match(html, /See the shape of/);
+  assert.match(html, /Load your graph/);
+  assert.match(html, /Private by design/);
+  assert.match(html, /Candidate connections/);
+  assert.match(html, /Reset Atlas/);
+  assert.match(html, /Knowledge graph explorer/);
+  assert.match(html, /Keyboard node navigator/);
+  assert.match(html, /Excerpt status not declared/);
+  assert.match(html, /Skip to graph explorer/);
+  assert.match(
+    html,
+    /<header\b[\s\S]*<nav\b[\s\S]*<\/nav>[\s\S]*<\/header>[\s\S]*<main\b[\s\S]*<\/main>[\s\S]*<footer\b/,
+  );
+  assert.doesNotMatch(html, /private-preview|chatgpt\.site|obsidian:\/\/open/i);
+  assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
+});
+
+test("inline script parsing respects quoted greater-than characters", () => {
+  assert.deepEqual(
+    inlineScriptBodies(
+      [
+        '<script type="application/json" data-x="a>b">{"safe":true}</script>',
+        '<script data-src="/still-inline.js">window.inline = true;</script>',
+        '<script src = "/external.js">window.external = true;</script>',
+        "<SCRIPT SRC=/external-two.js>window.externalTwo = true;</SCRIPT>",
+        '<script type="module">window.module = true;</script>',
+      ].join(""),
+    ),
+    [
+      '{"safe":true}',
+      "window.inline = true;",
+      "window.module = true;",
+    ],
+  );
+});
+
+test("client import and keyboard focus guards remain wired", async () => {
+  const source = await readFile(
+    new URL("../app/components/GraphExplorer.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    source.indexOf("const next = normalizeGraph(parsed)") <
+      source.indexOf("userLoadedRef.current = true"),
+    "a rejected import must not suppress the bundled sample",
+  );
+  assert.match(source, /sampleAbortRef\.current\?\.abort\(\)/);
+  assert.match(source, /tabIndex=\{-1\}/);
+  assert.match(source, /role="group" aria-label="Connection filters"/);
+  assert.match(source, /aria-live="polite" aria-atomic="true"/);
+  assert.match(source, /moveNodeNavigatorFocus/);
+  assert.match(source, /document\.execCommand\("copy"\)/);
+  assert.match(source, /source file claims local generation/);
+  assert.match(source, /Declared profile:.*inspected content:/);
+  assert.doesNotMatch(source, /obsidianUrl|Open in Obsidian|vault_name/);
+  assert.match(source, /resetExplorer\(true\)/);
+  assert.match(source, /searchRef\.current\?\.focus\(\)/);
+});
+
+test("metadata uses a configurable neutral origin", async () => {
+  const source = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
+  assert.match(source, /NEXT_PUBLIC_RECALLWEAVE_ORIGIN/);
+  assert.match(source, /https:\/\/recallweave\.example/);
+  assert.doesNotMatch(source, /private-preview|chatgpt\.site/i);
+});
+
+test("runtime source and production bundles contain no direct vault navigation", async () => {
+  const sources = [
+    ...await readRuntimeSources(new URL("../app/", import.meta.url)),
+    ...await readRuntimeSources(new URL("../worker/", import.meta.url)),
+    ...await readRuntimeSources(new URL("../dist/client/", import.meta.url)),
+  ].join("\n");
+  assert.doesNotMatch(
+    sources,
+    /obsidian:\/\/|vault_name|open in obsidian/iu,
+  );
+});
+
+test("production server delivers every rendered client asset", async (t) => {
+  const { server, port } = await startProdServer({
+    port: 0,
+    host: "127.0.0.1",
+    outDir: fileURLToPath(new URL("../dist", import.meta.url)),
+  });
+  t.after(
+    () =>
+      new Promise((resolve, reject) => {
+        server.closeAllConnections?.();
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const page = await fetch(baseUrl);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  const assetPaths = [
+    ...html.matchAll(
+      /(?:src|href)="(\/(?:assets|_next\/static)\/[^"]+)"/gu,
+    ),
+  ].map((match) => match[1]);
+  assert.ok(
+    assetPaths.length > 0,
+    "rendered shell must reference client assets",
+  );
+
+  for (const assetPath of new Set(assetPaths)) {
+    const response = await fetch(`${baseUrl}${assetPath}`);
+    assert.equal(
+      response.status,
+      200,
+      `${assetPath} must be served by the production server`,
+    );
+  }
+});
