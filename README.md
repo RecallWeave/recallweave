@@ -158,6 +158,7 @@ links through `doctor`.
 | `doctor` | Report unresolved links and why they were not trusted |
 | `stats` | Report index counts, discovery diagnostics, and freshness |
 | `export-viewer` | Create a local JSON file for the optional Atlas viewer |
+| `contract` | Export a minimal, cited work packet for another agent |
 
 Candidate edges are excluded from `query` and `path` unless explicitly
 requested. `connections` includes candidates by default so a person can inspect
@@ -190,6 +191,23 @@ code does not upload the file.
 The planned [Cold Trails](docs/cold-trails.md) guided tour is design-only. It
 will not be implemented until the viewer foundation and the proposed
 `recallweave.viewer.v2` provenance fields are reviewed.
+
+## Task contracts
+
+A task contract turns one operator-authored spec plus an existing index into a
+minimal, cited work packet for another AI agent: the objective, retrieved
+context, constraints, prior decisions, acceptance criteria, and explicit
+exclusions, in JSON for machines or Markdown for humans. Use one when you want
+a reproducible, self-contained context for a bounded task instead of pointing
+an agent at the whole vault.
+
+```console
+recallweave contract task-spec.json --vault "/path/to/your/vault" --output packet.json
+```
+
+The spec file is the single source of truth for what goes into a packet. A
+broker stays responsible for identity, authorization, and redaction. See
+[docs/task-contracts.md](docs/task-contracts.md) for the reference.
 
 ## Public core and private adapters
 

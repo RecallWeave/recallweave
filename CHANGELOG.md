@@ -7,6 +7,9 @@
 - `export-viewer` structure-only and bounded-passage profiles, bilateral
   candidate citations, explicit privacy content flags, verified-only filtering,
   non-replacing writes, and recoverable two-phase forced replacement;
+- `contract` exports a minimal, cited work packet for another agent in JSON and
+  Markdown under the `recallweave.contract.v1` schema, with enforced
+  exclusions;
 - explicit CLI policy choice for indexing: a JSON policy or an acknowledged
   `--no-policy` opt-out;
 - clean-clone Atlas builds and dedicated Node CI for install, lint, build, and

@@ -31,6 +31,19 @@ For agent-facing indexes, the private broker should generate an exact
 `include_paths` allowlist from its approved retrieval corpus. Denylists remain
 defense in depth; they are not the primary authorization boundary.
 
+## Task contracts
+
+A task contract is a bounded projection of the index for one task: the
+operator asserts the objective, constraints, prior decisions, and acceptance
+criteria; RecallWeave attaches provenance and verifies every cited passage
+resolves to physical vault lines. A contract inherits the existing evidence
+classes (`authored_by_operator`, `cited_passage`, `lexical_match`,
+`authored_link`, `discovery_candidate`) rather than inventing new ones, and
+RecallWeave never infers that a passage is a constraint or a decision. The
+private broker remains responsible for identity, authorization, and redaction;
+exclusions in a spec are a second boundary behind the index policy's
+`include_paths` allowlist, never an authorization boundary on their own.
+
 ## Index
 
 The SQLite database stores vault-relative paths, note metadata, section
@@ -107,3 +120,7 @@ extraction, or MCP transport. They must preserve:
 3. no note mutation;
 4. inspectable provider and privacy configuration;
 5. versioned JSON output.
+
+Task contracts are a projection over the same evidence classes, so any provider
+that keeps the versioned JSON output stable remains compatible with the
+`recallweave contract` command.
