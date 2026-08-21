@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .index import connect
+from .safe_write import _install_non_replacing, install, prepare_destination, verify_destination
 
 
 VIEWER_SCHEMA_VERSION = "recallweave.viewer.v1"
@@ -105,211 +105,6 @@ def _edge_evidence(
         evidence["explanation"] = _excerpt(explanation, MAX_EVIDENCE_CHARACTERS)
 
     return evidence
-
-
-def _is_link_like(path: Path) -> bool:
-    """Return True for symlinks and Windows junction-style reparse points."""
-
-    try:
-        info = path.lstat()
-    except (FileNotFoundError, OSError):
-        return False
-    if stat.S_ISLNK(info.st_mode):
-        return True
-    reparse_tag = getattr(info, "st_reparse_tag", 0)
-    link_tags = {
-        getattr(stat, "IO_REPARSE_TAG_SYMLINK", -1),
-        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", -2),
-    }
-    return reparse_tag in link_tags
-
-
-def _validate_output_path(output: Path, database: Path) -> None:
-    if _is_link_like(output):
-        raise ValueError(f"Refusing to replace a symlink or junction: {output}")
-
-    current = Path(output.anchor)
-    for part in output.parent.parts[1:]:
-        current /= part
-        if _is_link_like(current):
-            raise ValueError(
-                f"Refusing viewer output through a symlinked parent: {current}"
-            )
-
-    if output.exists() and os.path.samefile(output, database):
-        raise ValueError("Viewer output cannot replace the RecallWeave database.")
-
-
-def _path_identity(path: Path) -> tuple[int, int]:
-    info = path.stat(follow_symlinks=False)
-    return int(info.st_dev), int(info.st_ino)
-
-
-def _prepare_destination(
-    output: Path,
-    database: Path,
-    *,
-    force: bool,
-) -> dict[str, Any]:
-    _validate_output_path(output, database)
-    try:
-        output.parent.mkdir(parents=True, exist_ok=True)
-    except (FileExistsError, NotADirectoryError) as error:
-        raise ValueError(
-            f"Viewer output parent is not a directory: {output.parent}"
-        ) from error
-    _validate_output_path(output, database)
-    if not output.parent.is_dir():
-        raise ValueError(f"Viewer output parent is not a directory: {output.parent}")
-
-    output_existed = output.exists()
-    if output_existed and not force:
-        raise ValueError(
-            f"Viewer output already exists: {output}. Pass --force to replace it."
-        )
-    return {
-        "parent_identity": _path_identity(output.parent),
-        "output_existed": output_existed,
-        "output_identity": _path_identity(output) if output_existed else None,
-    }
-
-
-def _verify_destination(
-    output: Path,
-    database: Path,
-    guard: dict[str, Any],
-) -> None:
-    _validate_output_path(output, database)
-    try:
-        parent_identity = _path_identity(output.parent)
-    except FileNotFoundError as error:
-        raise ValueError(
-            f"Viewer output parent changed during export: {output.parent}"
-        ) from error
-    if parent_identity != guard["parent_identity"]:
-        raise ValueError(
-            f"Viewer output parent changed during export: {output.parent}"
-        )
-
-    if guard["output_existed"]:
-        if not output.exists():
-            raise ValueError(f"Viewer output changed during export: {output}")
-        if _path_identity(output) != guard["output_identity"]:
-            raise ValueError(f"Viewer output changed during export: {output}")
-    elif output.exists() or _is_link_like(output):
-        raise ValueError(
-            f"Viewer output appeared during export and was not replaced: {output}"
-        )
-
-
-def _install_non_replacing(source: Path, destination: Path) -> None:
-    """Move source into an absent destination without a replace window."""
-
-    if os.name == "nt":
-        # Windows rename is atomic and refuses an existing target.
-        os.rename(source, destination)
-    else:
-        # POSIX rename replaces, so install with an exclusive hard link.
-        os.link(source, destination)
-        source.unlink()
-
-
-def _restore_backup(backup: Path, output: Path) -> bool:
-    """Restore without overwriting a late arrival; retain backup on failure."""
-
-    if output.exists() or _is_link_like(output):
-        return False
-    try:
-        _install_non_replacing(backup, output)
-    except OSError:
-        return False
-    return True
-
-
-def _replace_recoverably(
-    temporary: Path,
-    output: Path,
-    expected_identity: tuple[int, int],
-    expected_parent_identity: tuple[int, int],
-) -> str:
-    """Two-phase force replacement retaining every unapproved late arrival."""
-
-    backup_directory = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.backup.", dir=output.parent)
-    )
-    backup = backup_directory / output.name
-    if _path_identity(output.parent) != expected_parent_identity:
-        try:
-            backup_directory.rmdir()
-        except OSError:
-            pass
-        raise ValueError(
-            f"Viewer output parent changed during final replacement: {output.parent}"
-        )
-    try:
-        os.rename(output, backup)
-    except OSError:
-        try:
-            backup_directory.rmdir()
-        except OSError:
-            pass
-        raise
-
-    rotated_identity = _path_identity(backup)
-    parent_changed = _path_identity(output.parent) != expected_parent_identity
-    if rotated_identity != expected_identity or parent_changed:
-        restored = _restore_backup(backup, output)
-        if restored:
-            try:
-                backup_directory.rmdir()
-            except OSError:
-                pass
-            raise ValueError(
-                "Viewer output or parent changed during final replacement; "
-                "the rotated file was restored and no export was installed."
-            )
-        raise ValueError(
-            "Viewer output or parent changed during final replacement. "
-            f"Backup retained at: {backup}"
-        )
-
-    if _path_identity(output.parent) != expected_parent_identity:
-        restored = _restore_backup(backup, output)
-        if restored:
-            try:
-                backup_directory.rmdir()
-            except OSError:
-                pass
-            raise ValueError(
-                "Viewer output parent changed during final replacement; "
-                "the previous output was restored."
-            )
-        raise ValueError(
-            "Viewer output parent changed during final replacement. "
-            f"Backup retained at: {backup}"
-        )
-
-    try:
-        _install_non_replacing(temporary, output)
-    except OSError as error:
-        restored = _restore_backup(backup, output)
-        if restored:
-            try:
-                backup_directory.rmdir()
-            except OSError:
-                pass
-            raise ValueError(
-                "Viewer export installation failed; the previous output was restored."
-            ) from error
-        raise ValueError(
-            "Viewer export installation failed and the previous output could not "
-            f"be restored without overwriting another file. Backup retained at: {backup}"
-        ) from error
-
-    # Deliberately retain the approved old output. There is no cross-platform
-    # compare-and-delete primitive that can prove this path was not swapped
-    # between an identity check and unlink. Cleanup is therefore user-directed.
-    return str(backup)
 
 
 def build_viewer_document(
@@ -449,7 +244,7 @@ def export_viewer_graph(
 ) -> dict[str, Any]:
     database = database.expanduser().resolve()
     output = Path(os.path.abspath(output.expanduser()))
-    guard = _prepare_destination(output, database, force=force)
+    guard = prepare_destination(output, database, force=force, label="Viewer output")
 
     document = build_viewer_document(
         database,
@@ -457,7 +252,7 @@ def export_viewer_graph(
         include_excerpts=include_excerpts,
         title=title,
     )
-    _verify_destination(output, database, guard)
+    verify_destination(output, database, guard, label="Viewer output")
     handle = tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -475,21 +270,8 @@ def export_viewer_graph(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        _verify_destination(output, database, guard)
-        if guard["output_existed"]:
-            replacement_backup = _replace_recoverably(
-                temporary,
-                output,
-                guard["output_identity"],
-                guard["parent_identity"],
-            )
-        else:
-            try:
-                _install_non_replacing(temporary, output)
-            except FileExistsError as error:
-                raise ValueError(
-                    f"Viewer output appeared during export and was not replaced: {output}"
-                ) from error
+        verify_destination(output, database, guard, label="Viewer output")
+        replacement_backup = install(temporary, output, guard, label="Viewer output")
     finally:
         temporary.unlink(missing_ok=True)
 
