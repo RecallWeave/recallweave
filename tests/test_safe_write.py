@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from recallweave.index import build_index
+from recallweave.policy import IndexPolicy
 from recallweave.safe_write import install, prepare_destination, verify_destination
+from recallweave.viewer import export_viewer_graph
 
 LABEL = "Contract output"
+
+ROOT = Path(__file__).resolve().parents[1]
+VAULT = ROOT / "examples" / "synthetic-vault"
 
 
 class SafeWriteTest(unittest.TestCase):
@@ -101,6 +108,72 @@ class SafeWriteTest(unittest.TestCase):
         temporary = self.root / "contract.json.tmp"
         temporary.write_text("new content", encoding="utf-8")
         original_install = __import__(
+            "recallweave.safe_write", fromlist=["_install_non_replacing"]
+        )._install_non_replacing
+        failed = False
+
+        def fail_new_install(source: Path, destination: Path) -> None:
+            nonlocal failed
+            if not failed and source.suffix == ".tmp":
+                failed = True
+                raise OSError("injected installation failure")
+            original_install(source, destination)
+
+        with patch(
+            "recallweave.safe_write._install_non_replacing",
+            side_effect=fail_new_install,
+        ):
+            with self.assertRaisesRegex(ValueError, "previous output was restored"):
+                install(temporary, output, guard, label=LABEL)
+        self.assertEqual(output.read_text(encoding="utf-8"), "approved old output")
+
+
+class ViewerMessageParityTest(unittest.TestCase):
+    """Exception messages through export_viewer_graph are byte-identical to
+    00d8fe7 (the pre-extraction viewer), with no absolute path disclosed where
+    00d8fe7 disclosed none."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(
+            dir=Path(tempfile.gettempdir()).resolve()
+        )
+        self.root = Path(self.temporary.name)
+        self.database = self.root / "index.sqlite"
+        build_index(
+            VAULT,
+            self.database,
+            policy=IndexPolicy(deny_frontmatter={"sensitivity": ["sealed"]}),
+            minimum_candidate_score=0.08,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_samefile_database_message_byte_identical(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            export_viewer_graph(self.database, self.database, force=True)
+        self.assertEqual(
+            str(raised.exception),
+            "Viewer output cannot replace the RecallWeave database.",
+        )
+
+    def test_hardlink_database_message_byte_identical(self) -> None:
+        output = self.root / "database-alias.json"
+        try:
+            os.link(self.database, output)
+        except OSError as error:
+            self.skipTest(f"hardlink creation unavailable: {error}")
+        with self.assertRaises(ValueError) as raised:
+            export_viewer_graph(self.database, output, force=True)
+        self.assertEqual(
+            str(raised.exception),
+            "Viewer output cannot replace the RecallWeave database.",
+        )
+
+    def test_install_failure_message_byte_identical(self) -> None:
+        output = self.root / "graph.json"
+        output.write_text("approved old output", encoding="utf-8")
+        original_install = __import__(
             "recallweave.viewer", fromlist=["_install_non_replacing"]
         )._install_non_replacing
         failed = False
@@ -116,9 +189,61 @@ class SafeWriteTest(unittest.TestCase):
             "recallweave.viewer._install_non_replacing",
             side_effect=fail_new_install,
         ):
-            with self.assertRaisesRegex(ValueError, "previous output was restored"):
-                install(temporary, output, guard, label=LABEL)
-        self.assertEqual(output.read_text(encoding="utf-8"), "approved old output")
+            with self.assertRaises(ValueError) as raised:
+                export_viewer_graph(self.database, output, force=True)
+        self.assertEqual(
+            str(raised.exception),
+            "Viewer export installation failed; the previous output was restored.",
+        )
+
+    def test_symlink_target_message_byte_identical(self) -> None:
+        target = self.root / "elsewhere" / "graph.json"
+        output = self.root / "symlink.json"
+        try:
+            output.symlink_to(target)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        with self.assertRaises(ValueError) as raised:
+            export_viewer_graph(self.database, output)
+        self.assertEqual(
+            str(raised.exception),
+            f"Refusing to replace a symlink or junction: {output}",
+        )
+
+    def test_symlinked_parent_message_byte_identical(self) -> None:
+        real_parent = self.root / "real"
+        real_parent.mkdir()
+        linked_parent = self.root / "linked"
+        try:
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"directory symlink creation unavailable: {error}")
+        with self.assertRaises(ValueError) as raised:
+            export_viewer_graph(self.database, linked_parent / "graph.json")
+        self.assertEqual(
+            str(raised.exception),
+            f"Refusing viewer output through a symlinked parent: {linked_parent}",
+        )
+
+    def test_parent_not_directory_message_byte_identical(self) -> None:
+        parent = self.root / "not-a-directory"
+        parent.write_text("ordinary file", encoding="utf-8")
+        with self.assertRaises(ValueError) as raised:
+            export_viewer_graph(self.database, parent / "graph.json")
+        self.assertEqual(
+            str(raised.exception),
+            f"Viewer output parent is not a directory: {parent}",
+        )
+
+    def test_exists_without_force_message_byte_identical(self) -> None:
+        output = self.root / "graph.json"
+        output.write_text("existing", encoding="utf-8")
+        with self.assertRaises(ValueError) as raised:
+            export_viewer_graph(self.database, output)
+        self.assertEqual(
+            str(raised.exception),
+            f"Viewer output already exists: {output}. Pass --force to replace it.",
+        )
 
 
 if __name__ == "__main__":

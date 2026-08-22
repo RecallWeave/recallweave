@@ -29,7 +29,13 @@ def path_identity(path: Path) -> tuple[int, int]:
     return int(info.st_dev), int(info.st_ino)
 
 
-def _validate_output_path(output: Path, protected: Path, label: str) -> None:
+def _validate_output_path(
+    output: Path,
+    protected: Path,
+    label: str,
+    *,
+    protected_target_message: str | None = None,
+) -> None:
     if is_link_like(output):
         raise ValueError(f"Refusing to replace a symlink or junction: {output}")
 
@@ -42,6 +48,8 @@ def _validate_output_path(output: Path, protected: Path, label: str) -> None:
             )
 
     if output.exists() and os.path.samefile(output, protected):
+        if protected_target_message is not None:
+            raise ValueError(protected_target_message)
         raise ValueError(f"{label} cannot replace the protected file: {output}")
 
 
@@ -51,15 +59,20 @@ def prepare_destination(
     *,
     force: bool,
     label: str,
+    protected_target_message: str | None = None,
 ) -> dict[str, Any]:
-    _validate_output_path(output, protected, label)
+    _validate_output_path(
+        output, protected, label, protected_target_message=protected_target_message
+    )
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
     except (FileExistsError, NotADirectoryError) as error:
         raise ValueError(
             f"{label} parent is not a directory: {output.parent}"
         ) from error
-    _validate_output_path(output, protected, label)
+    _validate_output_path(
+        output, protected, label, protected_target_message=protected_target_message
+    )
     if not output.parent.is_dir():
         raise ValueError(f"{label} parent is not a directory: {output.parent}")
 
@@ -81,8 +94,11 @@ def verify_destination(
     guard: dict[str, Any],
     *,
     label: str,
+    protected_target_message: str | None = None,
 ) -> None:
-    _validate_output_path(output, protected, label)
+    _validate_output_path(
+        output, protected, label, protected_target_message=protected_target_message
+    )
     try:
         parent_identity = path_identity(output.parent)
     except FileNotFoundError as error:
@@ -117,13 +133,15 @@ def _install_non_replacing(source: Path, destination: Path) -> None:
         source.unlink()
 
 
-def _restore_backup(backup: Path, output: Path) -> bool:
+def _restore_backup(
+    backup: Path, output: Path, installer: Any
+) -> bool:
     """Restore without overwriting a late arrival; retain backup on failure."""
 
     if output.exists() or is_link_like(output):
         return False
     try:
-        _current_installer()(backup, output)
+        installer(backup, output)
     except OSError:
         return False
     return True
@@ -136,6 +154,9 @@ def _replace_recoverably(
     expected_parent_identity: tuple[int, int],
     *,
     label: str,
+    installer: Any,
+    install_failed_message: str | None = None,
+    install_failed_retained_message: str | None = None,
 ) -> str:
     """Two-phase force replacement retaining every unapproved late arrival."""
 
@@ -163,7 +184,7 @@ def _replace_recoverably(
     rotated_identity = path_identity(backup)
     parent_changed = path_identity(output.parent) != expected_parent_identity
     if rotated_identity != expected_identity or parent_changed:
-        restored = _restore_backup(backup, output)
+        restored = _restore_backup(backup, output, installer)
         if restored:
             try:
                 backup_directory.rmdir()
@@ -179,7 +200,7 @@ def _replace_recoverably(
         )
 
     if path_identity(output.parent) != expected_parent_identity:
-        restored = _restore_backup(backup, output)
+        restored = _restore_backup(backup, output, installer)
         if restored:
             try:
                 backup_directory.rmdir()
@@ -195,21 +216,24 @@ def _replace_recoverably(
         )
 
     try:
-        _current_installer()(temporary, output)
+        installer(temporary, output)
     except OSError as error:
-        restored = _restore_backup(backup, output)
+        restored = _restore_backup(backup, output, installer)
         if restored:
             try:
                 backup_directory.rmdir()
             except OSError:
                 pass
-            raise ValueError(
-                f"{label} installation failed; the previous output was restored."
-            ) from error
-        raise ValueError(
+            message = (
+                install_failed_message
+                or f"{label} installation failed; the previous output was restored."
+            )
+            raise ValueError(message) from error
+        message = install_failed_retained_message or (
             f"{label} installation failed and the previous output could not "
-            f"be restored without overwriting another file. Backup retained at: {backup}"
-        ) from error
+            f"be restored without overwriting another file."
+        )
+        raise ValueError(f"{message} Backup retained at: {backup}") from error
 
     # Deliberately retain the approved old output. There is no cross-platform
     # compare-and-delete primitive that can prove this path was not swapped
@@ -223,7 +247,12 @@ def install(
     guard: dict[str, Any],
     *,
     label: str,
+    installer: Any = None,
+    install_failed_message: str | None = None,
+    install_failed_retained_message: str | None = None,
 ) -> str | None:
+    if installer is None:
+        installer = _install_non_replacing
     if guard["output_existed"]:
         return _replace_recoverably(
             temporary,
@@ -231,17 +260,14 @@ def install(
             guard["output_identity"],
             guard["parent_identity"],
             label=label,
+            installer=installer,
+            install_failed_message=install_failed_message,
+            install_failed_retained_message=install_failed_retained_message,
         )
     try:
-        _current_installer()(temporary, output)
+        installer(temporary, output)
     except FileExistsError as error:
         raise ValueError(
             f"{label} appeared during export and was not replaced: {output}"
         ) from error
     return None
-
-
-def _current_installer() -> Any:
-    from . import viewer
-
-    return viewer._install_non_replacing
