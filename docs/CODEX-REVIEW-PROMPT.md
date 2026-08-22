@@ -95,71 +95,64 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-All three cycle-15 findings are fixed. Each was REPRODUCED before anything was
-changed, and one of them exposed a further defect underneath it.
+Cycle 16 returned **PASS WITH FIXES** — the first non-FAIL in sixteen cycles —
+with one Low finding and four suggested tests. All are now addressed, and the
+Low was reproduced first.
 
-- **High — the malformed-evidence diagnostic disclosed vault note paths.**
-  Confirmed (`recallweave-w3k`), and it was introduced by the cycle-14
-  remediation itself, which is exactly the kind of regression this gate exists
-  to catch. Reproduced with a vault holding `People/Medical Diagnosis.md` and
-  `Legal/Acquisition Target.md`: both names appeared in the structured stderr
-  receipt. The diagnostic now names the edge by its **database primary key**,
-  which is not content-bearing and which an operator can resolve locally, so the
-  message stays actionable. `PRIVACY.md` states the property. Tests assert
-  neither of two path sentinels reaches stdout, stderr or an artifact; that an
-  EXCLUDED endpoint never reaches the diagnostic, because suppression precedes
-  validation; and that the message still names the edge.
+- **Low — leaked sqlite connections.** Confirmed at all six sites you named
+  (seven in total). `with sqlite3.connect(...)` commits but never closes, so the
+  connection was finalized by the garbage collector and emitted a
+  `ResourceWarning` wherever collection happened to land. They now use
+  `closing(...) as connection, connection`: `closing` closes, the bare
+  connection context manager commits, and neither alone is sufficient. The suite
+  is warning-clean.
 
-  Fixing this also exposed a latent test-harness defect worth knowing about:
-  `ContractVaultInjectionTest.tearDown` left its hostile-filename vaults to the
-  garbage collector, which emitted a `ResourceWarning` at an arbitrary later
-  moment. Because the CLI tests capture stderr to parse the JSON receipt, that
-  warning landed inside an unrelated test's captured stream and broke the parse,
-  so the failure surfaced in a CLI test with nothing to do with the leak. The
-  temp dirs are now cleaned deterministically and `run_cli` suppresses
-  `ResourceWarning` for its capture window.
+- Your first suggested test is now part of the gate: `scripts/codex-review.sh`
+  runs a **second pass with `ResourceWarning` promoted to an error**, so a future
+  leak fails where it is caused rather than inside an unrelated test that
+  captures stderr — which is precisely how the previous leak hid.
 
-- **Medium — the partition was proved over one corpus.** Confirmed
-  (`recallweave-e1y`): a minimal but publicly constructible document left
-  `acceptance_criteria[]`, `connections[]`, `constraints[]`,
-  `prior_decisions[]` and `retrieved_context[]` in neither inventory. The
-  partition now runs over five public builder shapes under an explicit rule — a
-  collection CONTAINER is not a leaf, its item fields are, so a bare `X[]`
-  survives only when it is a scalar collection whose own name is the field. The
-  test also proves the empty-collection case is actually exercised, so the shape
-  list cannot be narrowed back and pass for the wrong reason.
+- **Multi-digit edge id**: the content-free diagnostic claim no longer depends
+  on single-digit fixture ids; the edges are renumbered into a wide range and
+  the assertion requires six or more digits.
 
-- **Medium — the list probes could not detect a truthiness read.** Confirmed and
-  reproduced exactly as you described: leaking
-  `retrieved_context[].matched_terms` truthiness left the invariance proof
-  passing. Probes now span several values varying cardinality and falsiness
-  (lists empty/one/two, integers including `0`, strings including `""`) and the
-  test compares every rendering rather than a pair. Four leak classes —
-  truthiness, length, string emptiness, integer zero-ness — are each
-  mutation-proven to fail now; none of them failed before.
+- **The validation/budget boundary is now explicit in BOTH directions.** An edge
+  is validated before its own budget check, so it cannot escape by being
+  expensive; but an edge ordered AFTER the budget `break` is never examined, so
+  the export is **not** a whole-index validation and a reader must not infer
+  one. The test sweeps budgets, requires both sides to occur, and checks the
+  boundary is monotone.
 
-Suite: 382 tests with the parser, stable across repeated runs, `compileall`
-clean. Runtime dependencies are still empty; `mistletoe` remains test-only.
+- **Scalar-collection coverage** is no longer left to luck. Every scalar
+  collection is asserted to appear both empty and populated across the builder
+  shapes, and two shapes were added to fill the gaps your point exposed
+  (`exclusions.globs[]` and `exclusions.directives[]` were never populated;
+  `provenance.citations[]` was never empty). The two collections the builder
+  can never emit empty are asserted as POSITIVE invariants, not waved through:
+  if one became emptiable, the always-non-empty assertion fails and the
+  exemption must be revisited.
 
-Attack hardest this cycle:
+One self-inflicted slip is also fixed: an edit duplicated two test methods in
+one class, which Python silently resolves to the last definition. An AST scan
+now confirms no test class in the suite defines the same method twice.
 
-1. **Whether the privacy fix is complete.** Are there OTHER error or diagnostic
-   paths in the contract flow that carry vault-derived content into a receipt,
-   a log or an exception message? Distinguish an operator's own selector echoed
-   back (their input, arguably fine) from vault content they never named.
-   `PRIVACY.md` now makes a positive claim about failure receipts — try to
-   falsify it.
-2. **Whether the edge id is truly non-content-bearing** in every reachable case,
-   and whether identifying an edge only by id leaves an operator genuinely able
-   to act.
-3. **The container-versus-scalar-collection rule.** Find a canonical shape where
-   it misclassifies: a collection that is empty in every shape tested, or a
-   scalar collection that acquires object elements later.
-4. **The probe derivation.** `_not_projected_values` reads the type from the
-   populated document. Find a field whose populated type is not the type the
-   builder can actually produce, so the probe is type-correct for the fixture
-   and wrong for reality.
-5. Reassess every Critical and High from all fifteen cycles, including whether
-   any earlier fix has been regressed by a later one — cycle 15 found exactly
-   that.
+Suite: 385 tests with the parser, green again under
+`-W error::ResourceWarning`; `compileall` clean. Runtime dependencies are still
+empty; `mistletoe` remains test-only.
+
+This cycle decides promotion. A clean PASS is required before a milestone PR to
+protected `main`, and the human owner approves the merge separately. So:
+
+1. **Try hardest to find anything that still blocks promotion**, at any
+   severity. State plainly whether the remaining state is safe to MERGE, not
+   merely safe to checkpoint.
+2. Re-examine the areas where a fix has previously caused a regression: the
+   fail-closed gate and its diagnostic (cycle 14's fix caused cycle 15's High),
+   the partition and invariance proofs (strengthened twice), and structural
+   absence.
+3. Check the DOCS against the CODE once more as a whole: `docs/task-contracts.md`,
+   `PRIVACY.md` and `CHANGELOG.md` all make positive claims this session added.
+   Any claim you cannot verify from the code is a finding.
+4. Reassess every Critical and High from all sixteen cycles, and say explicitly
+   which remain closed.
 <!-- CYCLE-CONTEXT-END -->
