@@ -1888,6 +1888,131 @@ class ContractDocumentTest(unittest.TestCase):
                 len(persisted["shared_terms"]), MIN_SHARED_TERMS
             )
 
+    def test_builder_rejects_an_inauthentic_edge_envelope(self) -> None:
+        # FAIL-FIRST (recallweave-o6r). The evidence PAYLOAD was authenticated
+        # over several cycles; the record that BINDS a payload to a pair of
+        # notes and declares its class was still copied straight out of the
+        # database. The schema constrains only is_verified to 0/1, so a
+        # hand-written row could carry any kind, any score, and either
+        # verification flag. All four scenarios below were reproduced exporting
+        # cleanly before this gate existed.
+        import sqlite3
+
+        mutations = {
+            "arbitrary score": "UPDATE edges SET score = 99.5 WHERE is_verified = 0",
+            "negative score": "UPDATE edges SET score = -1 WHERE is_verified = 0",
+            "zero score": "UPDATE edges SET score = 0 WHERE is_verified = 0",
+            "fabricated kind": (
+                "UPDATE edges SET kind = 'human_verified' WHERE is_verified = 0"
+            ),
+            "candidate promoted to verified": (
+                "UPDATE edges SET is_verified = 1, score = 1.0, kind = 'wikilink'"
+            ),
+            "authored score rewritten": (
+                "UPDATE edges SET score = 0.5 WHERE is_verified = 1"
+            ),
+            "authored kind rewritten": (
+                "UPDATE edges SET kind = 'human_verified' WHERE is_verified = 1"
+            ),
+        }
+        for label, statement in mutations.items():
+            with self.subTest(mutation=label):
+                # A mutation aimed at a VERIFIED edge needs the fixture that
+                # actually has one. Skipping instead would leave the authored
+                # side of the envelope rules unexercised, which is exactly the
+                # kind of silent gap this suite keeps finding.
+                if "is_verified = 1" in statement:
+                    database, spec = self.database, self._full_spec()
+                else:
+                    _vault, database = self._build_vault_index()
+                    spec = self._evidence_spec()
+                with closing(
+                    sqlite3.connect(str(database))
+                ) as connection, connection:
+                    changed = connection.execute(statement).rowcount
+                self.assertGreater(
+                    changed, 0, f"no edge was mutated for {label!r}"
+                )
+                with self.assertRaises(ValueError) as raised:
+                    build_contract_document(database, spec)
+                self.assertRegex(str(raised.exception), r"edge \d+")
+
+    def test_builder_rejects_a_forged_authored_link(self) -> None:
+        # FAIL-FIRST (recallweave-o6r). The severest of the four: a row with
+        # is_verified = 1, a plausible kind and score, and empty evidence
+        # exported as an AUTHORED, VERIFIED relationship between two notes that
+        # have no link at all. That is the verified-versus-candidate boundary
+        # this project is built on, asserted by the artifact and backed by
+        # nothing. An authored edge must now re-derive from the index: the
+        # source note must really have an indexed section covering the link's
+        # line whose text contains it, and the target text must really resolve
+        # to the target note.
+        import sqlite3
+
+        forgeries = {
+            "empty evidence": "{}",
+            "missing the link line": json.dumps(
+                {"source_text": "See the [[Alpha]] reference.", "target_text": "Alpha"}
+            ),
+            "line the source note does not have": json.dumps(
+                {"line": 9999, "source_text": "x", "target_text": "Alpha"}
+            ),
+            "source text the section does not contain": json.dumps(
+                {"line": 9, "source_text": "ZZNOSUCHLINE", "target_text": "Alpha"}
+            ),
+            "target text that resolves elsewhere": json.dumps(
+                {
+                    "line": 9,
+                    "source_text": "See the [[Alpha]] reference.",
+                    "target_text": "ZZNoSuchNote",
+                }
+            ),
+            "unknown extra member": json.dumps(
+                {
+                    "line": 9,
+                    "source_text": "See the [[Alpha]] reference.",
+                    "target_text": "Alpha",
+                    "trust_me": True,
+                }
+            ),
+        }
+        for label, evidence_json in forgeries.items():
+            with self.subTest(forgery=label):
+                with closing(
+                    sqlite3.connect(str(self.database))
+                ) as connection, connection:
+                    original = connection.execute(
+                        "SELECT id, evidence_json FROM edges WHERE is_verified = 1"
+                    ).fetchall()
+                    self.assertTrue(original, "fixture must have an authored edge")
+                    connection.execute(
+                        "UPDATE edges SET evidence_json = ? WHERE is_verified = 1",
+                        (evidence_json,),
+                    )
+                try:
+                    with self.assertRaises(ValueError) as raised:
+                        build_contract_document(self.database, self._full_spec())
+                    self.assertRegex(str(raised.exception), r"edge \d+")
+                    self.assertNotIn("ZZ", str(raised.exception))
+                finally:
+                    with closing(
+                        sqlite3.connect(str(self.database))
+                    ) as connection, connection:
+                        for edge_id, raw in original:
+                            connection.execute(
+                                "UPDATE edges SET evidence_json = ? WHERE id = ?",
+                                (raw, edge_id),
+                            )
+
+    def test_a_genuine_index_still_exports_every_class(self) -> None:
+        # The gate must not reject what the indexer really produces. The default
+        # fixture carries BOTH an authored wikilink and lexical candidates, so a
+        # clean export of both classes proves the envelope rules are calibrated
+        # to the real producer rather than to the tests' idea of it.
+        document = build_contract_document(self.database, self._full_spec())
+        classes = {item["evidence_class"] for item in document["connections"]}
+        self.assertEqual(classes, {"authored_link", "discovery_candidate"})
+
     def test_indexed_snapshot_is_the_attribution_boundary(self) -> None:
         # Resolution reads the INDEX, never the vault, because the exporter's
         # own provenance asserts network_calls and vault_writes are 0. The

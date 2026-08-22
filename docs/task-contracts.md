@@ -532,6 +532,45 @@ otherwise unreachable through the public API — it occurs only in hand-crafted
 dicts — and the renderer treats a missing key and an explicit `None`
 identically for every projected field.
 
+#### The edge record itself is authenticated
+
+Authenticating the evidence payload is not enough on its own: the record that
+BINDS a payload to a pair of notes and declares its class was, until
+`recallweave-o6r`, copied straight out of the database. The schema constrains
+only `is_verified` to `0`/`1` — not `kind`, not `score`, not their consistency —
+so a hand-written row could carry any combination. A row with `is_verified = 1`
+and empty evidence exported as an **authored, verified** relationship between
+two notes that have no link at all, which is the verified-versus-candidate
+boundary this project is built on.
+
+The envelope rules are declared as data (`AUTHORED_LINK_KINDS`,
+`CANDIDATE_KIND`, `AUTHORED_EVIDENCE_MEMBERS`), the same way the evidence
+applicability tables are:
+
+- a **discovery candidate** carries `kind = "discovery_candidate"`,
+  `is_verified = 0`, and a cosine score in `(0, 1]`;
+- an **authored link** carries a real link kind (`wikilink` or
+  `markdown_link`), `is_verified = 1`, `score = 1.0`, and a link that
+  **re-derives from the index**: its persisted evidence names the link's line,
+  the source line's text and the link target; the source note must really have
+  an indexed section covering that line whose text contains that source text;
+  and the target text must really resolve to the target note, by name or by
+  path, the same two routes `_resolve_link` takes.
+
+An authored edge's persisted `line` / `source_text` / `target_text` are **not
+projected** — `_edge_evidence` whitelists them away, which is why an
+`authored_link` renders with empty evidence — but they are what makes the link
+re-derivable, so they are validated even though they are never emitted.
+
+**What is deliberately not authenticated.** Candidate EXISTENCE and RANKING are
+not recomputed: the exporter does not re-run the TF-IDF cosine, the score
+threshold, or the bounded top-per-note selection. Doing so would duplicate
+`index.py` inside the exporter and make export time scale with index size. So a
+candidate is checked to be *shaped and evidenced* like one the indexer produces,
+not to be one the indexer *did* produce. This is stated here rather than implied
+away, because the rest of this document makes strong authenticity claims and a
+reader is entitled to know exactly where they stop.
+
 #### Malformed persisted evidence fails the export closed
 
 `build_contract_document` **enforces** that predicate on each connection it is

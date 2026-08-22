@@ -161,9 +161,12 @@ class ContractCliTest(unittest.TestCase):
         # project's own validator rejects.
         import sqlite3
 
+        # Corrupt only the CANDIDATE edges. Writing candidate-shaped evidence
+        # onto a verified edge would trip the edge-envelope gate first and this
+        # test would stop exercising the evidence gate it is named for.
         with closing(sqlite3.connect(str(self.database))) as connection, connection:
             connection.execute(
-                "UPDATE edges SET evidence_json = ?",
+                "UPDATE edges SET evidence_json = ? WHERE is_verified = 0",
                 (
                     json.dumps(
                         {
@@ -173,10 +176,32 @@ class ContractCliTest(unittest.TestCase):
                     ),
                 ),
             )
+        # Candidates must be in scope, or the corrupted edges are never
+        # examined and the export succeeds for the wrong reason.
+        spec_path = self.root / "malformed-spec.json"
+        spec_path.write_text(
+            json.dumps(
+                {
+                    "task_id": "cli-test",
+                    "objective": "Explain the alpha-beta relationship.",
+                    "retrieval": {
+                        "query": "zephyr quadrata",
+                        "limit": 8,
+                        "include_candidates": True,
+                        "max_characters": 5000,
+                    },
+                    "constraints": [],
+                    "prior_decisions": [],
+                    "acceptance_criteria": ["Citations resolve."],
+                    "exclusions": {"paths": []},
+                }
+            ),
+            encoding="utf-8",
+        )
         output = self.root / "contract-malformed.json"
         exit_code, out, err = self.run_cli(
             "contract",
-            str(self.spec_path),
+            str(spec_path),
             "--database",
             str(self.database),
             "--output",

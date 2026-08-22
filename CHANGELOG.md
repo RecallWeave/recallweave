@@ -15,6 +15,13 @@
   thirty-one omitted fields, driving each to several values that vary
   cardinality and falsiness so a renderer reading only a length, a truthiness
   or an emptiness is caught;
+- `contract` authenticates the persisted edge record, not only its evidence: a
+  candidate must carry the candidate kind, an unset verification flag and a
+  cosine score in range, and an authored link must carry a real link kind, a
+  set verification flag, a unit score, and a link that re-derives from the
+  index — so a hand-written row can no longer export as an authored, verified
+  relationship. Candidate existence and ranking are deliberately not
+  recomputed, and the docs say so;
 - `contract` authenticates a discovery candidate's own evidence, not only its
   passages: `shared_terms` must be at least two non-empty strings that both
   endpoint notes actually carry in the index, and `method` and `explanation`

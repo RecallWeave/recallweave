@@ -17,6 +17,7 @@ from .contract_text import (
     sanitize,
 )
 from .index import connect
+from .parser import normalize_name
 from .query import MAX_EDGE_ROWS, _edge_rows, _resolve_note, _search
 
 CONTRACT_SCHEMA_VERSION = "recallweave.contract.v1"
@@ -75,6 +76,31 @@ EVIDENCE_SIDE_LEAF_TYPES: dict[str, type] = {
     "heading": str,
     "passage": str,
     "truncated": bool,
+}
+
+# The persisted EDGE ENVELOPE the indexer can produce, declared as data the way
+# CONNECTION_EVIDENCE_APPLICABILITY declares the evidence rules. The evidence
+# payload was authenticated first (citations, passages, shared terms, method and
+# explanation), but the record that BINDS a payload to a pair of notes and
+# declares its class was still copied straight out of the database. That let a
+# hand-written row export as a verified authored relationship — the exact
+# verified-versus-candidate boundary this project is built on (recallweave-o6r).
+#
+# An authored edge is inserted from a parsed link with is_verified=1 and
+# score=1.0; a candidate is inserted with kind="discovery_candidate",
+# is_verified=0 and a cosine score in (0, 1]. Nothing in the schema enforces any
+# of that: it constrains only is_verified to 0/1.
+AUTHORED_LINK_KINDS = frozenset({"wikilink", "markdown_link"})
+CANDIDATE_KIND = "discovery_candidate"
+
+# The members an authored edge's PERSISTED evidence carries. These are not
+# projected — _edge_evidence whitelists them away, which is why an authored_link
+# renders with empty evidence — but they are what makes the link RE-DERIVABLE,
+# so they are validated even though they are never emitted.
+AUTHORED_EVIDENCE_MEMBERS: dict[str, type] = {
+    "line": int,
+    "source_text": str,
+    "target_text": str,
 }
 
 # What the INDEXER stamps on a discovery candidate. index.py emits exactly these
@@ -312,6 +338,101 @@ def _persisted_terms_are_all_strings(raw: str) -> bool:
     if not isinstance(terms, list):
         return False
     return all(isinstance(term, str) for term in terms)
+
+
+def _authored_link_is_rederivable(connection, row) -> bool:
+    """True iff an authored edge can be RE-DERIVED from the index: its persisted
+    evidence carries the link's line, the source line's text and the link target;
+    the source note really has an indexed section covering that line whose text
+    contains that source text; and the target text really resolves to the target
+    note.
+
+    This is not a re-index. It is the bounded check that the link the edge claims
+    is one the indexed source note actually contains, which is what separates an
+    authored, verified relationship from a row somebody wrote into the database.
+    Without it, an edge with `is_verified = 1`, a plausible kind and score, and
+    empty evidence exported as an authored link between any two notes."""
+    try:
+        persisted = json.loads(str(row["evidence_json"]))
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(persisted, dict):
+        return False
+    if set(persisted) != set(AUTHORED_EVIDENCE_MEMBERS):
+        return False
+    for member, member_type in AUTHORED_EVIDENCE_MEMBERS.items():
+        value = persisted[member]
+        if not isinstance(value, member_type) or isinstance(value, bool):
+            return False
+    line = persisted["line"]
+    source_text = persisted["source_text"]
+    if line < 1 or not source_text:
+        return False
+    covering = connection.execute(
+        """
+        SELECT text FROM sections
+        WHERE note_id = ? AND line_start <= ? AND line_end >= ?
+        """,
+        (int(row["source_note_id"]), line, line),
+    ).fetchall()
+    if not any(source_text in str(section["text"]) for section in covering):
+        return False
+    # The link target must resolve to THIS edge's target note. A name match
+    # covers the unqualified form the indexer resolves through note_names; a
+    # path-qualified target is matched against the target note's own path, the
+    # same two routes _resolve_link takes.
+    target_text = persisted["target_text"]
+    normalized = normalize_name(target_text)
+    name_row = connection.execute(
+        "SELECT 1 FROM note_names WHERE note_id = ? AND normalized_name = ? LIMIT 1",
+        (int(row["target_note_id"]), normalized),
+    ).fetchone()
+    if name_row is not None:
+        return True
+    path_row = connection.execute(
+        "SELECT relative_path FROM notes WHERE id = ?",
+        (int(row["target_note_id"]),),
+    ).fetchone()
+    if path_row is None:
+        return False
+    target_path = str(path_row["relative_path"])
+    stripped = target_text.replace("\\", "/").split("#", 1)[0].strip()
+    return bool(stripped) and (
+        target_path == stripped
+        or target_path == f"{stripped}.md"
+        or target_path.endswith(f"/{stripped}")
+        or target_path.endswith(f"/{stripped}.md")
+    )
+
+
+def _edge_envelope_is_authentic(connection, row) -> bool:
+    """True iff the persisted edge RECORD is one the indexer could have written.
+
+    Checks the class relationships the indexer guarantees but the schema does
+    not: a candidate carries `kind = "discovery_candidate"`, `is_verified = 0`
+    and a cosine score in (0, 1]; an authored edge carries a real link kind,
+    `is_verified = 1`, `score = 1.0`, and a link that re-derives from the index.
+
+    Candidate EXISTENCE and RANKING are deliberately not recomputed — that would
+    duplicate index.py's TF-IDF and its bounded top-per-note selection inside the
+    exporter, and make export time scale with index size. The docs say so
+    plainly rather than implying a guarantee the exporter does not give."""
+    score = row["score"]
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return False
+    score = float(score)
+    if score != score or score in (float("inf"), float("-inf")):
+        return False
+    kind = row["kind"]
+    if not isinstance(kind, str):
+        return False
+    if bool(row["is_verified"]):
+        if kind not in AUTHORED_LINK_KINDS or score != 1.0:
+            return False
+        return _authored_link_is_rederivable(connection, row)
+    if kind != CANDIDATE_KIND:
+        return False
+    return 0.0 < score <= 1.0
 
 
 def _side_attribution_is_authentic(
@@ -648,6 +769,22 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                     suppressed_connections += 1
                     continue
                 verified = bool(row["is_verified"])
+                # Authenticate the edge RECORD before its payload. The payload
+                # checks below say "this evidence is real"; this says "this edge
+                # is one the indexer could have written", which is what makes the
+                # verified-versus-candidate distinction mean anything. A row with
+                # is_verified = 1 and empty evidence otherwise exported as an
+                # authored relationship between any two notes.
+                if not _edge_envelope_is_authentic(connection, row):
+                    raise ValueError(
+                        "unauthenticated connection in the index for edge "
+                        f"{row['id']}: the edge's kind, score, verification flag "
+                        "and persisted link evidence are not a combination this "
+                        "indexer produces, so its evidence class cannot be "
+                        "trusted. Re-index the vault. The edge is identified by "
+                        "its database id rather than by note path so this "
+                        "diagnostic carries no vault content."
+                    )
                 evidence = _edge_evidence(str(row["evidence_json"]))
                 candidate = {
                     "source": row["source_path"],
