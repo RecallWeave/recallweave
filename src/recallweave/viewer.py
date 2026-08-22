@@ -244,7 +244,14 @@ def export_viewer_graph(
 ) -> dict[str, Any]:
     database = database.expanduser().resolve()
     output = Path(os.path.abspath(output.expanduser()))
-    guard = prepare_destination(output, database, force=force, label="Viewer output")
+    protected_message = "Viewer output cannot replace the RecallWeave database."
+    guard = prepare_destination(
+        output,
+        database,
+        force=force,
+        label="Viewer output",
+        protected_target_message=protected_message,
+    )
 
     document = build_viewer_document(
         database,
@@ -252,7 +259,13 @@ def export_viewer_graph(
         include_excerpts=include_excerpts,
         title=title,
     )
-    verify_destination(output, database, guard, label="Viewer output")
+    verify_destination(
+        output,
+        database,
+        guard,
+        label="Viewer output",
+        protected_target_message=protected_message,
+    )
     handle = tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -270,8 +283,27 @@ def export_viewer_graph(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        verify_destination(output, database, guard, label="Viewer output")
-        replacement_backup = install(temporary, output, guard, label="Viewer output")
+        verify_destination(
+            output,
+            database,
+            guard,
+            label="Viewer output",
+            protected_target_message=protected_message,
+        )
+        replacement_backup = install(
+            temporary,
+            output,
+            guard,
+            label="Viewer output",
+            installer=_install_non_replacing,
+            install_failed_message=(
+                "Viewer export installation failed; the previous output was restored."
+            ),
+            install_failed_retained_message=(
+                "Viewer export installation failed and the previous output could not "
+                "be restored without overwriting another file."
+            ),
+        )
     finally:
         temporary.unlink(missing_ok=True)
 
