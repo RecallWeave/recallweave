@@ -95,44 +95,32 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-A third cycle just completed. You have reviewed this capability twice and
-returned FAIL both times. Cycle-1 findings (Markdown block-structure injection,
-unsanitized/unbudgeted connection evidence, false authorization language,
-safe_write regression, five mediums) were verified closed in cycle 2. Your
-cycle-2 findings were:
+A fourth cycle just completed. Your cycle-3 findings:
 
-- **High — inline Markdown still active.** Now claimed fixed in
-  `src/recallweave/contract_markdown.py`: inline metacharacters are escaped in
-  every unfenced field. Reproduction now renders
-  `Review \!\[tracking\]\(https://attacker.example/pixel\)` with zero live
-  image or link constructs. Regression tests in
-  `tests/test_contract_markdown_injection.py`.
-- **High — cited passages bypassed the character budget.** Now claimed fixed in
-  `src/recallweave/contract.py`, which fails closed: the same reproduction
-  (8-character cited section, `max_characters` 10) is rejected with "Cited
-  passages plus operator text exceed the character budget (10)". Regression
-  tests in `tests/test_contract_document.py`.
-- **Low — tautological determinism assertion** at the old
-  `tests/test_contract_document.py:335`. Addressed in the same bead.
+- **High — `handling.statement` and `_as_str()` scalars bypassed inline escaping.**
+  Fixed in `src/recallweave/contract_markdown.py`. Reproduced as failing first: a
+  document with `handling.statement` = `Safe ![beacon](https://attacker.example/pixel)
+## forged`
+  and hostile strings in `budget.character_budget` and `exclusions.suppressed.*`
+  now renders with zero live image constructs, exactly 8 real headings, and no
+  forged heading.
+- **Low — cumulative cited-passage case unpinned.** A multi-item test was added
+  to `tests/test_contract_document.py`.
+- **Low — tests assert on absent substrings rather than parsing CommonMark.**
+  **Deliberately not implemented, and this is a considered deviation, not an
+  oversight.** This project ships zero runtime and zero test dependencies and the
+  core is stdlib-only by design (`pyproject.toml` has an empty `dependencies`
+  list; `README.md` states the core uses only the standard library). Adding a
+  CommonMark parser to the test suite would break that property for the whole
+  project. The structural assertions were strengthened within the stdlib instead.
+  If you still consider parser-backed assertions necessary, say so explicitly and
+  say whether it justifies a first test dependency — that is a project-level
+  decision for the maintainer, not something to smuggle in through a test file.
 
-Both fixes were independently reproduced as failing before the change and
-passing after. Diff base for this cycle: `4a16bdb`.
+Suite: 284 tests passing. Diff base for this cycle: the previous review's HEAD.
 
-Probe hardest at:
-
-1. Whether escaping is now applied to every unfenced field WITHOUT being applied
-   to fenced content, and whether double-escaping or escaped-backslash sequences
-   introduce a new way to break out.
-2. Whether failing closed on the budget is the right call, or whether it makes
-   legitimate small-budget specs unusable in a way the documentation does not
-   warn about. The alternative considered was truncation with truthful flags.
-3. Whether the budget check now covers the cumulative case (several cited items
-   that individually fit but together do not) and the interaction with
-   connection admission.
-4. Any regression introduced by these two changes into behavior you previously
-   marked as a positive finding.
-
-Note on your previous run: 165 of 268 tests errored in your sandbox for lack of a
-writable temp directory. The harness now runs the suite before invoking you and
-gives you the real results; read that file rather than re-running the suite.
+Probe hardest at whether the escaping is now genuinely universal — every string
+that reaches the renderer, through every field, fenced and unfenced — and at
+whether escaping interacts badly with already-escaped input (backslash runs
+adjacent to metacharacters).
 <!-- CYCLE-CONTEXT-END -->
