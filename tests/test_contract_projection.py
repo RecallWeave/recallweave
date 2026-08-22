@@ -147,6 +147,15 @@ PROJECTED_FIELDS = [
     "connections[].target",
     "connections[].kind",
     "connections[].verified",
+    "connections[].evidence_class",
+    "connections[].score",
+    "connections[].evidence.source_evidence.citation",
+    "connections[].evidence.source_evidence.heading",
+    "connections[].evidence.source_evidence.passage",
+    "connections[].evidence.target_evidence.citation",
+    "connections[].evidence.target_evidence.heading",
+    "connections[].evidence.target_evidence.passage",
+    "connections[].evidence.shared_terms[]",
     "exclusions.paths[]",
     "exclusions.globs[]",
     "exclusions.tags[]",
@@ -222,8 +231,20 @@ def _populated_projected() -> dict:
             "kind": "kind",
             "verified": True,
             "score": 0.5,
-            "evidence": [],
             "evidence_class": "ec",
+            "evidence": {
+                "source_evidence": {
+                    "citation": "scit",
+                    "heading": "shed",
+                    "passage": "spas",
+                },
+                "target_evidence": {
+                    "citation": "tcit",
+                    "heading": "thead",
+                    "passage": "tpas",
+                },
+                "shared_terms": ["term"],
+            },
         }
     ]
     document["exclusions"] = {
@@ -296,6 +317,24 @@ def _mutate(doc: dict, name: str) -> dict:
         doc["connections"][0]["kind"] = "CHANGED"
     elif name == "connections[].verified":
         doc["connections"][0]["verified"] = False
+    elif name == "connections[].evidence_class":
+        doc["connections"][0]["evidence_class"] = "CHANGED"
+    elif name == "connections[].score":
+        doc["connections"][0]["score"] = 0.99
+    elif name == "connections[].evidence.source_evidence.citation":
+        doc["connections"][0]["evidence"]["source_evidence"]["citation"] = "CHANGED"
+    elif name == "connections[].evidence.source_evidence.heading":
+        doc["connections"][0]["evidence"]["source_evidence"]["heading"] = "CHANGED"
+    elif name == "connections[].evidence.source_evidence.passage":
+        doc["connections"][0]["evidence"]["source_evidence"]["passage"] = "CHANGED"
+    elif name == "connections[].evidence.target_evidence.citation":
+        doc["connections"][0]["evidence"]["target_evidence"]["citation"] = "CHANGED"
+    elif name == "connections[].evidence.target_evidence.heading":
+        doc["connections"][0]["evidence"]["target_evidence"]["heading"] = "CHANGED"
+    elif name == "connections[].evidence.target_evidence.passage":
+        doc["connections"][0]["evidence"]["target_evidence"]["passage"] = "CHANGED"
+    elif name == "connections[].evidence.shared_terms[]":
+        doc["connections"][0]["evidence"]["shared_terms"] = ["CHANGED"]
     elif name == "exclusions.paths[]":
         doc["exclusions"]["paths"] = ["CHANGED"]
     elif name == "exclusions.globs[]":
@@ -375,6 +414,24 @@ def _set(doc: dict, name: str, value) -> dict:
         doc["connections"][0]["kind"] = value
     elif name == "connections[].verified":
         doc["connections"][0]["verified"] = value
+    elif name == "connections[].evidence_class":
+        doc["connections"][0]["evidence_class"] = value
+    elif name == "connections[].score":
+        doc["connections"][0]["score"] = value
+    elif name == "connections[].evidence.source_evidence.citation":
+        doc["connections"][0]["evidence"]["source_evidence"]["citation"] = value
+    elif name == "connections[].evidence.source_evidence.heading":
+        doc["connections"][0]["evidence"]["source_evidence"]["heading"] = value
+    elif name == "connections[].evidence.source_evidence.passage":
+        doc["connections"][0]["evidence"]["source_evidence"]["passage"] = value
+    elif name == "connections[].evidence.target_evidence.citation":
+        doc["connections"][0]["evidence"]["target_evidence"]["citation"] = value
+    elif name == "connections[].evidence.target_evidence.heading":
+        doc["connections"][0]["evidence"]["target_evidence"]["heading"] = value
+    elif name == "connections[].evidence.target_evidence.passage":
+        doc["connections"][0]["evidence"]["target_evidence"]["passage"] = value
+    elif name == "connections[].evidence.shared_terms[]":
+        doc["connections"][0]["evidence"]["shared_terms"] = value
     elif name == "exclusions.paths[]":
         doc["exclusions"]["paths"] = value
     elif name == "exclusions.globs[]":
@@ -436,6 +493,15 @@ _EMPTY: dict[str, object] = {
     "connections[].target": "",
     "connections[].kind": "",
     "connections[].verified": False,
+    "connections[].evidence_class": "",
+    "connections[].score": "",
+    "connections[].evidence.source_evidence.citation": "",
+    "connections[].evidence.source_evidence.heading": "",
+    "connections[].evidence.source_evidence.passage": "",
+    "connections[].evidence.target_evidence.citation": "",
+    "connections[].evidence.target_evidence.heading": "",
+    "connections[].evidence.target_evidence.passage": "",
+    "connections[].evidence.shared_terms[]": [""],
     "exclusions.paths[]": [],
     "exclusions.globs[]": [],
     "exclusions.tags[]": [],
@@ -454,13 +520,43 @@ _EMPTY: dict[str, object] = {
 }
 
 
-def _documented_projected_fields() -> list[str]:
-    """Parse the 'Projected field set' section of docs/task-contracts.md and
-    return the field names listed there, so the documented set can be compared
-    against PROJECTED_FIELDS and the two cannot drift."""
+# A distinctive sentinel per documented not-projected field, injected into the
+# canonical JSON so the test can prove none of them leaks into the Markdown. If
+# a field the docs call omitted is actually rendered, its sentinel appears in
+# the output and the test fails. `evidence` is checked via every one of its
+# rendered leaves.
+_NOT_PROJECTED_SENTINELS: dict[str, str | list[str]] = {
+    "score": "NPS_SCORE",
+    "evidence": [
+        "NPS_ESCIT",
+        "NPS_ESHED",
+        "NPS_ESPAS",
+        "NPS_ETCIT",
+        "NPS_ETHED",
+        "NPS_ETPAS",
+        "NPS_ETERM",
+    ],
+    "relative_path": "NPS_RELPATH",
+    "title": "NPS_TITLE",
+    "heading": "NPS_HEADING",
+    "line_start": "NPS_LINESTART",
+    "line_end": "NPS_LINEEND",
+    "truncated": "NPS_TRUNCATED",
+    "matched_terms": "NPS_MATCHTERM",
+    "status": "NPS_STATUS",
+    "domain": "NPS_DOMAIN",
+    "verified": "NPS_VERIFIED",
+}
+
+
+def _documented_not_projected_fields() -> list[str]:
+    """Parse the 'not projected' statement in docs/task-contracts.md and return
+    the canonical field names the documentation claims are deliberately omitted
+    from the Markdown projection. The docs list them as a bulleted set, exactly
+    like the projected set, so the two cannot drift."""
     docs_path = Path(__file__).resolve().parents[1] / "docs" / "task-contracts.md"
     text = docs_path.read_text()
-    marker = "### Projected field set"
+    marker = "The canonical JSON fields"
     idx = text.index(marker)
     end = text.find("\n### ", idx)
     section = text[idx:] if end == -1 else text[idx:end]
@@ -470,6 +566,45 @@ def _documented_projected_fields() -> list[str]:
         if line.startswith("- `") and line.endswith("`"):
             fields.append(line[3:-1])
     return fields
+
+
+def _not_projected_sentinel(field: str) -> str | list[str] | None:
+    """Return the sentinel(s) for a documented not-projected field name, mapping
+    the prefixed form (e.g. ``retrieved_context[].relative_path``) to its bare
+    segment for the lookup."""
+    base = field.split("[].")[-1]
+    return _NOT_PROJECTED_SENTINELS.get(base)
+
+
+def _populate_not_projected(doc: dict) -> None:
+    """Inject the not-projected sentinels into the canonical JSON slots of `doc`
+    (mutates in place) so a leak into the Markdown is detectable."""
+    rc = doc["retrieved_context"][0]
+    rc["relative_path"] = "NPS_RELPATH"
+    rc["title"] = "NPS_TITLE"
+    rc["heading"] = "NPS_HEADING"
+    rc["line_start"] = 1111
+    rc["line_end"] = 2222
+    rc["truncated"] = True
+    rc["matched_terms"] = ["NPS_MATCHTERM"]
+    rc["status"] = "NPS_STATUS"
+    rc["domain"] = "NPS_DOMAIN"
+    rc["verified"] = "NPS_VERIFIED"
+    conn = doc["connections"][0]
+    conn["score"] = "NPS_SCORE"
+    conn["evidence"] = {
+        "source_evidence": {
+            "citation": "NPS_ESCIT",
+            "heading": "NPS_ESHED",
+            "passage": "NPS_ESPAS",
+        },
+        "target_evidence": {
+            "citation": "NPS_ETCIT",
+            "heading": "NPS_ETHED",
+            "passage": "NPS_ETPAS",
+        },
+        "shared_terms": ["NPS_ETERM"],
+    }
 
 
 class InjectivityTest(unittest.TestCase):
@@ -604,16 +739,29 @@ class InjectivityTest(unittest.TestCase):
                     f"changing projected field {name} did not change the Markdown",
                 )
 
-    def test_documented_projected_set_matches_tested(self) -> None:
-        # The documentation names the projected field set explicitly and the
-        # tests drive injectivity over it; they must agree exactly so neither
-        # can drift and silently widen or narrow the guarantee.
-        documented = _documented_projected_fields()
-        self.assertEqual(
-            sorted(documented),
-            sorted(PROJECTED_FIELDS),
-            "documented projected field set must match the tested set",
-        )
+    def test_no_documented_not_projected_field_is_rendered(self) -> None:
+        # The docs claim certain canonical fields are deliberately NOT projected
+        # (intentionally omitted from the Markdown). Render a document that
+        # populates every projected field AND every documented not-projected
+        # field with a distinctive sentinel, then assert none of those sentinels
+        # leaks into the Markdown. If the renderer emits a field the docs say is
+        # omitted — a privacy/disclosure violation — its sentinel appears and
+        # this test fails. This is anchored to actual renderer behavior, so a
+        # not-projected field cannot silently start rendering.
+        doc = _populated_projected()
+        _populate_not_projected(doc)
+        rendered = render_contract_markdown(doc)
+        for field in _documented_not_projected_fields():
+            sentinel = _not_projected_sentinel(field)
+            if sentinel is None:
+                continue
+            sentinels = sentinel if isinstance(sentinel, list) else [sentinel]
+            for s in sentinels:
+                self.assertNotIn(
+                    s,
+                    rendered,
+                    f"documented not-projected field {field!r} is rendered",
+                )
 
     def test_docs_scope_injectivity_to_projected_fields(self) -> None:
         # The documentation must scope injectivity to the projected field set,
