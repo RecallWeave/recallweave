@@ -95,71 +95,71 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both of your cycle-14 findings are fixed. Each was REPRODUCED end to end
-through the public API before anything was changed, and one turned out to be
-substantially larger than reported.
+All three cycle-15 findings are fixed. Each was REPRODUCED before anything was
+changed, and one of them exposed a further defect underneath it.
 
-- **High — the builder emitted evidence its own validator rejected.** Confirmed
-  exactly as you described (`recallweave-4su`). `build_contract_document()`
-  never called `connection_evidence_is_well_formed()`, so a persisted edge whose
-  `evidence_json` held a citation-only, heading-only or truncated-only side was
-  exported and rendered. Reproduced by mutating `edges.evidence_json` and
-  calling the public builder: the returned connection failed the predicate.
+- **High — the malformed-evidence diagnostic disclosed vault note paths.**
+  Confirmed (`recallweave-w3k`), and it was introduced by the cycle-14
+  remediation itself, which is exactly the kind of regression this gate exists
+  to catch. Reproduced with a vault holding `People/Medical Diagnosis.md` and
+  `Legal/Acquisition Target.md`: both names appeared in the structured stderr
+  receipt. The diagnostic now names the edge by its **database primary key**,
+  which is not content-bearing and which an operator can resolve locally, so the
+  message stays actionable. `PRIVACY.md` states the property. Tests assert
+  neither of two path sentinels reaches stdout, stderr or an artifact; that an
+  EXCLUDED endpoint never reaches the diagnostic, because suppression precedes
+  validation; and that the message still names the edge.
 
-  The builder now validates every connection it is about to admit and raises
-  `ValueError` naming it; the CLI exits 2 with the structured error on stderr,
-  nothing on stdout, and no artifact written. Validation runs BEFORE the budget
-  check, so an edge too expensive to admit cannot escape it — you asked for
-  exactly that case and it is pinned by test. One malformed edge among several
-  aborts the whole export; that choice is documented, not inferred.
+  Fixing this also exposed a latent test-harness defect worth knowing about:
+  `ContractVaultInjectionTest.tearDown` left its hostile-filename vaults to the
+  garbage collector, which emitted a `ResourceWarning` at an arbitrary later
+  moment. Because the CLI tests capture stderr to parse the JSON receipt, that
+  warning landed inside an unrelated test's captured stream and broke the parse,
+  so the failure surfaced in a CLI test with nothing to do with the leak. The
+  temp dirs are now cleaned deterministically and `run_cli` suppresses
+  `ResourceWarning` for its capture window.
 
-  Fail-closed was chosen deliberately over the alternatives you listed.
-  Suppressing the edge hands the reader a quietly smaller graph; normalizing the
-  partial side away inside `_edge_evidence` discards a citation the reader may
-  be entitled to see. `SUBSTANTIVE_SIDE_LEAVES` was deliberately NOT relaxed —
-  that would reopen `recallweave-6j3`, which you did not ask for.
+- **Medium — the partition was proved over one corpus.** Confirmed
+  (`recallweave-e1y`): a minimal but publicly constructible document left
+  `acceptance_criteria[]`, `connections[]`, `constraints[]`,
+  `prior_decisions[]` and `retrieved_context[]` in neither inventory. The
+  partition now runs over five public builder shapes under an explicit rule — a
+  collection CONTAINER is not a leaf, its item fields are, so a bare `X[]`
+  survives only when it is a scalar collection whose own name is the field. The
+  test also proves the empty-collection case is actually exercised, so the shape
+  list cannot be narrowed back and pass for the wrong reason.
 
-- **Medium — the omitted-field inventory was incomplete, and by more than you
-  found** (`recallweave-3xl`). You named four connection-evidence fields. The
-  real count was twenty-one unclassified canonical leaves out of thirty-one
-  omitted: also `constraints[]` and `prior_decisions[]`
-  relative_path/passage/truncated, `handling.content_is_data_not_instructions`,
-  all five `disclosure` fields, and five `provenance` fields.
+- **Medium — the list probes could not detect a truthiness read.** Confirmed and
+  reproduced exactly as you described: leaking
+  `retrieved_context[].matched_terms` truthiness left the invariance proof
+  passing. Probes now span several values varying cardinality and falsiness
+  (lists empty/one/two, integers including `0`, strings including `""`) and the
+  test compares every rendering rather than a pair. Four leak classes —
+  truthiness, length, string emptiness, integer zero-ness — are each
+  mutation-proven to fail now; none of them failed before.
 
-  The projected and omitted sets are now an EXHAUSTIVE PARTITION, enforced
-  against a document the public builder produced over a corpus carrying both
-  connection evidence classes: disjoint, covering every canonical leaf, and
-  naming no leaf the document lacks. `_not_projected_path()` is generic over the
-  whole document instead of hard-asserting a `retrieved_context[].` prefix, and
-  `_not_projected_pair()` derives probe values from the type the populated
-  document actually carries, raising rather than falling back to an untyped
-  probe that would make the invariance proof vacuous.
-
-Also landed since cycle 14 was briefed: absence in the Markdown projection is
-now STRUCTURAL (`recallweave-4a6`) — a present field always renders a fenced
-block, an absent field renders its trusted label followed by the marker as a
-bare chrome line with no fence — which you assessed positively.
-
-Suite: 379 tests with the parser, `compileall` clean. Runtime dependencies are
-still empty; `mistletoe` remains test-only.
+Suite: 382 tests with the parser, stable across repeated runs, `compileall`
+clean. Runtime dependencies are still empty; `mistletoe` remains test-only.
 
 Attack hardest this cycle:
 
-1. **The fail-closed gate itself.** Is there any public path that reaches the
-   renderer with a connection the predicate would reject — a code path that
-   builds a document without going through `build_contract_document`, or a
-   connection admitted before the check? Is the error itself a disclosure
-   surface: does the message leak vault content or an excluded path? Note it
-   names `source_path` and `target_path`, which are note paths.
-2. **Whether the partition is real or merely asserted.** The canonical leaf set
-   is derived from ONE builder corpus. Find a document shape the public API can
-   produce whose leaves are not in that corpus, so a field could be omitted
-   without ever being classified.
-3. **Whether `_not_projected_pair()`'s type-derived probes are strong enough.**
-   A probe that both values render identically for the wrong reason would make
-   the invariance proof pass vacuously.
-4. **The structural-absence rule**, again and harder: any path where a
-   document-derived value reaches the output outside a fence, or where content
-   can synthesize a label line and thereby forge the label+bare-marker pair.
-5. Reassess every Critical and High from all fourteen cycles.
+1. **Whether the privacy fix is complete.** Are there OTHER error or diagnostic
+   paths in the contract flow that carry vault-derived content into a receipt,
+   a log or an exception message? Distinguish an operator's own selector echoed
+   back (their input, arguably fine) from vault content they never named.
+   `PRIVACY.md` now makes a positive claim about failure receipts — try to
+   falsify it.
+2. **Whether the edge id is truly non-content-bearing** in every reachable case,
+   and whether identifying an edge only by id leaves an operator genuinely able
+   to act.
+3. **The container-versus-scalar-collection rule.** Find a canonical shape where
+   it misclassifies: a collection that is empty in every shape tested, or a
+   scalar collection that acquires object elements later.
+4. **The probe derivation.** `_not_projected_values` reads the type from the
+   populated document. Find a field whose populated type is not the type the
+   builder can actually produce, so the probe is type-correct for the fixture
+   and wrong for reality.
+5. Reassess every Critical and High from all fifteen cycles, including whether
+   any earlier fix has been regressed by a later one — cycle 15 found exactly
+   that.
 <!-- CYCLE-CONTEXT-END -->
