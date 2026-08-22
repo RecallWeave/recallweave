@@ -95,36 +95,42 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your cycle-9 findings are fixed.
+Your cycle-10 findings are fixed.
 
-- **High — connection fields still collided.** Confirmed: `source "A
-target: X"`
-  / `target "B"` rendered byte-identically to `source "A"` / `target "X
-target: B"`.
-  You were right that the previous bead swept only the sections named in its
-  acceptance criteria; connections were missed because the criteria listed three
-  specific collisions instead of requiring a full sweep. Connection `source`,
-  `target`, `kind` and `verified` now each render in their own labelled fenced
-  block, and the collision pair renders differently. The worker also swept the
-  remaining sections for the same pattern.
+- **High — injectivity was still false, twice over.** You were right on both
+  counts. (1) *Conditional omission*: several projected fields were skipped when
+  falsey, so `None` and `""` rendered identically — `task.id`/`task.objective`,
+  `handling.statement`/`.scope`, `provenance.generated_at` and the index fields.
+  Every projected field now always renders its trusted label: an absent value
+  renders the trusted marker, an empty string renders an empty fenced block, and
+  the two never collapse. This was swept across acceptance criteria, exclusions
+  (including absent-vs-empty collections), and budget. (2) *Line-ending
+  normalization*: the renderer normalizes CRLF and bare CR to LF for fence
+  safety, so values differing only in line endings still render identically.
+  Normalization was kept — it is required for fence safety — and the claim was
+  narrowed honestly instead: injectivity holds **up to line-ending
+  normalization**, stated in `docs/task-contracts.md` and pinned by a test rather
+  than left as a false absolute.
 
-- **Medium — the injectivity claim exceeded what the renderer establishes.** You
-  were right and this mattered: the documentation claimed a change in *any* field
-  changes the projection, while the renderer deliberately omits connection
-  `score`, `evidence`, `evidence_class` and retrieved-context `title`, `status`,
-  `domain`, `verified`. Rather than rendering everything, the claim is now scoped
-  honestly: `docs/task-contracts.md` defines an explicit **projected field set**,
-  states which canonical fields are intentionally not projected and why, and
-  scopes injectivity to that set. `tests/test_contract_projection.py` pins the set
-  as `PROJECTED_FIELDS`, asserts a change in any of them changes the Markdown
-  (connections included), and asserts the documented set and the tested set cannot
-  drift. The CHANGELOG claim was corrected to match.
+- **Medium — the projection test proved influence, not injectivity.** It only
+  mutated populated values to `'CHANGED'`, establishing that each field matters
+  at one point. It now drives `None`-vs-empty-string for *every* projected field,
+  with line-ending variants as an explicitly documented exception.
 
-Suite: 351 tests with the parser, `compileall` clean.
+- **Cycle-10 connection evidence** (`evidence_class`, `score`, bounded
+  `evidence`) landed in the prior cycle and remains in place.
 
-Reassess every Critical and High from all nine cycles, plus: whether the
-projected-field set is honestly complete (any field a reader would reasonably
-expect the human artifact to carry that is silently absent), whether injectivity
-now holds over exactly that set, and whether per-field separation left any
-value-to-label attribution ambiguity anywhere.
+Suite: 356 tests with the parser, `compileall` clean.
+
+One judgement call to scrutinize rather than accept: a field whose key is
+entirely **absent from the document** still renders no block, while a key present
+with value `None` renders the marker. The worker preserved this to keep the
+empty-document and byte-identical golden outputs. Decide whether that is a
+defensible projection boundary or a remaining injectivity hole.
+
+Reassess every Critical and High from all ten cycles, plus: whether absence,
+emptiness and zero/false are now genuinely distinguishable everywhere a reader
+would need to tell them apart; whether the narrowed injectivity claim is stated
+precisely enough to be honest rather than merely hedged; and whether the
+projected field set is still complete after this sweep.
 <!-- CYCLE-CONTEXT-END -->
