@@ -95,55 +95,68 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both cycle-20 findings are fixed, and every one of your six suggested tests is
-in the suite. You were right that it was the fourth "one level below", and you
-were right that the suite was blessing a contradiction.
+Both cycle-21 findings are fixed. You could not write to a database from the
+sandbox, so all four of your scenarios were reproduced here first — every one
+of them exported cleanly, including the two severe ones.
 
-- **High — a discovery candidate's own evidence was unauthenticated**
-  (`recallweave-5vk`). Reproduced exactly: empty `shared_terms`, `[1, {"vault":
-  "secret"}]` silently filtered to `[]`, a single term, and two wholly
-  fabricated terms with `method` and `explanation` rewritten to `"forged"` all
-  exported and rendered like real candidates.
+- **High — the persisted edge record was unauthenticated** (`recallweave-o6r`).
+  Reproduced: an arbitrary score of 99.5 exported; `kind='human_verified'`
+  exported with the class unchanged; a hand-inserted `is_verified = 1` row with
+  empty evidence between two unlinked notes exported as an **authored,
+  verified** relationship; and rewriting every candidate as verified exported
+  them all as `authored_link`.
 
-  `shared_terms` must now be at least two non-empty strings, and every claimed
-  term must be one **both** endpoint notes carry in the index. The exporter does
-  NOT recompute the TF-IDF ranking — it checks the weaker, sufficient property
-  that the ranking is a selection FROM the shared vocabulary, which a fabricated
-  term cannot satisfy. The PERSISTED list is checked for non-string elements
-  directly, because `_edge_evidence`'s sanitizing turns corruption into a
-  well-typed empty list that a rule inspecting only the emitted list cannot see.
-  `method` and `explanation` are required and must be the indexer's own —
-  `explanation` is the standing warning that lexical overlap is not proof, so
-  rewriting or dropping it is a content change dressed as metadata.
+  The envelope is now declared as data (`AUTHORED_LINK_KINDS`, `CANDIDATE_KIND`,
+  `AUTHORED_EVIDENCE_MEMBERS`), the way the evidence applicability tables are,
+  and is validated BEFORE the payload so an edge's class is established before
+  anything is judged by class:
 
-- **Medium — the suite blessed a contradiction.** Corrected: `{"shared_terms":
-  []}` is no longer expected to be well formed. A drift check now builds a real
-  index and asserts its candidate edges carry exactly the declared constants and
-  at least two terms, so the exporter's constants cannot diverge from `index.py`.
+  - a candidate carries `kind = "discovery_candidate"`, `is_verified = 0` and a
+    finite cosine score in `(0, 1]`;
+  - an authored link carries a real link kind, `is_verified = 1`,
+    `score = 1.0`, and must **re-derive from the index** — its persisted
+    evidence names the link's line, source text and target; the source note must
+    really have an indexed section covering that line whose text contains that
+    source text; and the target must really resolve to the target note, by
+    normalized name or by path, the same two routes `_resolve_link` takes.
 
-Four mutations killed: removing the index authenticity check, removing the
-minimum-two-terms rule, dropping the `explanation` requirement, and removing the
-persisted-string faithfulness check.
+  Those three persisted members are never projected — `_edge_evidence`
+  whitelists them away, which is why an `authored_link` renders with empty
+  evidence — but they are what makes the link re-derivable, so they are
+  validated anyway.
 
-Suite: 401 tests with the parser, green under `-W error::ResourceWarning`;
+- **Medium — the documentation did not disclose what was unauthenticated.**
+  Fixed, and deliberately in the direction of disclosure rather than silence.
+  Josh's decision was envelope rules plus authored-link re-derivation, and NOT
+  full recomputation: the exporter does not re-run the TF-IDF cosine, the score
+  threshold, or the bounded top-per-note selection, because that duplicates
+  `index.py` inside the exporter and makes export time scale with index size.
+  `docs/task-contracts.md` now says so under its own heading: a candidate is
+  checked to be **shaped and evidenced like** one the indexer produces, not to
+  **be** one the indexer did produce.
+
+Four mutations killed: removing the envelope gate, removing the authored
+re-derivation, dropping the candidate kind/score rules, and removing the
+source-text containment check. A positive test proves a genuine index still
+exports BOTH evidence classes, so the rules are calibrated to the real producer
+rather than to the tests' idea of it. A subtest that would have silently skipped
+for want of an authored edge now runs against the fixture that has one.
+
+Suite: 404 tests with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies are still empty.
 
-This cycle decides promotion. Four consecutive cycles have found the next level
-down (15 after 14, 18 after 17, 19 after 18, 20 after 19), so the honest
-question is whether that sequence has converged.
+This cycle decides promotion.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
-   nothing blocks promotion, say so explicitly. If something does, name it and
-   its severity.
-2. Is there a fifth level? The candidate envelope and the evidence sides are now
-   both authenticated against the index. What remains unauthenticated —
-   `score`, `kind`, `verified`, the edge's very existence, the note-level
-   metadata retrieved context carries, the operator-supplied constraint and
-   decision citations?
-3. Keep hunting for rules that are real in the code but unenforced by the suite.
-   That class has produced a finding in four separate cycles.
+   nothing blocks promotion, say so explicitly.
+2. Judge the DECISION, not just the code: is "shaped and evidenced like a real
+   candidate, with the boundary documented" a defensible place to stop, or does
+   the artifact's own language still promise more than that? If the latter, the
+   fix may be wording rather than recomputation — say which.
+3. Five cycles have now found the next level down. If there is a sixth, name it.
+   If you believe the sequence has converged, say that too, and say why.
 4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
    `PRIVACY.md` and `CHANGELOG.md` against the code.
-5. Reassess every Critical and High from all twenty cycles and say which remain
-   closed.
+5. Reassess every Critical and High from all twenty-one cycles and say which
+   remain closed.
 <!-- CYCLE-CONTEXT-END -->
