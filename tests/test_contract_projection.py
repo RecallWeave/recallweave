@@ -809,6 +809,129 @@ def _not_projected_pair(field: str):
     return "value-A", "value-B"
 
 
+# Every projected collection whose element order the renderer must preserve:
+# the rendered sequence of elements must equal the document sequence. This is
+# the order-fidelity guarantee that recallweave-9ew.12 claimed but did not
+# enforce for exclusion collections.
+_ORDERED_COLLECTIONS = [
+    "exclusions.paths",
+    "exclusions.globs",
+    "exclusions.tags",
+    "exclusions.directives",
+    "acceptance_criteria",
+    "constraints",
+    "prior_decisions",
+    "retrieved_context",
+    "connections",
+    "provenance.citations",
+    "shared_terms",
+]
+
+
+def _set_collection(doc: dict, collection: str, elements: list[str]) -> None:
+    """Populate `collection` in `doc` with `elements` (each element's identity
+    value) in document order, leaving every other collection at a minimal valid
+    state. `elements` are placed as the distinguishing field the renderer emits
+    (paths/globs/tags/directives/citations verbatim, item collections as the
+    statement/passage/source), so their rendered positions reveal order."""
+    if collection == "exclusions.paths":
+        doc["exclusions"]["paths"] = list(elements)
+    elif collection == "exclusions.globs":
+        doc["exclusions"]["globs"] = list(elements)
+    elif collection == "exclusions.tags":
+        doc["exclusions"]["tags"] = list(elements)
+    elif collection == "exclusions.directives":
+        doc["exclusions"]["directives"] = list(elements)
+    elif collection == "acceptance_criteria":
+        doc["acceptance_criteria"] = [
+            {"id": f"AC{i}", "statement": v} for i, v in enumerate(elements, 1)
+        ]
+    elif collection in ("constraints", "prior_decisions"):
+        doc[collection] = [
+            {
+                "statement": v,
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            }
+            for v in elements
+        ]
+    elif collection == "retrieved_context":
+        doc["retrieved_context"] = [
+            {
+                "citation": f"RC{i}",
+                "passage": v,
+                "evidence_class": "lexical_match",
+                "relative_path": None,
+                "title": None,
+                "heading": None,
+                "line_start": i,
+                "line_end": i + 1,
+                "truncated": False,
+                "matched_terms": [],
+                "status": "active",
+                "domain": "g",
+                "verified": False,
+            }
+            for i, v in enumerate(elements, 1)
+        ]
+    elif collection == "connections":
+        doc["connections"] = [
+            {
+                "source": v,
+                "target": f"TGT{i}",
+                "kind": "edge",
+                "verified": True,
+                "score": 0.5,
+                "evidence_class": "ec",
+                "evidence": {
+                    "source_evidence": {
+                        "citation": f"sc{i}",
+                        "heading": f"sh{i}",
+                        "passage": f"sp{i}",
+                    },
+                    "target_evidence": {
+                        "citation": f"tc{i}",
+                        "heading": f"th{i}",
+                        "passage": f"tp{i}",
+                    },
+                    "shared_terms": [f"st{i}"],
+                },
+            }
+            for i, v in enumerate(elements, 1)
+        ]
+    elif collection == "provenance.citations":
+        doc["provenance"]["citations"] = list(elements)
+    elif collection == "shared_terms":
+        doc["connections"] = [
+            {
+                "source": "S1",
+                "target": "T1",
+                "kind": "edge",
+                "verified": True,
+                "score": 0.5,
+                "evidence_class": "ec",
+                "evidence": {
+                    "source_evidence": {
+                        "citation": "sc",
+                        "heading": "sh",
+                        "passage": "sp",
+                    },
+                    "target_evidence": {
+                        "citation": "tc",
+                        "heading": "th",
+                        "passage": "tp",
+                    },
+                    "shared_terms": list(elements),
+                },
+            }
+        ]
+    else:
+        raise AssertionError(f"unknown ordered collection {collection!r}")
+
+
 def _documented_not_projected_fields() -> list[str]:
     """Parse the 'not projected' statement in docs/task-contracts.md and return
     the canonical field names the documentation claims are deliberately omitted
@@ -1047,6 +1170,43 @@ class InjectivityTest(unittest.TestCase):
             sorted(PROJECTED_FIELDS),
             "documented projected field set must match PROJECTED_FIELDS",
         )
+
+    def test_projected_collections_render_in_document_order(self) -> None:
+        # Order fidelity: for every projected collection, the rendered sequence
+        # of elements must equal the document sequence — not merely that each
+        # element appears somewhere. For each collection, render a document
+        # whose elements carry distinct identity values and assert those values
+        # appear in the Markdown in increasing (document) order. A renderer that
+        # reverses a collection's order would put them out of order and fail.
+        for collection in _ORDERED_COLLECTIONS:
+            with self.subTest(collection=collection):
+                identities = [f"ORD-{collection}-{i}" for i in range(1, 4)]
+                doc = _populated_projected()
+                _set_collection(doc, collection, identities)
+                rendered = render_contract_markdown(doc)
+                positions = [rendered.index(v) for v in identities]
+                self.assertEqual(
+                    positions,
+                    sorted(positions),
+                    f"collection {collection!r} rendered out of document order",
+                )
+
+    def test_projected_collection_multiplicity_is_preserved(self) -> None:
+        # Multiplicity: a collection with repeated identical elements must emit
+        # each of them, so a renderer that drops or duplicates elements is
+        # caught. For each projected collection, place the same identity value
+        # three times and assert it appears exactly three times in the output.
+        for collection in _ORDERED_COLLECTIONS:
+            with self.subTest(collection=collection):
+                marker = f"DUP-{collection}-marker"
+                doc = _populated_projected()
+                _set_collection(doc, collection, [marker, marker, marker])
+                rendered = render_contract_markdown(doc)
+                self.assertEqual(
+                    rendered.count(marker),
+                    3,
+                    f"collection {collection!r} multiplicity not preserved",
+                )
 
     def test_docs_scope_injectivity_to_projected_fields(self) -> None:
         # The documentation must scope injectivity to the projected field set,
