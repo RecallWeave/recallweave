@@ -1,0 +1,49 @@
+{
+  "spec_version": "recallweave.contract.spec.v1",
+  "task_id": "growth-atlas-refresh",
+  "objective": "Refresh the growth operating system: name the current binding constraint, confirm the weekly review cadence, and record the decision rules that gate reversible experiments.",
+  "retrieval": {
+    "query": "binding constraint reversible experiment weekly review decision owner",
+    "limit": 6,
+    "include_candidates": false,
+    "max_characters": 6000
+  },
+  "constraints": [
+    {
+      "text": "Prefer reversible experiments with a named decision owner before adding activity."
+    },
+    {
+      "note": "Projects/Decision Memory.md",
+      "heading": "Purpose",
+      "statement": "A decision without a review trigger becomes institutional fog."
+    }
+  ],
+  "prior_decisions": [
+    {
+      "note": "Projects/Decision Memory.md",
+      "heading": "Purpose"
+    },
+    {
+      "note": "Operations/Review Cadence.md",
+      "heading": "Weekly review"
+    }
+  ],
+  "acceptance_criteria": [
+    "The current binding constraint is named from Growth Atlas.",
+    "The weekly review cadence and its steps are stated from Review Cadence.",
+    "The decision rules recorded in Decision Memory are reproduced with citations."
+  ],
+  "exclusions": {
+    "paths": [],
+    "globs": [
+      "Restricted/**"
+    ],
+    "tags": [
+      "private"
+    ],
+    "directives": [
+      "Do not infer client identity."
+    ]
+  },
+  "notes": "Worked example: build against examples/synthetic-vault as shipped. Restricted/** is excluded to demonstrate fail-closed enforcement; any note item that resolves there is a hard error, not a silent drop."
+}
