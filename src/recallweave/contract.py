@@ -667,6 +667,7 @@ def _resolve_item(
             "relative_path": None,
             "passage": None,
             "truncated": statement_truncated,
+            "passage_truncated": None,
         }
 
     note_id = _resolve_note(connection, ref.note)
@@ -706,20 +707,43 @@ def _resolve_item(
         sanitize(str(chosen["text"])), MAX_PASSAGE_CHARACTERS
     )
     citation = f"{relative_path}:{chosen['line_start']}-{chosen['line_end']}"
+    # evidence_class describes the ORIGIN of `statement`, never whether a
+    # citation happens to be attached to it (recallweave-nv0).
+    #
+    # An operator who names a note may also supply their own wording. That
+    # wording is theirs: the vault does not contain it, and labelling the item
+    # `cited_passage` presented an operator's sentence as quoted evidence. The
+    # statement stays `authored_by_operator`, and the citation and passage
+    # travel beside it as SUPPORT, in their own fields, so a reader can see both
+    # what was asserted and what the cited lines actually say.
+    #
+    # Nothing here judges whether the passage supports the statement. Semantic
+    # support is not decidable at this layer, and an evidence model that
+    # pretended otherwise would be asserting something it cannot check. The
+    # projection shows both and attributes each to its author; the reader draws
+    # the conclusion.
     if ref.statement is not None:
         statement, statement_truncated = bounded(
             sanitize(ref.statement), MAX_STATEMENT_CHARACTERS
         )
+        evidence_class = "authored_by_operator"
     else:
         statement = passage
         statement_truncated = passage_truncated
+        evidence_class = "cited_passage"
     return {
         "statement": statement,
-        "evidence_class": "cited_passage",
+        "evidence_class": evidence_class,
         "citation": citation,
         "relative_path": relative_path,
         "passage": passage,
-        "truncated": statement_truncated or passage_truncated,
+        # `truncated` describes the STATEMENT; `passage_truncated` describes the
+        # supporting passage. Folding them into one flag hid which text was
+        # shortened, and a shortened passage with no flag of its own is the same
+        # false claim by silence that recallweave-zwj closed for connection
+        # evidence.
+        "truncated": statement_truncated,
+        "passage_truncated": passage_truncated,
     }
 
 

@@ -200,16 +200,27 @@ def _render_cited_items(
         if not isinstance(item, dict):
             continue
         # One fenced block PER field, each preceded by its own trusted label:
-        # statement, citation, and evidence_class never share a fence, so an
-        # operator-authored statement carrying the citation's bytes cannot
-        # render byte-identically to a cited statement carrying them. No inline
-        # code span. An absent field renders the explicit trusted marker.
+        # statement, citation, evidence class and supporting passage never share
+        # a fence, so an operator-authored statement carrying the citation's
+        # bytes cannot render byte-identically to a cited statement carrying
+        # them. No inline code span. An absent field renders the explicit
+        # trusted marker.
+        #
+        # The SUPPORTING PASSAGE is projected under its own label because
+        # omitting it implied an equivalence that does not hold
+        # (recallweave-nv0): an operator may cite a note and write their own
+        # statement, and a reader who is shown that statement, a real citation
+        # and an evidence class -- but never the cited lines -- cannot tell the
+        # assertion from the evidence. Showing both, each attributed, is the
+        # whole point; the renderer draws no conclusion about whether one
+        # supports the other.
         base = f"{label} {index}"
         lines.extend(_field(f"{base} statement:", item.get("statement")))
         lines.extend(_field(f"{base} citation:", item.get("citation")))
         lines.extend(
             _field(f"{base} evidence class:", item.get("evidence_class"))
         )
+        lines.extend(_field(f"{base} supporting passage:", item.get("passage")))
     return lines or None
 
 

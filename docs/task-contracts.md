@@ -190,8 +190,32 @@ shortened passage sets `truncated` to `true`.
 
 Each item carries `statement`, `evidence_class`
 (`"authored_by_operator"` or `"cited_passage"`), `citation`, `relative_path`,
-`passage`, and `truncated`. A `cited_passage` item has a resolving citation and
-passage; an `authored_by_operator` item has `null` citation, path, and passage.
+`passage`, `truncated`, and `passage_truncated`.
+
+`evidence_class` describes **who wrote the statement**, not whether a citation
+happens to be attached to it:
+
+- `cited_passage` — the statement **is** the source-derived passage text,
+  copied from the cited section. `statement` and `passage` are equal by
+  construction.
+- `authored_by_operator` — the statement is the operator's own wording. It
+  keeps this class **even when the operator also named a note**, because the
+  vault does not contain that wording. The citation and passage then travel
+  beside it as **support**, in their own fields.
+
+So an `authored_by_operator` item may carry a citation and a passage; only an
+item the operator wrote with no note selector has `null` citation, path, and
+passage. `truncated` describes the **statement**; `passage_truncated`
+describes the supporting passage, so a shortened passage is never left without
+a flag of its own.
+
+The projection **shows both texts, each attributed**, and draws no conclusion
+about whether one supports the other. Whether a cited passage actually supports
+an operator's assertion is not decidable here, and an evidence model that
+claimed to decide it would be asserting something it cannot check. Presenting
+the operator's sentence under `cited_passage` — as this did before
+`recallweave-nv0` — made exactly that claim by mislabelling, and omitting the
+passage from the human projection made it again by implication.
 
 ### `acceptance_criteria`
 
@@ -345,9 +369,11 @@ names and assert the documentation agrees with them, so the two cannot drift.
 - `constraints[].statement`
 - `constraints[].citation`
 - `constraints[].evidence_class`
+- `constraints[].passage`
 - `prior_decisions[].statement`
 - `prior_decisions[].citation`
 - `prior_decisions[].evidence_class`
+- `prior_decisions[].passage`
 - `retrieved_context[].citation`
 - `retrieved_context[].passage`
 - `retrieved_context[].evidence_class`
@@ -401,11 +427,11 @@ without being classified as projected or omitted, and no field can be quietly
 omitted without appearing here. The omitted fields are:
 
 - `constraints[].relative_path`
-- `constraints[].passage`
 - `constraints[].truncated`
+- `constraints[].passage_truncated`
 - `prior_decisions[].relative_path`
-- `prior_decisions[].passage`
 - `prior_decisions[].truncated`
+- `prior_decisions[].passage_truncated`
 - `retrieved_context[].relative_path`
 - `retrieved_context[].title`
 - `retrieved_context[].heading`

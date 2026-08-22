@@ -43,7 +43,16 @@ holds. The exporter reads the index, never the vault, so `network_calls` and
 how old that snapshot is. A contract inherits the existing evidence
 classes (`authored_by_operator`, `cited_passage`, `lexical_match`,
 `authored_link`, `discovery_candidate`) rather than inventing new ones, and
-RecallWeave never infers that a passage is a constraint or a decision. The
+RecallWeave never infers that a passage is a constraint or a decision.
+
+An evidence class names the **origin** of the text it labels, never the
+strength of the support attached to it. A statement the operator wrote is
+`authored_by_operator` even when the operator also cited a note; the citation
+and passage then travel beside it as support, in their own fields, and the
+human projection shows both, each attributed. Only a statement that IS the
+source-derived passage is `cited_passage`. RecallWeave does not judge whether a
+cited passage supports an operator's assertion — that is not decidable here,
+and a model that claimed to decide it would assert something it cannot check. The
 private broker remains responsible for identity, authorization, and redaction;
 exclusions in a spec are a second boundary behind the index policy's
 `include_paths` allowlist, never an authorization boundary on their own.

@@ -15,6 +15,15 @@
   thirty-one omitted fields, driving each to several values that vary
   cardinality and falsiness so a renderer reading only a length, a truthiness
   or an emptiness is caught;
+- task contract evidence classes name the **origin** of a statement, not the
+  presence of a citation: an operator's own wording stays
+  `authored_by_operator` even when the operator cited a note, and only a
+  statement that IS the cited passage is `cited_passage`. The citation and
+  passage travel beside an operator statement as support, the Markdown
+  projection now shows that supporting passage under its own label instead of
+  omitting it, and `truncated` and `passage_truncated` say separately which
+  text was shortened. Nothing infers whether a passage supports a statement;
+  both are shown and each is attributed;
 - `contract` authenticates the persisted edge record, not only its evidence: a
   candidate must carry the candidate kind, an unset verification flag and a
   cosine score in range, and an authored link must carry a real link kind, a

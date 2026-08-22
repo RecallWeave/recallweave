@@ -58,14 +58,16 @@ def _constraint_item(
     statement: str,
     evidence_class: str,
     citation=None,
+    passage=None,
 ) -> dict:
     return {
         "statement": statement,
         "evidence_class": evidence_class,
         "citation": citation,
         "relative_path": None,
-        "passage": None,
+        "passage": passage,
         "truncated": False,
+        "passage_truncated": None if passage is None else False,
     }
 
 
@@ -162,9 +164,11 @@ PROJECTED_FIELDS = [
     "constraints[].statement",
     "constraints[].citation",
     "constraints[].evidence_class",
+    "constraints[].passage",
     "prior_decisions[].statement",
     "prior_decisions[].citation",
     "prior_decisions[].evidence_class",
+    "prior_decisions[].passage",
     "retrieved_context[].citation",
     "retrieved_context[].passage",
     "retrieved_context[].evidence_class",
@@ -242,6 +246,7 @@ def _populated_projected() -> dict:
             "relative_path": "Projects/Constraint.md",
             "passage": "cpas",
             "truncated": False,
+            "passage_truncated": False,
         }
     ]
     document["prior_decisions"] = [
@@ -252,6 +257,7 @@ def _populated_projected() -> dict:
             "relative_path": "Projects/Decision.md",
             "passage": "ppas",
             "truncated": False,
+            "passage_truncated": False,
         }
     ]
     document["retrieved_context"] = [
@@ -355,12 +361,16 @@ def _mutate(doc: dict, name: str) -> dict:
         doc["constraints"][0]["citation"] = "CHANGED"
     elif name == "constraints[].evidence_class":
         doc["constraints"][0]["evidence_class"] = "CHANGED"
+    elif name == "constraints[].passage":
+        doc["constraints"][0]["passage"] = "CHANGED"
     elif name == "prior_decisions[].statement":
         doc["prior_decisions"][0]["statement"] = "CHANGED"
     elif name == "prior_decisions[].citation":
         doc["prior_decisions"][0]["citation"] = "CHANGED"
     elif name == "prior_decisions[].evidence_class":
         doc["prior_decisions"][0]["evidence_class"] = "CHANGED"
+    elif name == "prior_decisions[].passage":
+        doc["prior_decisions"][0]["passage"] = "CHANGED"
     elif name == "retrieved_context[].citation":
         doc["retrieved_context"][0]["citation"] = "CHANGED"
     elif name == "retrieved_context[].passage":
@@ -452,12 +462,16 @@ def _set(doc: dict, name: str, value) -> dict:
         doc["constraints"][0]["citation"] = value
     elif name == "constraints[].evidence_class":
         doc["constraints"][0]["evidence_class"] = value
+    elif name == "constraints[].passage":
+        doc["constraints"][0]["passage"] = value
     elif name == "prior_decisions[].statement":
         doc["prior_decisions"][0]["statement"] = value
     elif name == "prior_decisions[].citation":
         doc["prior_decisions"][0]["citation"] = value
     elif name == "prior_decisions[].evidence_class":
         doc["prior_decisions"][0]["evidence_class"] = value
+    elif name == "prior_decisions[].passage":
+        doc["prior_decisions"][0]["passage"] = value
     elif name == "retrieved_context[].citation":
         doc["retrieved_context"][0]["citation"] = value
     elif name == "retrieved_context[].passage":
@@ -551,12 +565,16 @@ def _remove(doc: dict, name: str) -> dict:
         del doc["constraints"][0]["citation"]
     elif name == "constraints[].evidence_class":
         del doc["constraints"][0]["evidence_class"]
+    elif name == "constraints[].passage":
+        del doc["constraints"][0]["passage"]
     elif name == "prior_decisions[].statement":
         del doc["prior_decisions"][0]["statement"]
     elif name == "prior_decisions[].citation":
         del doc["prior_decisions"][0]["citation"]
     elif name == "prior_decisions[].evidence_class":
         del doc["prior_decisions"][0]["evidence_class"]
+    elif name == "prior_decisions[].passage":
+        del doc["prior_decisions"][0]["passage"]
     elif name == "retrieved_context[].citation":
         del doc["retrieved_context"][0]["citation"]
     elif name == "retrieved_context[].passage":
@@ -640,9 +658,11 @@ _EMPTY: dict[str, object] = {
     "constraints[].statement": "",
     "constraints[].citation": "",
     "constraints[].evidence_class": "",
+    "constraints[].passage": "",
     "prior_decisions[].statement": "",
     "prior_decisions[].citation": "",
     "prior_decisions[].evidence_class": "",
+    "prior_decisions[].passage": "",
     "retrieved_context[].citation": "",
     "retrieved_context[].passage": "",
     "retrieved_context[].evidence_class": "",
@@ -715,12 +735,16 @@ def _projected_path(name: str) -> tuple[str, ...]:
         return ("constraints", 0, "citation")
     if name == "constraints[].evidence_class":
         return ("constraints", 0, "evidence_class")
+    if name == "constraints[].passage":
+        return ("constraints", 0, "passage")
     if name == "prior_decisions[].statement":
         return ("prior_decisions", 0, "statement")
     if name == "prior_decisions[].citation":
         return ("prior_decisions", 0, "citation")
     if name == "prior_decisions[].evidence_class":
         return ("prior_decisions", 0, "evidence_class")
+    if name == "prior_decisions[].passage":
+        return ("prior_decisions", 0, "passage")
     if name == "retrieved_context[].citation":
         return ("retrieved_context", 0, "citation")
     if name == "retrieved_context[].passage":
@@ -1516,9 +1540,11 @@ class StrengthenedProjectionCompletenessTest(unittest.TestCase):
                 "Constraint 1 statement",
                 "Constraint 1 citation",
                 "Constraint 1 evidence class",
+                "Constraint 1 supporting passage",
                 "Constraint 2 statement",
                 "Constraint 2 citation",
                 "Constraint 2 evidence class",
+                "Constraint 2 supporting passage",
             ],
         )
         # Acceptance id precedes its statement within each item.

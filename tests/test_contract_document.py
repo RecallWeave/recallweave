@@ -19,6 +19,7 @@ from recallweave.contract import (
     build_contract_document,
     connection_evidence_is_well_formed,
 )
+from recallweave.contract_markdown import render_contract_markdown
 from recallweave.contract_spec import TaskSpec
 from recallweave.contract_text import (
     MAX_PASSAGE_CHARACTERS,
@@ -228,6 +229,10 @@ class ContractDocumentTest(unittest.TestCase):
                     "heading": "Background",
                     "statement": "Alpha is the canonical source.",
                 },
+                # No operator statement, so the statement IS the cited passage.
+                # The fixture must exercise BOTH evidence classes now that a
+                # note selector alone no longer implies `cited_passage`.
+                {"note": "Projects/Beta.md", "heading": "Background"},
             ],
             "prior_decisions": [
                 {"text": "Retain only verified evidence."},
@@ -267,13 +272,28 @@ class ContractDocumentTest(unittest.TestCase):
         )
         self.assertEqual(
             set(document["constraints"][0]),
-            {"statement", "evidence_class", "citation", "relative_path", "passage", "truncated"},
+            {
+                "statement",
+                "evidence_class",
+                "citation",
+                "relative_path",
+                "passage",
+                "truncated",
+                "passage_truncated",
+            },
         )
         self.assertEqual(
             document["constraints"][0]["evidence_class"], "authored_by_operator"
         )
+        # A note selector CARRYING an operator statement stays operator-authored
+        # (recallweave-nv0); only a selector with no statement is a cited
+        # passage.
         self.assertEqual(
-            document["constraints"][1]["evidence_class"], "cited_passage"
+            document["constraints"][1]["evidence_class"], "authored_by_operator"
+        )
+        self.assertIsNotNone(document["constraints"][1]["citation"])
+        self.assertEqual(
+            document["constraints"][2]["evidence_class"], "cited_passage"
         )
         self.assertEqual(document["prior_decisions"][0]["evidence_class"], "authored_by_operator")
         self.assertTrue(all(rc["evidence_class"] == "lexical_match" for rc in document["retrieved_context"]))
@@ -772,6 +792,190 @@ class ContractDocumentTest(unittest.TestCase):
         }
         self.assertTrue(connection_evidence_is_well_formed(real))
 
+    def _gloss_vault(self):
+        """A vault whose section says something an operator gloss could easily
+        contradict, so the two are never confusable in a test."""
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "Notes.md").write_text(
+            "---\ntitle: Notes\n---\n# Notes\n\n## Background\n\n"
+            "We evaluated three vendors and picked none of them yet.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        return vault, database
+
+    def _gloss_spec(self, **overrides) -> TaskSpec:
+        payload = {
+            "objective": "gloss test",
+            "retrieval": {"query": "vendors", "limit": 8, "max_characters": 5000},
+            "constraints": [
+                {
+                    "note": "Notes.md",
+                    "heading": "Background",
+                    "statement": "This architecture decision was approved.",
+                }
+            ],
+            "prior_decisions": [
+                {
+                    "note": "Notes.md",
+                    "heading": "Background",
+                    "statement": "Legal signed off on the acquisition.",
+                }
+            ],
+            "acceptance_criteria": [],
+            "exclusions": {"paths": [], "globs": [], "tags": [], "directives": []},
+        }
+        payload.update(overrides)
+        return TaskSpec.from_payload(payload)
+
+    def test_an_operator_gloss_is_never_classified_as_a_cited_passage(self) -> None:
+        # FAIL-FIRST (recallweave-nv0). evidence_class must describe WHO WROTE
+        # the statement, not whether a citation happens to be attached. The
+        # builder used to copy an operator's gloss into `statement` and then
+        # label the whole item `cited_passage`, so an operator sentence the
+        # vault never contains was presented as quoted evidence. That blurs
+        # authored assertion and cited evidence, which is the boundary this
+        # project exists to keep visible.
+        #
+        # Nothing here checks that the passage SUPPORTS the gloss. Semantic
+        # support is not decidable at this layer and the evidence model must not
+        # pretend otherwise; the fix is to label the statement by its origin and
+        # to carry the passage separately as support.
+        _vault, database = self._gloss_vault()
+        document = build_contract_document(database, self._gloss_spec())
+        for name in ("constraints", "prior_decisions"):
+            with self.subTest(collection=name):
+                item = document[name][0]
+                self.assertEqual(
+                    item["evidence_class"],
+                    "authored_by_operator",
+                    "an operator-written statement stays operator-authored even "
+                    "when a citation is attached to it",
+                )
+                # The support is still carried, and it is the vault's text.
+                self.assertIsNotNone(item["citation"])
+                self.assertIn("vendors", item["passage"])
+                self.assertNotEqual(item["statement"], item["passage"])
+
+    def test_cited_passage_statements_are_copied_from_the_cited_passage(self) -> None:
+        # FAIL-FIRST (recallweave-nv0). The positive half: a `cited_passage`
+        # item's statement must BE the source-derived passage text, not merely
+        # be accompanied by one. This is what makes the label mean something.
+        _vault, database = self._gloss_vault()
+        spec = self._gloss_spec(
+            constraints=[{"note": "Notes.md", "heading": "Background"}],
+            prior_decisions=[{"note": "Notes.md", "heading": "Background"}],
+        )
+        document = build_contract_document(database, spec)
+        for name in ("constraints", "prior_decisions"):
+            with self.subTest(collection=name):
+                item = document[name][0]
+                self.assertEqual(item["evidence_class"], "cited_passage")
+                self.assertEqual(item["statement"], item["passage"])
+        # And over EVERY shape the builder can produce, the invariant holds in
+        # both directions.
+        for shape in (self._gloss_spec(), spec):
+            document = build_contract_document(database, shape)
+            for name in ("constraints", "prior_decisions"):
+                for item in document[name]:
+                    if item["evidence_class"] == "cited_passage":
+                        self.assertEqual(item["statement"], item["passage"])
+                    else:
+                        self.assertEqual(
+                            item["evidence_class"], "authored_by_operator"
+                        )
+
+    def test_statement_and_passage_carry_separate_truncation_flags(self) -> None:
+        # Separating authorship from support means separating their truncation
+        # flags too. One combined flag could not say WHICH text was shortened,
+        # and a shortened supporting passage with no flag of its own is the same
+        # false claim by silence that recallweave-zwj closed for connection
+        # evidence. Drive a SHORT operator gloss beside a LONG supporting
+        # passage so the two flags must disagree.
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        long_body = ("vendors evaluated at length " * 40).strip()
+        self.assertGreater(len(long_body), MAX_PASSAGE_CHARACTERS)
+        (vault / "Notes.md").write_text(
+            f"---\ntitle: Notes\n---\n# Notes\n\n## Background\n\n{long_body}\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "truncation split",
+                "retrieval": {
+                    "query": "vendors", "limit": 8, "max_characters": 50000
+                },
+                "constraints": [
+                    {
+                        "note": "Notes.md",
+                        "heading": "Background",
+                        "statement": "Short gloss.",
+                    }
+                ],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                },
+            }
+        )
+        item = build_contract_document(database, spec)["constraints"][0]
+        self.assertEqual(item["evidence_class"], "authored_by_operator")
+        self.assertFalse(
+            item["truncated"], "the short statement was not shortened"
+        )
+        self.assertTrue(
+            item["passage_truncated"],
+            "the long supporting passage WAS shortened and must say so",
+        )
+
+    def test_markdown_exposes_the_cited_passage_separately_from_the_statement(self) -> None:
+        # FAIL-FIRST (recallweave-nv0). The human projection omitted
+        # constraints[].passage entirely, so a reader saw the operator's
+        # sentence, a real citation and the evidence class -- and never the
+        # passage that the citation actually points at. Implying equivalence by
+        # omission is the same defect as asserting it.
+        _vault, database = self._gloss_vault()
+        document = build_contract_document(database, self._gloss_spec())
+        rendered = render_contract_markdown(document)
+        self.assertIn("Constraint 1 supporting passage:", rendered)
+        self.assertIn("Prior decision 1 supporting passage:", rendered)
+        # The vault's actual words reach the reader...
+        self.assertIn("We evaluated three vendors", rendered)
+        # ...under their own label, in their own fence, never merged with the
+        # operator's statement.
+        self.assertIn(
+            "Constraint 1 statement:\n```text\n"
+            "This architecture decision was approved.\n```",
+            rendered,
+        )
+        self.assertIn(
+            "Constraint 1 supporting passage:\n```text\n"
+            "We evaluated three vendors and picked none of them yet.\n```",
+            rendered,
+        )
+
     def test_cited_passage_citation_resolves_to_physical_lines(self) -> None:
         document = build_contract_document(self.database, self._full_spec())
         cited = next(
@@ -785,20 +989,67 @@ class ContractDocumentTest(unittest.TestCase):
         recomputed = "\n".join(physical_lines[start - 1 : end])
         self.assertEqual(recomputed, cited["passage"])
         self.assertEqual(cited["relative_path"], path)
-        self.assertEqual(cited["statement"], "Alpha is the canonical source.")
+        # A cited_passage statement IS the cited text (recallweave-nv0), so the
+        # statement must equal the lines the citation resolves to. Asserting a
+        # particular operator sentence here, as this used to, was pinning the
+        # very conflation the authorship model removes.
+        self.assertEqual(cited["statement"], recomputed)
+
+    def test_an_operator_glossed_item_keeps_its_support_resolvable(self) -> None:
+        # The operator-authored item that CARRIES a citation must still have
+        # support that resolves to physical lines. Reclassifying it must not
+        # quietly downgrade the evidence it travels with.
+        document = build_contract_document(self.database, self._full_spec())
+        glossed = next(
+            item
+            for item in document["constraints"]
+            if item["evidence_class"] == "authored_by_operator"
+            and item["citation"] is not None
+        )
+        path, line_range = glossed["citation"].rsplit(":", 1)
+        start, end = (int(part) for part in line_range.split("-"))
+        physical_lines = (self.vault / path).read_text(encoding="utf-8").split("\n")
+        self.assertEqual(
+            "\n".join(physical_lines[start - 1 : end]), glossed["passage"]
+        )
+        self.assertEqual(glossed["statement"], "Alpha is the canonical source.")
+        self.assertNotEqual(glossed["statement"], glossed["passage"])
 
     def test_authored_and_cited_evidence_class_discipline(self) -> None:
+        # The discipline under the authorship model (recallweave-nv0):
+        # `cited_passage` means the statement IS the cited text, so it must
+        # equal the passage. `authored_by_operator` means the operator wrote it,
+        # and support is optional -- but citation, path and passage travel
+        # TOGETHER, so a citation never appears without the text it points at.
         document = build_contract_document(self.database, self._full_spec())
+        classes = set()
         for item in document["constraints"] + document["prior_decisions"]:
-            if item["evidence_class"] == "authored_by_operator":
-                self.assertIsNone(item["citation"])
-                self.assertIsNone(item["relative_path"])
-                self.assertIsNone(item["passage"])
-                self.assertFalse(item["truncated"])
-            else:
+            classes.add(item["evidence_class"])
+            if item["evidence_class"] == "cited_passage":
                 self.assertIsNotNone(item["citation"])
                 self.assertIsNotNone(item["relative_path"])
                 self.assertIsNotNone(item["passage"])
+                self.assertEqual(item["statement"], item["passage"])
+            else:
+                self.assertEqual(item["evidence_class"], "authored_by_operator")
+                support = (
+                    item["citation"],
+                    item["relative_path"],
+                    item["passage"],
+                )
+                self.assertIn(
+                    sum(part is None for part in support),
+                    (0, 3),
+                    "citation, path and passage must be all present or all "
+                    f"absent, got {support!r}",
+                )
+                if item["passage"] is not None:
+                    self.assertNotEqual(item["statement"], item["passage"])
+        self.assertEqual(
+            classes,
+            {"authored_by_operator", "cited_passage"},
+            "the fixture must exercise both evidence classes",
+        )
 
     def test_excluded_note_absent_from_whole_document(self) -> None:
         spec = self._full_spec(
