@@ -234,6 +234,11 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
         for item in constraints + prior_decisions:
             if item["passage"] is not None:
                 used += len(item["passage"])
+        if used > spec.max_characters:
+            raise ValueError(
+                "Cited passages plus operator text exceed the character budget "
+                f"({spec.max_characters}); increase retrieval.max_characters."
+            )
 
         retrieved_context: list[dict[str, Any]] = []
         seed_ids: list[int] = []
