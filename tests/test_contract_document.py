@@ -937,6 +937,59 @@ class ContractDocumentTest(unittest.TestCase):
                         f"builder returned malformed connection: {conn!r}",
                     )
 
+    def test_one_malformed_edge_among_several_aborts_the_whole_export(self) -> None:
+        # The reviewer asked what happens when ONE edge is malformed among
+        # several: reject the export, or discard that edge and account for it?
+        # The documented answer is FAIL CLOSED for the whole export, so pin it
+        # rather than leaving the behaviour unspecified. A partial export that
+        # silently omitted the bad edge would hand the reader a quietly smaller
+        # graph with no way to know a connection was dropped.
+        _vault, database = self._build_vault_index()
+        import sqlite3
+
+        with sqlite3.connect(str(database)) as connection:
+            rows = connection.execute("SELECT id FROM edges").fetchall()
+            self.assertGreater(
+                len(rows), 1, "this corpus must produce several edges"
+            )
+            connection.execute(
+                "UPDATE edges SET evidence_json = ? WHERE id = ?",
+                (
+                    json.dumps(
+                        {
+                            "source_evidence": {"citation": "Alpha.md:1-2"},
+                            "shared_terms": ["zephyr"],
+                        }
+                    ),
+                    rows[-1][0],
+                ),
+            )
+        with self.assertRaises(ValueError):
+            build_contract_document(database, self._evidence_spec())
+
+    def test_malformed_edge_cannot_hide_behind_the_character_budget(self) -> None:
+        # Validation runs BEFORE the budget check, so a malformed edge cannot
+        # escape it by being too expensive to admit. Drive the budget down to
+        # the point where connections are budget-truncated and confirm the
+        # malformed edge still raises rather than being silently skipped by the
+        # `break`. Without the ordering this is exactly how a corrupt edge would
+        # slip through: never admitted, therefore never validated, and the
+        # export would succeed while an operator's index stayed silently broken.
+        _vault, database = self._build_vault_index()
+        self._rewrite_edge_evidence(
+            database,
+            {
+                "source_evidence": {"citation": "Alpha.md:1-2"},
+                "shared_terms": ["zephyr"],
+            },
+        )
+        for max_characters in (1, 50, 200):
+            with self.subTest(max_characters=max_characters):
+                with self.assertRaises(ValueError):
+                    build_contract_document(
+                        database, self._evidence_spec(max_characters=max_characters)
+                    )
+
     def test_well_formed_persisted_evidence_still_exports(self) -> None:
         # The fail-closed gate must not reject a healthy index. A freshly built
         # index exports connections, and each one passes the predicate.
