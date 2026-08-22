@@ -15,16 +15,29 @@ def _collapse_newlines(value: str) -> str:
     return " ".join(value.split())
 
 
+def _escape_metachars(value: str) -> str:
+    """Backslash-escape the inline Markdown metacharacters that can open a live
+    inline construct: backslash, backtick, brackets, parentheses, exclamation
+    (image), emphasis markers, and tilde. Angle brackets are handled separately
+    by _inline's HTML-escaping so autolinks stay inert."""
+    value = value.replace("\\", "\\\\")
+    for ch in "`[]()!*_~":
+        value = value.replace(ch, "\\" + ch)
+    return value
+
+
 def _escape_inline(value: str) -> str:
     """Escape an untrusted single-line inline field for the position it holds.
 
     Newlines are collapsed so the value cannot open a new structural line, then
     leading Markdown block-structure characters are escaped so the single-line
     value cannot start a construct (heading, list, quote, fence, code span).
+    Inline metacharacters are escaped so no live image, link, autolink, code
+    span, or emphasis marker survives.
     """
     value = _collapse_newlines(value)
     value = _inline(value)
-    value = value.replace("\\", "\\\\")
+    value = _escape_metachars(value)
     if value and value[0] in "#>*+|-`":
         value = "\\" + value
     elif value and value[0].isdigit() and len(value) > 1 and value[1] in ".)":
@@ -41,6 +54,7 @@ def _cell(value: Any) -> str:
     """Escape an untrusted connection table cell."""
     v = _collapse_newlines(_as_str(value))
     v = _inline(v)
+    v = _escape_metachars(v)
     return v.replace("|", "\\|")
 
 

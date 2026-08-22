@@ -247,6 +247,154 @@ class RendererApiInjectionTest(unittest.TestCase):
         assert_structure_invariant(self, render_contract_markdown(document))
 
 
+LIVE_IMAGE = "![Load Image: beacon](https://attacker.example/leak)"
+LIVE_LINK = "[click here](https://attacker.example/pixel)"
+JAVASCRIPT_LINK = "[run](javascript:alert(1))"
+DATA_LINK = "[data](data:text/html,<script>alert(1)</script>)"
+AUTOLINK = "<https://attacker.example/pixel>"
+EMPHASIS = "*stressed* and _under_ and ~~strike~~"
+CODE_SPAN = "`inline code`"
+
+
+def _assert_no_live_inline(testcase: unittest.TestCase, rendered: str) -> None:
+    for construct in (
+        LIVE_IMAGE,
+        LIVE_LINK,
+        JAVASCRIPT_LINK,
+        DATA_LINK,
+        AUTOLINK,
+    ):
+        testcase.assertNotIn(construct, rendered)
+    for marker in ("![", "](http", "](javascript:", "](data:"):
+        testcase.assertNotIn(marker, rendered)
+
+
+class InlineConstructInjectionTest(unittest.TestCase):
+    """Live inline Markdown (image, link, autolink, code span, emphasis) must be
+    neutralized in every unfenced field while fenced content stays intact."""
+
+    def assert_no_live_inline(self, rendered: str) -> None:
+        _assert_no_live_inline(self, rendered)
+
+    def test_objective_neutralizes_inline(self) -> None:
+        document = base_document()
+        document["task"]["objective"] = (
+            f"Review Image: {LIVE_IMAGE} and {LIVE_LINK} {JAVASCRIPT_LINK}"
+        )
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_acceptance_criteria_neutralize_inline(self) -> None:
+        document = base_document()
+        document["acceptance_criteria"] = [
+            {"id": "AC1", "statement": f"Load Image: {LIVE_IMAGE} {LIVE_LINK}"}
+        ]
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_single_line_statement_neutralizes_inline(self) -> None:
+        document = base_document()
+        document["constraints"] = [
+            {
+                "statement": f"Keep {LIVE_LINK} and {LIVE_IMAGE}.",
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_cited_statement_neutralizes_inline(self) -> None:
+        document = base_document()
+        document["constraints"] = [
+            {
+                "statement": f"Cited {LIVE_LINK} here.",
+                "evidence_class": "cited_passage",
+                "citation": "Path.md:1-2",
+                "relative_path": "Path.md",
+                "passage": "passage one",
+                "truncated": False,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_connection_endpoints_neutralize_inline(self) -> None:
+        document = base_document()
+        document["connections"] = [
+            {
+                "source": f"source {LIVE_LINK}",
+                "target": f"target {LIVE_IMAGE}",
+                "kind": f"edge {JAVASCRIPT_LINK}",
+                "verified": True,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_exclusions_neutralize_inline(self) -> None:
+        document = base_document()
+        document["exclusions"] = {
+            "paths": [f"Projects/Secret.md {LIVE_LINK}"],
+            "globs": [],
+            "tags": [f"tag {LIVE_IMAGE}"],
+            "directives": [f"directive {JAVASCRIPT_LINK}"],
+        }
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_provenance_citations_neutralize_inline(self) -> None:
+        document = base_document()
+        document["provenance"]["citations"] = [
+            f"file.md {LIVE_LINK}",
+            f"other.md {LIVE_IMAGE}",
+        ]
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_autolink_neutralized(self) -> None:
+        document = base_document()
+        document["task"]["objective"] = f"Visit {AUTOLINK} now."
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_emphasis_and_code_span_cannot_alter_rendering(self) -> None:
+        document = base_document()
+        document["task"]["objective"] = f"{EMPHASIS} {CODE_SPAN}"
+        rendered = render_contract_markdown(document)
+        self.assert_no_live_inline(rendered)
+        for marker in ("*stressed*", "_under_", "~~strike~~", "`inline code`"):
+            self.assertNotIn(marker, rendered)
+
+    def test_fenced_content_not_double_escaped(self) -> None:
+        document = base_document()
+        statement = f"Line one.\nKeep {LIVE_LINK} and {LIVE_IMAGE}."
+        document["constraints"] = [
+            {
+                "statement": statement,
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        self.assertIn(statement, rendered)
+        assert_structure_invariant(self, rendered)
+
+
 class ContractVaultInjectionTest(unittest.TestCase):
     """Routes fed from hostile vault text, including end-to-end through argv."""
 
