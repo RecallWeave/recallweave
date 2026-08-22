@@ -73,9 +73,56 @@ bd close <id>         # Complete work
 
 The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
 
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
+- **Conservative (default)**: Use `bd` for task tracking. Commit and integrate per the Git Cadence below. Do not push to protected branches, open PRs, or merge without explicit approval. At handoff, report changed files, validation, and suggested next commands.
 - **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
 - **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
+
+## Git Cadence
+
+Approved standing policy. The goal: eliminate local-only backlog while keeping
+review milestone-based. Josh's queue should hold genuine decisions, not routine
+requests to back up clean, validated commits.
+
+**Topology**
+- `main` is **protected**. It is never pushed to, merged into, or auto-merged
+  locally. Local `main` mirrors `origin/main` and nothing else.
+- `foundry/task-contracts` is the **active integration branch** — the durable,
+  continuously updated remote checkpoint for current work.
+- Workers commit to their own `ntm/<session>/oc_N` branches in their worktrees.
+
+**Routine cycle (automatic, no approval needed)**
+```
+worker commits
+  -> coordinator integrates into the integration branch
+  -> dependency sync
+  -> full local test/gate suite
+  -> refresh Beads/BV state (and commit the passive export churn)
+  -> update clean worktrees
+  -> push the integration branch to origin
+  -> continue
+```
+Push only when ALL hold: suite green, conflicts resolved, tree clean, no open
+bead labelled `blocker` or `needs-human`. Otherwise do not push — fix first.
+
+**Milestone cycle (requires Josh)**
+```
+integration branch -> PR to protected main -> required review
+  -> remediation -> human merge approval
+```
+Open or update a PR only at a meaningful review checkpoint, release gate, or
+integration milestone — never as part of the routine cycle.
+
+**Never**
+- push or merge to protected `main`/`master`
+- auto-merge a PR
+- push broken or dirty integration state
+- force-push without explicit approval
+- push worker branches individually, except for recovery, debugging, or a
+  specific review workflow
+
+Automation lives in `/Users/josh/particle-workers/supervisor/rw_supervisor.py`
+(`push_integration`), which refuses protected targets, never forces, and stops
+retrying after two consecutive push failures.
 
 ## Session Completion
 
