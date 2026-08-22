@@ -174,10 +174,14 @@ present exactly as `CONNECTION_EVIDENCE_APPLICABILITY` (see
 [Injectivity](#injectivity)) dictates: an `authored_link` carries no
 `source_evidence`, `target_evidence`, or `shared_terms`; a
 `discovery_candidate` always carries `shared_terms` and may carry either side.
-Each present side may carry `citation`, `heading`, `passage`, and `truncated`
-(the types per `EVIDENCE_SIDE_LEAF_TYPES`); only `citation`, `heading`, and
-`passage` are projected — `truncated` is a not-projected modifier, and a side
-lacking a `passage` is malformed.
+Each present side carries **exactly** `citation`, `heading`, `passage`, and
+`truncated` (the types per `EVIDENCE_SIDE_LEAF_TYPES`) — the complete shape
+`index.py`'s `cited_passage()` emits. A side missing any of them is malformed,
+not merely sparse. Only `citation`, `heading`, and `passage` are projected;
+`truncated` is a not-projected modifier, but it must still be **present**,
+because omitting it is a false claim by silence: a shortened passage would
+otherwise carry nothing declaring it shortened, and ARCHITECTURE.md promises a
+shortened passage sets `truncated` to `true`.
 
 ### `constraints` and `prior_decisions`
 

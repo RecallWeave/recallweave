@@ -600,7 +600,15 @@ class ContractDocumentTest(unittest.TestCase):
         # just the single _full_spec() result: authored wikilink (empty
         # evidence), discovery candidate, empty evidence, unilateral evidence,
         # bilateral evidence, and empty and non-empty shared_terms.
-        side = {"citation": "c", "heading": "h", "passage": "p"}
+        # The complete shape index.py's cited_passage() emits. A subset is now
+        # malformed in its own right (recallweave-zwj), so a fixture missing a
+        # leaf would test shape rejection rather than the applicability table.
+        side = {
+            "citation": "c",
+            "heading": "h",
+            "passage": "p",
+            "truncated": False,
+        }
         cases: list[tuple[str, dict, bool]] = [
             # authored wikilink: no passage evidence or TF-IDF shared terms.
             ("authored_link", {}, True),
@@ -1627,6 +1635,79 @@ class ContractDocumentTest(unittest.TestCase):
             "this test cannot tell an exact inventory from a lucky one",
         )
 
+    def test_builder_rejects_a_side_missing_any_indexed_leaf(self) -> None:
+        # FAIL-FIRST (recallweave-zwj). Cycle 18 made every SUPPLIED leaf be
+        # compared; a leaf that is simply OMITTED was still never checked. That
+        # is the next level down, and for `truncated` it is a false claim by
+        # silence: an authentic long passage keeps its shortened text and its
+        # ellipsis, but dropping the flag yields a JSON artifact carrying a
+        # shortened passage with nothing declaring it shortened, contradicting
+        # ARCHITECTURE.md. A present side must reproduce the COMPLETE shape
+        # index.py's cited_passage() emits, on both sides, truncated or not.
+        import sqlite3
+
+        for truncate in (True, False):
+            for side_name in ("source_evidence", "target_evidence"):
+                for dropped in ("citation", "heading", "passage", "truncated"):
+                    with self.subTest(
+                        truncated=truncate, side=side_name, dropped=dropped
+                    ):
+                        _vault, database = self._build_vault_index()
+                        if truncate:
+                            long_text = (
+                                "zephyr quadrata shared topic " * 40
+                            ).strip()
+                            self.assertGreater(
+                                len(long_text), MAX_PASSAGE_CHARACTERS
+                            )
+                            with closing(
+                                sqlite3.connect(str(database))
+                            ) as connection, connection:
+                                connection.execute(
+                                    "UPDATE sections SET text = ? WHERE id = "
+                                    "(SELECT MIN(id) FROM sections)",
+                                    (long_text,),
+                                )
+                        authentic = self._indexed_side(
+                            database, self._any_indexed_citation(database)
+                        )
+                        self.assertEqual(authentic["truncated"], truncate)
+                        partial = {
+                            leaf: value
+                            for leaf, value in authentic.items()
+                            if leaf != dropped
+                        }
+                        self._rewrite_edge_evidence(
+                            database,
+                            {"shared_terms": ["zephyr"], side_name: partial},
+                        )
+                        with self.assertRaises(ValueError):
+                            build_contract_document(
+                                database, self._evidence_spec()
+                            )
+
+    def test_every_emitted_connection_side_carries_the_full_indexed_shape(self) -> None:
+        # The positive form: every side the PUBLIC builder emits carries
+        # exactly the four leaves the indexer produces, not a permitted subset.
+        # A reader can then rely on `truncated` being present whenever a passage
+        # is, rather than having to treat its absence as "unknown".
+        _vault, database = self._build_vault_index()
+        document = build_contract_document(database, self._evidence_spec())
+        self.assertTrue(document["connections"])
+        seen = 0
+        for connection_item in document["connections"]:
+            for side_name in ("source_evidence", "target_evidence"):
+                side = connection_item["evidence"].get(side_name)
+                if side is None:
+                    continue
+                seen += 1
+                self.assertEqual(
+                    set(side),
+                    {"citation", "heading", "passage", "truncated"},
+                    f"{side_name} does not carry the full indexed shape",
+                )
+        self.assertTrue(seen, "no connection side was emitted at all")
+
     def test_indexed_snapshot_is_the_attribution_boundary(self) -> None:
         # Resolution reads the INDEX, never the vault, because the exporter's
         # own provenance asserts network_calls and vault_writes are 0. The
@@ -1714,6 +1795,53 @@ class ContractDocumentTest(unittest.TestCase):
         ]
         self.assertEqual(observed, expected_order)
 
+    def test_well_formedness_requires_the_complete_indexed_side_shape(self) -> None:
+        # The PREDICATE itself must reject a partial side, independently of the
+        # builder's attribution check. Without this the rule was real in the
+        # code and unenforced by the suite: removing it left all 397 tests
+        # green, because the builder's leaf-by-leaf comparison happened to catch
+        # the same shapes. That is the self-fulfilling pattern this project
+        # keeps rediscovering — an invariant asserted at one level while the
+        # defect lives at another.
+        complete = {
+            "citation": "Alpha.md:8-8",
+            "heading": "S",
+            "passage": "p",
+            "truncated": False,
+        }
+        for side_name in ("source_evidence", "target_evidence"):
+            with self.subTest(side=side_name, shape="complete"):
+                self.assertTrue(
+                    connection_evidence_is_well_formed(
+                        {
+                            "evidence_class": "discovery_candidate",
+                            "evidence": {
+                                "shared_terms": ["z"],
+                                side_name: complete,
+                            },
+                        }
+                    )
+                )
+            for dropped in complete:
+                with self.subTest(side=side_name, dropped=dropped):
+                    partial = {
+                        leaf: value
+                        for leaf, value in complete.items()
+                        if leaf != dropped
+                    }
+                    self.assertFalse(
+                        connection_evidence_is_well_formed(
+                            {
+                                "evidence_class": "discovery_candidate",
+                                "evidence": {
+                                    "shared_terms": ["z"],
+                                    side_name: partial,
+                                },
+                            }
+                        ),
+                        f"a side missing {dropped!r} must be malformed",
+                    )
+
     def test_well_formedness_rejects_passage_without_citation(self) -> None:
         # FAIL-FIRST (recallweave-dm4). A side quoting a passage with no
         # citation is unattributed evidence — exactly what this project exists
@@ -1741,7 +1869,9 @@ class ContractDocumentTest(unittest.TestCase):
                         "shared_terms": ["z"],
                         "source_evidence": {
                             "citation": "Alpha.md:8-8",
+                            "heading": "S",
                             "passage": "cited passage",
+                            "truncated": False,
                         },
                     },
                 }

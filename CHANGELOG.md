@@ -22,9 +22,11 @@
   behind a real citation can reach the artifact. Attributed citations join
   `provenance.citations` in document order, making the inventory complete. A
   connection evidence side quoting a passage must also carry the citation
-  attributing it. Verification reads the index, never the vault, so evidence is
-  attributed to the snapshot the index recorded rather than to the vault's
-  current bytes;
+  attributing it, and each present side must carry the complete leaf set the
+  indexer emits, so a shortened passage can never arrive without the
+  `truncated` flag that declares it shortened. Verification reads the index,
+  never the vault, so evidence is attributed to the snapshot the index recorded
+  rather than to the vault's current bytes;
 - `contract` failure receipts carry no vault content: a refused export names
   the offending edge by its database id rather than by its endpoint note paths;
 - `contract` fails closed on malformed persisted connection evidence: the

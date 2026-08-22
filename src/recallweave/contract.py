@@ -144,6 +144,16 @@ def connection_evidence_is_well_formed(connection: dict[str, Any]) -> bool:
         # reopen recallweave-6j3.
         if "passage" in side and "citation" not in side:
             return False
+        # A present side must reproduce the COMPLETE shape the indexer emits.
+        # Checking only the leaves a side happens to supply leaves omission
+        # unchecked, and for `truncated` omission is a false claim by silence:
+        # an authentic long passage keeps its shortened text and its ellipsis
+        # while nothing declares it shortened, contradicting the promise that a
+        # shortened passage carries `truncated: true`. index.py's
+        # cited_passage() always emits all four leaves, so requiring all four
+        # rejects no real evidence (recallweave-zwj).
+        if set(side) != set(EVIDENCE_SIDE_LEAF_TYPES):
+            return False
     return True
 
 
@@ -237,8 +247,11 @@ def _side_attribution_is_authentic(
     expected = _indexed_side_evidence(connection, citation, cache)
     if expected is None:
         return False
-    for leaf in ("heading", "passage", "truncated"):
-        if leaf in side and side[leaf] != expected[leaf]:
+    # Compare ALL of them unconditionally. Well-formedness already requires the
+    # complete leaf set, so there is no "absent leaf" case to skip, and skipping
+    # one would reintroduce exactly the omission gap that check closes.
+    for leaf in ("citation", "heading", "passage", "truncated"):
+        if side.get(leaf) != expected[leaf]:
             return False
     return True
 
