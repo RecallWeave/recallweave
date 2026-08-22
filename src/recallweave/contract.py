@@ -350,6 +350,64 @@ class _SourceNote:
         self.relative_path = relative_path
 
 
+def _matching_links_in_section_body(connection, row, persisted):
+    """Links re-derived from the indexed section body covering the claimed line,
+    or None when no section covers it (the caller then tries the heading route).
+
+    The WHOLE section is parsed, so `_links` sees the fenced-code state it would
+    see in the real note. The claimed line must map to the exact physical line
+    inside that section, and the quoted source text must be that line."""
+    line = persisted["line"]
+    section = connection.execute(
+        """
+        SELECT line_start, text FROM sections
+        WHERE note_id = ? AND line_start <= ? AND line_end >= ?
+        LIMIT 1
+        """,
+        (int(row["source_note_id"]), line, line),
+    ).fetchone()
+    if section is None:
+        return None
+    section_lines = str(section["text"]).split("\n")
+    offset = line - int(section["line_start"])
+    if not 0 <= offset < len(section_lines):
+        return []
+    if section_lines[offset].strip() != persisted["source_text"]:
+        return []
+    return [
+        link
+        for link in _links(section_lines, 0)
+        if link.line == offset + 1
+        and link.kind == row["kind"]
+        and link.target == persisted["target_text"]
+    ]
+
+
+def _matching_links_in_heading(connection, row, persisted):
+    """Links re-derived from an indexed section HEADING.
+
+    The indexer finds links on heading lines too, and those lines are not in any
+    section's text -- the heading is stored separately. The quoted source text
+    is bound to that stored heading (its leading `#` markers removed), so the
+    text still comes from the index rather than from the edge, and a heading
+    that reached `sections.heading` was by construction not inside fenced code."""
+    source_text = persisted["source_text"]
+    stripped = source_text.lstrip("#").strip()
+    if stripped == source_text:
+        return []
+    match = connection.execute(
+        "SELECT 1 FROM sections WHERE note_id = ? AND heading = ? LIMIT 1",
+        (int(row["source_note_id"]), stripped),
+    ).fetchone()
+    if match is None:
+        return []
+    return [
+        link
+        for link in _links([source_text], 0)
+        if link.kind == row["kind"] and link.target == persisted["target_text"]
+    ]
+
+
 def _authored_link_is_rederivable(connection, row) -> bool:
     """True iff an authored edge RE-DERIVES from the index: the exact physical
     line the edge claims, read back out of the indexed section that covers it,
@@ -387,37 +445,20 @@ def _authored_link_is_rederivable(connection, row) -> bool:
     if line < 1 or not source_text or not target_text:
         return False
 
-    # The EXACT physical line, not any substring of the section. sections.text
-    # holds the lines from line_start to line_end in order, so the claimed line
-    # maps to one position; a claim that does not land on it is not a claim
-    # about a line this index holds.
-    section = connection.execute(
-        """
-        SELECT line_start, text FROM sections
-        WHERE note_id = ? AND line_start <= ? AND line_end >= ?
-        LIMIT 1
-        """,
-        (int(row["source_note_id"]), line, line),
-    ).fetchone()
-    if section is None:
-        return False
-    section_lines = str(section["text"]).split("\n")
-    offset = line - int(section["line_start"])
-    if not 0 <= offset < len(section_lines):
-        return False
-    physical_line = section_lines[offset]
-    if physical_line.strip() != source_text:
-        return False
-
-    # Parse that one line with the indexer's own extractor and require a link
-    # that matches this edge's declared kind and target. Reusing _links rather
-    # than re-implementing link syntax is the point: a parallel matcher would
-    # drift from the parser and reopen exactly this hole.
-    matches = [
-        link
-        for link in _links([physical_line], 0)
-        if link.kind == row["kind"] and link.target == target_text
-    ]
+    # Re-derive the link from INDEXED text, with the parser's own state.
+    #
+    # Two routes, because the indexer finds links in two places and stores them
+    # differently. A link in a section BODY is re-derived by parsing that whole
+    # section, never one isolated line: `_links` tracks fenced-code state across
+    # lines, so an isolated line loses it and link-looking text inside an open
+    # fence -- which the indexer ignores -- would authenticate a verified
+    # relationship (recallweave-5sy). A link on a HEADING line is not in any
+    # section's text at all; the index keeps it in `sections.heading`, and a
+    # heading inside a fence never becomes a section, so that stored heading is
+    # by construction outside fenced code.
+    matches = _matching_links_in_section_body(connection, row, persisted)
+    if matches is None:
+        matches = _matching_links_in_heading(connection, row, persisted)
     if not matches:
         return False
 

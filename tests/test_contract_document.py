@@ -2143,6 +2143,187 @@ class ContractDocumentTest(unittest.TestCase):
         )
         self.assertTrue(note_ids)
 
+    def _vault_with(self, source_body: str):
+        """A two-note vault whose source note body is given verbatim, so a test
+        can control the exact physical lines the indexer sees."""
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "Src.md").write_text(
+            source_body, encoding="utf-8", newline=""
+        )
+        (vault / "Target.md").write_text(
+            "---\ntitle: Target\n---\n# Target\n\n## S\n\nzephyr body\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        return vault, database
+
+    def _forge_authored_edge(self, database: Path, evidence: dict) -> None:
+        import sqlite3
+
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            source_id = connection.execute(
+                "SELECT id FROM notes WHERE relative_path = 'Src.md'"
+            ).fetchone()["id"]
+            target_id = connection.execute(
+                "SELECT id FROM notes WHERE relative_path = 'Target.md'"
+            ).fetchone()["id"]
+            connection.execute(
+                "INSERT OR REPLACE INTO edges("
+                "source_note_id, target_note_id, kind, is_verified, score, "
+                "evidence_json) VALUES (?, ?, ?, 1, 1.0, ?)",
+                (source_id, target_id, evidence.pop("_kind", "wikilink"),
+                 json.dumps(evidence)),
+            )
+
+    def test_authored_link_rejects_a_link_inside_fenced_code(self) -> None:
+        # FAIL-FIRST (recallweave-5sy). `_links` tracks fenced-code state ACROSS
+        # lines. Re-deriving from one isolated line lost that state, so
+        # link-looking text inside an open fence -- which the indexer ignores
+        # entirely -- authenticated a verified relationship. The whole section is
+        # parsed now, so the exporter sees the fence the indexer saw.
+        import sqlite3
+
+        bodies = {
+            "wikilink in a fence": (
+                "---\ntitle: Src\n---\n# Src\n\n## B\n\n"
+                "```\n[[Target]]\n```\n\nzephyr body\n"
+            ),
+            "markdown link in a fence": (
+                "---\ntitle: Src\n---\n# Src\n\n## B\n\n"
+                "```\n[Target](Target.md)\n```\n\nzephyr body\n"
+            ),
+            "tilde fence": (
+                "---\ntitle: Src\n---\n# Src\n\n## B\n\n"
+                "~~~\n[[Target]]\n~~~\n\nzephyr body\n"
+            ),
+            "heading-looking line inside a fence": (
+                "---\ntitle: Src\n---\n# Src\n\n## B\n\n"
+                "```\n## Not a heading\n[[Target]]\n```\n\nzephyr body\n"
+            ),
+        }
+        for label, body in bodies.items():
+            with self.subTest(fence=label):
+                _vault, database = self._vault_with(body)
+                with closing(
+                    sqlite3.connect(str(database))
+                ) as connection, connection:
+                    connection.row_factory = sqlite3.Row
+                    authored = connection.execute(
+                        "SELECT COUNT(*) AS n FROM edges WHERE is_verified = 1"
+                    ).fetchone()["n"]
+                    self.assertEqual(
+                        authored,
+                        0,
+                        "the INDEXER must ignore a link inside a fence, or this "
+                        "test is not testing what it claims",
+                    )
+                    section = connection.execute(
+                        "SELECT line_start, text FROM sections "
+                        "WHERE note_id = (SELECT id FROM notes "
+                        "WHERE relative_path = 'Src.md') LIMIT 1"
+                    ).fetchone()
+                lines = str(section["text"]).split("\n")
+                fenced = next(
+                    index
+                    for index, text in enumerate(lines)
+                    if "Target" in text and not text.startswith(("```", "~~~"))
+                )
+                kind = (
+                    "markdown_link"
+                    if label == "markdown link in a fence"
+                    else "wikilink"
+                )
+                target = "Target.md" if kind == "markdown_link" else "Target"
+                self._forge_authored_edge(
+                    database,
+                    {
+                        "_kind": kind,
+                        "line": int(section["line_start"]) + fenced,
+                        "source_text": lines[fenced].strip(),
+                        "target_text": target,
+                    },
+                )
+                with self.assertRaises(ValueError):
+                    build_contract_document(database, self._authored_spec())
+
+    def test_authored_link_binds_to_the_claimed_line_within_its_section(self) -> None:
+        # A section can hold BOTH a fenced (ignored) link and a real one. The
+        # re-derived link must be the one at the CLAIMED line, not merely some
+        # matching link elsewhere in the same section -- otherwise a claim
+        # quoting the fenced line borrows the real link's authenticity, and the
+        # artifact shows a coordinate whose line the indexer never linked from.
+        import sqlite3
+
+        _vault, database = self._vault_with(
+            "---\ntitle: Src\n---\n# Src\n\n## B\n\n"
+            "```\n[[Target]]\n```\n\nreal link here [[Target]]\n"
+        )
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) AS n FROM edges WHERE is_verified = 1"
+                ).fetchone()["n"],
+                1,
+                "the indexer must create the edge from the REAL link only",
+            )
+            section = connection.execute(
+                "SELECT line_start, text FROM sections WHERE note_id = "
+                "(SELECT id FROM notes WHERE relative_path = 'Src.md') LIMIT 1"
+            ).fetchone()
+        lines = str(section["text"]).split("\n")
+        fenced = next(
+            index
+            for index, text in enumerate(lines)
+            if text.strip() == "[[Target]]"
+        )
+        self._forge_authored_edge(
+            database,
+            {
+                "line": int(section["line_start"]) + fenced,
+                "source_text": lines[fenced].strip(),
+                "target_text": "Target",
+            },
+        )
+        with self.assertRaises(ValueError):
+            build_contract_document(database, self._authored_spec())
+
+    def test_authored_link_on_a_heading_line_still_exports(self) -> None:
+        # The indexer finds links on HEADING lines, and those lines are not in
+        # any section's text -- the heading is stored separately. Parsing only
+        # section bodies would reject a genuine edge, which is the opposite
+        # failure and just as bad. Pin both directions: the genuine heading link
+        # exports, and a heading the index does not hold is rejected.
+        _vault, database = self._vault_with(
+            "---\ntitle: Src\n---\n# Src\n\n## A [[Target]]\n\nzephyr body a\n"
+        )
+        document = build_contract_document(database, self._authored_spec())
+        self.assertIn(
+            "authored_link",
+            {item["evidence_class"] for item in document["connections"]},
+        )
+        self._forge_authored_edge(
+            database,
+            {
+                "line": 6,
+                "source_text": "## Invented [[Target]]",
+                "target_text": "Target",
+            },
+        )
+        with self.assertRaises(ValueError):
+            build_contract_document(database, self._authored_spec())
+
     def test_authored_link_rejects_an_ambiguous_target_name(self) -> None:
         # FAIL-FIRST (recallweave-ze7). The indexer refuses a link whose target
         # name resolves to more than one note; the exporter accepted any

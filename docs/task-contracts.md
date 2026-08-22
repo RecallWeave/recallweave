@@ -563,10 +563,26 @@ Re-derivation means the binding, not the parts. The persisted evidence names
 the link's line, that line's text and the link target; the exporter reads the
 **exact physical line** back out of the indexed section that covers it (the
 line at that coordinate, not any nearby text), requires the quoted source text
-to be that line, parses it with the **indexer's own link extractor**, requires
-an extracted link whose kind and target match the edge, and resolves that link
-through the **indexer's own resolver** — uniqueness included, so an ambiguous
-target name is rejected exactly as the indexer rejects it.
+to be that line, parses the **whole section** with the **indexer's own link
+extractor**, requires an extracted link that is *at that line* and whose kind
+and target match the edge, and resolves that link through the **indexer's own
+resolver** — uniqueness included, so an ambiguous target name is rejected
+exactly as the indexer rejects it.
+
+The whole section is parsed, never one isolated line, because the extractor
+tracks **fenced-code state across lines**. Parsing a line alone loses it, and
+link-looking text inside an open fence — which the indexer ignores entirely —
+would then authenticate a verified relationship. Requiring the extracted link
+to be at the claimed line matters for the same reason: a section can hold both
+a fenced link and a real one, and a claim quoting the fenced line must not
+borrow the real link's authenticity.
+
+The indexer also finds links on **heading** lines, which are not in any
+section's text — the index keeps them in `sections.heading`. Those are
+re-derived by binding the quoted source text to that stored heading before
+parsing it, so the text still comes from the index rather than from the edge. A
+heading inside a fence never becomes a section, so a stored heading is by
+construction outside fenced code.
 
 Every one of those steps is load-bearing. An earlier version checked the parts
 independently — that the quoted text appeared somewhere in the covering

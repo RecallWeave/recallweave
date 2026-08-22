@@ -96,6 +96,9 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         self.assertIn("Re-derivation means the binding, not the parts", text)
         self.assertIn("indexer's own link extractor", text)
         self.assertIn("uniqueness included", text)
+        # The parser-state property, which an isolated-line re-derivation lost.
+        self.assertIn("fenced-code state across lines", text)
+        self.assertIn("never one isolated line", text)
 
     def test_changelog_documents_per_field_projection(self) -> None:
         text = _norm(_text("CHANGELOG.md"))
