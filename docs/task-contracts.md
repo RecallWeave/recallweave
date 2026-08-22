@@ -316,6 +316,15 @@ names and assert the documentation agrees with them, so the two cannot drift.
 - `connections[].target`
 - `connections[].kind`
 - `connections[].verified`
+- `connections[].evidence_class`
+- `connections[].score`
+- `connections[].evidence.source_evidence.citation`
+- `connections[].evidence.source_evidence.heading`
+- `connections[].evidence.source_evidence.passage`
+- `connections[].evidence.target_evidence.citation`
+- `connections[].evidence.target_evidence.heading`
+- `connections[].evidence.target_evidence.passage`
+- `connections[].evidence.shared_terms[]`
 - `exclusions.paths[]`
 - `exclusions.globs[]`
 - `exclusions.tags[]`
@@ -334,13 +343,32 @@ names and assert the documentation agrees with them, so the two cannot drift.
 
 The canonical JSON fields **not** listed here are intentionally **not**
 projected. The Markdown artifact is a safe, human-readable projection, not a
-complete dump; it omits structural and evidence detail that a reader does not
-need and that would enlarge the surface of untrusted text. The omitted fields
-include connection `score` and `evidence`, and retrieved-context `relative_path`,
-`title`, `heading`, `line_start`, `line_end`, `truncated`, `matched_terms`,
-`status`, `domain`, and `verified`. The JSON document `recallweave.contract.v1`
-remains canonical and complete; a consumer that needs any of these fields must
-read the JSON, not the Markdown.
+complete dump; it omits structural and detail that a reader does not need and
+that would enlarge the surface of untrusted text. The omitted fields are:
+
+- `retrieved_context[].relative_path`
+- `retrieved_context[].title`
+- `retrieved_context[].heading`
+- `retrieved_context[].line_start`
+- `retrieved_context[].line_end`
+- `retrieved_context[].truncated`
+- `retrieved_context[].matched_terms[]`
+- `retrieved_context[].status`
+- `retrieved_context[].domain`
+- `retrieved_context[].verified`
+
+The JSON document `recallweave.contract.v1` remains canonical and complete; a
+consumer that needs any of these fields must read the JSON, not the Markdown.
+
+> **Disclosure surface.** The Markdown artifact does carry connection evidence
+> passages and headings. Each connection's `evidence` renders, per side
+> (source/target), its citation, heading and passage, plus the shared terms —
+> see the `connections[].evidence.*` projected fields above. These passages are
+> vault text quoted into the artifact, so a reader deciding whether a Markdown
+> artifact is safe to share must treat connection evidence passages and headings
+> as part of the disclosed content, exactly as retrieved-context passages are.
+> Nothing that appears in the output is silently omitted from this statement of
+> the disclosure surface.
 
 ### Injectivity
 
