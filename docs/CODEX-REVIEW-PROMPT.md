@@ -95,64 +95,55 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both cycle-22 findings are fixed, and all eight of your suggested tests are in
-the suite. You were right and the framing was the useful part: I had built a
-proxy and called it a re-derivation. Checking the parts is not re-derivation.
+The cycle-23 High is fixed, and all five of your suggested tests are in the
+suite. Your reproduction was exact and the diagnosis — lost parser state — was
+the whole of it.
 
-- **High — the authored-link check verified the parts, not the binding**
-  (`recallweave-ze7`). Your reproduction stands as reported: a line reading
-  "This line contains no link at all." authenticated a verified relationship
-  between unlinked notes.
+- **High — isolated-line re-derivation lost the fenced-code state**
+  (`recallweave-5sy`). The WHOLE covering section is now parsed, so `_links`
+  sees the fence the indexer saw. The quoted source text must be the exact
+  physical line at the claimed coordinate, and the extracted link must be **at
+  that line** — a section can hold both a fenced link and a real one, so a claim
+  quoting the fenced line must not borrow the real link's authenticity.
 
-  The check now uses the INDEXER'S OWN code rather than a parallel matcher that
-  can drift from it. The exact physical line is read back out of the indexed
-  section covering the claimed coordinate and the quoted source text must BE
-  that line, not any nearby text; that one line is parsed with
-  `parser._links`, and an extracted link must match the edge's kind AND target;
-  and that link is resolved with `index._resolve_link`, requiring exactly one
-  candidate and no ambiguity reason — so ambiguous names are rejected as the
-  indexer rejects them, and path resolution uses the indexer's exact keys
-  instead of the previous suffix match.
+  Every fence test first asserts the real indexer produces ZERO authored edges
+  for that vault, so the tests cannot pass by exercising something the indexer
+  would have accepted anyway. Fenced wikilinks, fenced Markdown links,
+  tilde-fenced links and a heading-looking line inside a fence are all covered.
 
-  One implementation note worth your scrutiny: the `note_names` lookup is
-  de-duplicated per normalized name, because one note contributes several rows
-  (title and stem) and without that a single unambiguous note looks like two
-  candidates and EVERY genuine link is rejected. Distinct ids under one name is
-  what ambiguity means. The ambiguity test tries BOTH ambiguous endpoints, so a
-  resolver that returned several candidates and took the first cannot pass by
-  luck.
+- **A false rejection found while fixing it, which you did not report.** Parsing
+  only section BODIES rejected a GENUINE edge: the indexer also finds links on
+  HEADING lines, and a heading line is in no section's text — the index keeps it
+  in `sections.heading`. A vault whose only link is on a heading failed to
+  export at all. Those are now re-derived by binding the quoted source text to
+  the stored heading before parsing it, so the text still comes from the index
+  rather than from the edge; a heading inside a fence never becomes a section,
+  so a stored heading is by construction outside fenced code. Both directions
+  are pinned: the genuine heading link exports, an invented heading is rejected.
 
-  Everything still reads the index — `_links` runs over one line already stored
-  in `sections.text` — so the exporter performs no file reads.
+Four mutations killed: restoring isolated-line parsing, unbinding the claimed
+line within its section, unbinding the heading from the index, and removing the
+heading route (which reintroduces the false rejection).
 
-- **Medium — the score wording overstated the implementation.** Corrected. A
-  candidate's `score` is described as **persisted and range-checked**, not as a
-  recomputed cosine, and the disclaimer now appears where the `connections`
-  contract is first described rather than only in a later section. The
-  CHANGELOG's false claim is fixed. Two docs tests pin the wording.
-
-Five mutations killed: dropping the link/kind/target binding, unbinding the
-declared kind, unbinding the link target, relaxing uniqueness, and relaxing the
-exact physical line to a substring of the section.
-
-Suite: 408 tests with the parser, green under `-W error::ResourceWarning`;
+Suite: 411 tests with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies are still empty.
 
 This cycle decides promotion.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
    nothing blocks promotion, say so explicitly.
-2. Six cycles have found the next level down. Is there a seventh? The authored
-   link now re-derives through the indexer's own parser and resolver, so the
-   remaining gap would have to be in what the INDEX itself records — or in the
-   retrieved-context and operator-citation paths, which have had far less
-   attention this run than connections have.
-3. Scrutinise the de-duplication above specifically: it is the one place where
-   the exporter reconstructs an input to the indexer's resolver rather than
-   reusing it, and getting it wrong in the other direction would reject genuine
-   links or accept ambiguous ones.
+2. Seven cycles have found the next level down, and this one produced a false
+   rejection as well as a bypass — the risk now runs in BOTH directions.
+   Scrutinise the heading route specifically: it is the one place where the
+   quoted text is bound to indexed data by a transformation (stripping `#`
+   markers) rather than by direct equality with a stored line.
+3. If you believe the sequence has converged, say so and say why. If there is an
+   eighth level, weigh whether it is worth fixing before promotion or whether it
+   is better filed as follow-up work — and say which you would choose. Six of
+   the last seven findings have been about a tampered local index, which is a
+   narrower threat than the ones the earlier cycles closed.
 4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
    `PRIVACY.md` and `CHANGELOG.md` against the code.
-5. Reassess every Critical and High from all twenty-two cycles and say which
+5. Reassess every Critical and High from all twenty-three cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
