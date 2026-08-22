@@ -83,3 +83,27 @@ bounded and applies to every supported list item; a parser recursion failure
 skips only the affected note. These notes are counted as
 `unparseable_frontmatter` in the index receipt. Exact `include_paths` allowlists
 remain the strongest boundary for an agent-facing index.
+
+## Task contract bundles
+
+`recallweave contract` produces a portable work packet for another agent. By
+design it quotes the source vault: the bundle contains passage text, relative
+note paths, titles, headings, citations, and operator-authored statements and
+criteria. It is therefore at least as sensitive as the vault subset it quotes,
+and arguably more dangerous, because its purpose is to be handed to another
+agent.
+
+A bundle is **not anonymous** and is **not automatically safe to forward**.
+Review it before sending it anywhere, the same way you would review the vault
+files it quotes.
+
+Exclusions reduce the content selected, but they do **not** make a bundle safe
+to share. Excluded passages are left out; everything that remains is still real
+vault content. Treat the bundle as confidential unless you have reviewed it.
+
+The receipt's `output` and `replacement_backup` fields are local file paths. A
+broker that relays a receipt should redact them, as with `export-viewer`.
+
+Keep task contract bundles outside Git and synchronized or shared folders
+unless sharing is intentional. A bundle that quotes passages should be handled
+and stored like the vault subset it contains.

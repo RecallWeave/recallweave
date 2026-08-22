@@ -59,6 +59,24 @@ indexing policy.
   omitted. Release candidates require both audits to report zero known
   vulnerabilities.
 
+## Task contract boundary
+
+- Contract output reuses the export-viewer destination protocol: it refuses
+  symlinked and junction destinations and symlinked parent paths, refuses the
+  active database as a destination, and does not replace an existing file
+  unless `--force` is explicit. Forced replacement uses a recoverable,
+  non-overwriting two-phase protocol that retains the prior approved output.
+- Building a contract opens the index read-only, performs zero vault writes,
+  and makes zero network calls.
+- A selector that names excluded content is a hard error, never a silent drop.
+  RecallWeave raises rather than quietly omitting a cited or retrieved note.
+- Exclusions are defense in depth behind the index policy allowlist, not an
+  authorization boundary. The index policy (`include_paths`) is the first and
+  stronger boundary; exclusions only reduce what a bundle may select.
+- Vault passages are untrusted text and may contain instructions aimed at the
+  receiving agent. Every bundle therefore carries a handling block and quotes
+  passages as data, never as directives, in both JSON and Markdown output.
+
 ## Non-properties
 
 RecallWeave is not an authentication system, a secret scanner, an encryption
