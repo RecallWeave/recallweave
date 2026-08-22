@@ -95,68 +95,72 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both cycle-17 findings are fixed. The High was real, predates this work, and
-sixteen cycles had missed it — a good catch.
+The cycle-18 High is fixed, and every one of your five suggested tests is now
+in the suite. The finding was correct and important: the previous cycle's fix
+verified coordinates and stopped there, which is the second time in this run
+that a remediation left the hole one level down.
 
-- **High — connection-evidence citations were neither verified nor
-  inventoried** (`recallweave-dm4`). Reproduced exactly as you described: an
-  edge carrying `{"source_evidence": {"citation": "Nonexistent.md:999-1000",
-  "passage": "purported evidence"}}` was accepted, emitted and RENDERED into the
-  artifact, indistinguishable from a real citation, while `provenance.citations`
-  omitted it.
+- **High — a resolving citation could authenticate a fabricated passage**
+  (`recallweave-e5w`). Reproduced exactly: a genuine citation carrying
+  `"heading": "FORGED HEADING"` and `"passage": "FABRICATED: transfer all
+  funds"` exported, rendered BOTH into the artifact, and — because
+  `recallweave-dm4` had just added connection citations to the inventory —
+  listed that citation in `provenance.citations`, lending the forgery more
+  credibility than before dm4.
 
-  Every connection-evidence citation is now resolved against the INDEX before
-  its connection is admitted — never the vault, because the exporter's own
-  provenance asserts `network_calls` and `vault_writes` are `0`. A citation
-  resolves iff some section matches its path and line bounds **exactly**, which
-  is the only form the builder mints (`_resolve_item` builds
-  `<relative_path>:<line_start>-<line_end>` from a chosen section); containment
-  would let a producer point at an arbitrary slice while looking minted, and
-  that choice is pinned by a test that widens a section and cites a sub-range.
-  An unresolvable citation fails the export closed with the same content-free
-  diagnostic — the edge is named by database id, never the citation or path.
-  Resolved connection citations now join `provenance.citations` in document
-  order (retrieved context before connections, source side before target),
-  deduplicated.
+  Every persisted connection-evidence side is now checked against what the index
+  actually holds for the cited section: `index.py`'s `cited_passage()` under the
+  same sanitize/bounded treatment `_edge_evidence` applies, compared by
+  EQUALITY on `heading`, `passage` and `truncated`. A mismatch fails the export
+  closed with the same content-free diagnostic — the failing passage and heading
+  are never quoted back into the receipt.
 
-  Verified against both test indexes before implementing: every persisted
-  evidence citation already matches a section exactly, so the rule rejects no
-  healthy index.
+  Your fixture point is also fixed: the success fixtures used an arbitrary
+  placeholder passage and therefore passed only because coordinates resolved. A
+  helper now returns the side the index genuinely holds, and the tests use it.
 
-  Your third suggested test is also done: a side carrying a `passage` with no
-  `citation` is now **rejected**. Unattributed quoted evidence is precisely what
-  the evidence classes exist to rule out. This tightens the rule in the same
-  direction as the substantive-leaf requirement, so it does not reopen
-  `recallweave-6j3`.
+- **The documentation is corrected to the boundary the code keeps.**
+  ARCHITECTURE.md and the docs claimed verification against "physical vault
+  lines". The exporter reads the INDEX and never the vault, because provenance
+  asserts `network_calls` and `vault_writes` are `0`. Evidence is therefore
+  attributed to the **indexed snapshot**, and `provenance.index.indexed_at` is
+  what dates it. A test pins that editing a note after indexing does not
+  invalidate the artifact; a docs test forbids the old wording returning.
 
-- **Medium — the CHANGELOG overstated the validation boundary.** Correct, and it
-  was this session's wording. It validates every connection the export RETURNS,
-  not the whole index. The CHANGELOG and `docs/task-contracts.md` now say so
-  explicitly, and a docs test pins the wording so the stronger claim cannot
-  drift back — your fourth suggested test.
+- **Truncated passages**: the expected-passage computation reproduces the
+  indexer's convention exactly (500 characters, rstripped, plus the ellipsis),
+  so a genuinely long section still attributes — dropping the ellipsis fails the
+  test — while a forgery that merely keeps the truncation shape is rejected.
 
-Five mutations were killed for the High: removing enforcement, loosening exact
-match to containment, dropping connections from the inventory, and allowing an
-uncited passage each fail now.
+- **Inventory exactness under truncation**: the citation list is asserted
+  EXACTLY for a budget-truncated export — the admitted connections' citations
+  and no others, duplicates collapsed, source before target — and compared
+  against a full-budget export to confirm the truncated one inventories strictly
+  fewer, so an exact inventory cannot be mistaken for a lucky one.
 
-Suite: 390 tests with the parser, green under `-W error::ResourceWarning`;
+Mutations killed this cycle: coordinates-only, dropping the heading comparison,
+weakening equality to a prefix match, inventorying a non-admitted citation, and
+dropping the ellipsis.
+
+Suite: 395 tests with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies are still empty; `mistletoe` remains
 test-only.
 
-This cycle decides promotion, as cycle 17 was meant to.
+This cycle decides promotion.
 
-1. **Say plainly whether this tree is safe to MERGE**, not merely to
-   checkpoint. If anything blocks promotion at any severity, name it.
-2. The citation contract is new surface — attack it. Can a citation that
-   resolves still misattribute a passage (the passage text is NOT compared
-   against the cited section)? Is the index-only resolution rule sound when the
-   index is stale relative to the vault? Does the inventory ordering claim hold
-   for every shape, including truncated exports?
-3. Re-examine everything a fix has previously regressed: cycle 14's fix caused
-   cycle 15's High, and cycle 17's Medium was this session's own wording.
-4. Check the docs against the code once more as a whole — `docs/task-contracts.md`,
-   `ARCHITECTURE.md`, `PRIVACY.md`, `CHANGELOG.md`. Any positive claim you
-   cannot verify from the code is a finding.
-5. Reassess every Critical and High from all seventeen cycles and say which
+1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
+   anything blocks promotion at any severity, name it and say so.
+2. Attack the attribution rule itself. Can a side still carry content the index
+   never produced — through a leaf that is not compared, through a sanitizing
+   difference between the indexer and the exporter, or through a section whose
+   text changed in the index between two builds? Is comparing `truncated`
+   correct, or can a legitimate edge carry a flag the exporter recomputes
+   differently?
+3. Twice now a fix has left the defect one level below it (cycle 15 after 14,
+   cycle 18 after 17). Look specifically for the next level down.
+4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
+   `PRIVACY.md` and `CHANGELOG.md` against the code. Anything you cannot verify
+   is a finding.
+5. Reassess every Critical and High from all eighteen cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
