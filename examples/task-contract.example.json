@@ -45,6 +45,5 @@
     "directives": [
       "Do not infer client identity."
     ]
-  },
-  "notes": "Worked example: build against examples/synthetic-vault with examples/policy.example.json, which allowlists only Projects/Growth Atlas.md and Operations/Review Cadence.md. Restricted/** is excluded to demonstrate fail-closed enforcement; any note item that resolves there is a hard error, not a silent drop."
+  }
 }

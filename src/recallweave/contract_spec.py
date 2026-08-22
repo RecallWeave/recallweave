@@ -17,7 +17,6 @@ ALLOWED_SPEC_KEYS = {
     "prior_decisions",
     "acceptance_criteria",
     "exclusions",
-    "notes",
 }
 ALLOWED_RETRIEVAL_KEYS = {"query", "limit", "include_candidates", "max_characters"}
 ALLOWED_ITEM_KEYS = {"text", "note", "heading", "statement"}
@@ -36,7 +35,6 @@ MAX_ITEMS = 50
 MAX_CRITERION_CHARS = 500
 MAX_STATEMENT_CHARS = 500
 MAX_DIRECTIVE_CHARS = 500
-MAX_NOTES_CHARS = 2000
 MAX_EXCLUSION_ENTRIES = 200
 
 
@@ -63,7 +61,6 @@ class TaskSpec:
     exclusion_globs: list[str]
     exclusion_tags: list[str]
     exclusion_directives: list[str]
-    notes: str | None
 
     @classmethod
     def from_payload(cls, payload: Any) -> "TaskSpec":
@@ -164,13 +161,6 @@ class TaskSpec:
             exclusion_directives,
         ) = cls._parse_exclusions(payload.get("exclusions"))
 
-        notes = payload.get("notes")
-        if notes is not None:
-            if not isinstance(notes, str):
-                raise ValueError("notes must be a string.")
-            if len(notes) > MAX_NOTES_CHARS:
-                raise ValueError(f"notes must be at most {MAX_NOTES_CHARS} characters.")
-
         return cls(
             objective=objective,
             task_id=task_id,
@@ -185,7 +175,6 @@ class TaskSpec:
             exclusion_globs=exclusion_globs,
             exclusion_tags=exclusion_tags,
             exclusion_directives=exclusion_directives,
-            notes=notes,
         )
 
     @classmethod

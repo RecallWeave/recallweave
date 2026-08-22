@@ -42,7 +42,6 @@ def valid_payload() -> dict:
             "tags": ["private"],
             "directives": ["Do not infer client identity."],
         },
-        "notes": "Operator notes.",
     }
 
 
@@ -78,7 +77,6 @@ class TaskSpecParsingTest(unittest.TestCase):
         self.assertEqual(
             spec.exclusion_directives, ["Do not infer client identity."]
         )
-        self.assertEqual(spec.notes, "Operator notes.")
 
     def test_defaults_applied(self) -> None:
         spec = TaskSpec.from_payload({"objective": "A task."})
@@ -94,7 +92,6 @@ class TaskSpecParsingTest(unittest.TestCase):
         self.assertEqual(spec.exclusion_globs, [])
         self.assertEqual(spec.exclusion_tags, [])
         self.assertEqual(spec.exclusion_directives, [])
-        self.assertIsNone(spec.notes)
 
     def test_unknown_top_level_keys_rejected_sorted(self) -> None:
         payload = valid_payload()
@@ -114,6 +111,12 @@ class TaskSpecParsingTest(unittest.TestCase):
         payload = valid_payload()
         payload["retrieval"]["bogus"] = True
         with self.assertRaisesRegex(ValueError, "Unknown retrieval key"):
+            TaskSpec.from_payload(payload)
+
+    def test_spec_notes_rejected_as_unknown_key(self) -> None:
+        payload = valid_payload()
+        payload["notes"] = "Operator notes."
+        with self.assertRaisesRegex(ValueError, "Unknown task spec key.*notes"):
             TaskSpec.from_payload(payload)
 
     def test_unknown_exclusions_key_rejected(self) -> None:
