@@ -364,6 +364,56 @@ class ContractDocumentTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_contract_document(database, spec)
 
+    def test_cumulative_cited_passages_cannot_breach_character_budget(self) -> None:
+        # Several cited passages that each individually fit under the budget
+        # must still be rejected when their sum, together with the operator
+        # text, exceeds it. This pins the cumulative several-item accounting
+        # that a single-item test does not exercise.
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        for name in ("N1", "N2", "N3"):
+            note = vault / f"{name}.md"
+            note.write_text(
+                "---\ntitle: N\n---\n# N\n\n## S\n\nabcdefgh\n",
+                encoding="utf-8",
+                newline="",
+            )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.05)
+
+        def spec_for(constraints: list) -> TaskSpec:
+            return TaskSpec.from_payload(
+                {
+                    "objective": "A",
+                    "retrieval": {
+                        "query": "zzzznomatch",
+                        "limit": 8,
+                        "max_characters": 30,
+                    },
+                    "constraints": constraints,
+                    "prior_decisions": [],
+                    "acceptance_criteria": [],
+                    "exclusions": {"paths": [], "globs": [], "tags": [], "directives": []},
+                }
+            )
+
+        # A single cited passage (operator text 9 + passage 8 = 17) fits the
+        # 30-char budget, so it is valid in isolation.
+        single = build_contract_document(database, spec_for([{"note": "N1.md"}]))
+        self.assertFalse(single["budget"]["truncated"])
+        # Three cited passages together (operator text 25 + passages 24 = 49)
+        # exceed the 30-char budget and must be rejected.
+        with self.assertRaises(ValueError):
+            build_contract_document(
+                database,
+                spec_for([{"note": "N1.md"}, {"note": "N2.md"}, {"note": "N3.md"}]),
+            )
+
     def test_two_builds_differ_only_in_generated_at(self) -> None:
         spec = self._full_spec()
         first = build_contract_document(self.database, spec)

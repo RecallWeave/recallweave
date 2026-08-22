@@ -87,7 +87,23 @@ def _fenced(value: str) -> str:
 
 
 def _quote_line(text: str) -> str:
-    return "\n".join(f"> {line}" if line else ">" for line in text.split("\n"))
+    return "\n".join(
+        f"> {_escape_blockquote_line(line)}" if line else ">"
+        for line in text.split("\n")
+    )
+
+
+def _escape_blockquote_line(line: str) -> str:
+    """Escape a single line destined for a blockquote. Inline metacharacters
+    (image, link, autolink, code span, emphasis) and leading block-structure
+    markers are escaped so the line cannot open a live construct or node."""
+    line = _inline(line)
+    line = _escape_metachars(line)
+    if line and line[0] in "#>*+|-`":
+        line = "\\" + line
+    elif line and line[0].isdigit() and len(line) > 1 and line[1] in ".)":
+        line = "\\" + line
+    return line
 
 
 def _title(document: dict[str, Any]) -> str:
@@ -224,7 +240,9 @@ def _render_exclusions(document: dict[str, Any]) -> str | list[str]:
     if isinstance(suppressed, dict):
         for key in ("retrieved_context", "connections", "notes"):
             if key in suppressed:
-                lines.append(f"- suppressed.{key}: {_as_str(suppressed[key])}")
+                lines.append(
+                    f"- suppressed.{key}: {_escape_inline(_as_str(suppressed[key]))}"
+                )
     enforced = exclusions.get("enforced")
     if isinstance(enforced, bool):
         lines.append(f"- enforced: {str(enforced).lower()}")
@@ -247,8 +265,8 @@ def _render_provenance(document: dict[str, Any]) -> str | list[str]:
                 lines.append(f"  - {_escape_inline(_as_str(citation))}")
     budget = document.get("budget")
     if isinstance(budget, dict):
-        used = _as_str(budget.get("characters_used"))
-        total = _as_str(budget.get("character_budget"))
+        used = _escape_inline(_as_str(budget.get("characters_used")))
+        total = _escape_inline(_as_str(budget.get("character_budget")))
         truncated = budget.get("truncated")
         trunc = str(truncated).lower() if isinstance(truncated, bool) else ""
         lines.append(f"- Budget: {used} / {total} characters (truncated: {trunc})")
