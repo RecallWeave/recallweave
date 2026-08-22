@@ -10,6 +10,10 @@
 - `contract` exports a minimal, cited work packet for another agent in JSON and
   Markdown under the `recallweave.contract.v1` schema, with enforced
   exclusions;
+- the Markdown contract artifact renders every operator-controlled or
+  vault-derived string inside a fenced code block so it is an inert,
+  human-readable projection of the canonical JSON contract, never Markdown
+  syntax;
 - explicit CLI policy choice for indexing: a JSON policy or an acknowledged
   `--no-policy` opt-out;
 - clean-clone Atlas builds and dedicated Node CI for install, lint, build, and
