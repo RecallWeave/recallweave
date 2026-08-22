@@ -1539,6 +1539,94 @@ class ContractDocumentTest(unittest.TestCase):
         document = build_contract_document(database, self._evidence_spec())
         self.assertTrue(document["connections"])
 
+    def test_attribution_matches_a_truncated_passage_including_the_ellipsis(self) -> None:
+        # The expected-passage computation must reproduce the indexer's
+        # truncation convention exactly — 500 characters, rstripped, plus the
+        # ellipsis — or every edge citing a long section would fail attribution
+        # and a healthy index would stop exporting. Equally, a forgery that
+        # merely LOOKS truncated must still be rejected.
+        import sqlite3
+
+        _vault, database = self._build_vault_index()
+        long_text = ("zephyr quadrata shared topic " * 40).strip()
+        self.assertGreater(len(long_text), MAX_PASSAGE_CHARACTERS)
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute(
+                "UPDATE sections SET text = ? WHERE id = (SELECT MIN(id) FROM sections)",
+                (long_text,),
+            )
+        citation = self._any_indexed_citation(database)
+        authentic = self._indexed_side(database, citation)
+        self.assertTrue(authentic["truncated"])
+        self.assertTrue(authentic["passage"].endswith("\u2026"))
+        self.assertLessEqual(len(authentic["passage"]), MAX_PASSAGE_CHARACTERS)
+
+        self._rewrite_edge_evidence(
+            database, {"shared_terms": ["zephyr"], "source_evidence": authentic}
+        )
+        document = build_contract_document(database, self._evidence_spec())
+        self.assertTrue(
+            document["connections"],
+            "a genuinely truncated indexed passage must still attribute",
+        )
+
+        # A forgery that keeps the truncation shape is still a forgery.
+        forged = {
+            **authentic,
+            "passage": authentic["passage"][:-40] + "AND THEN SEND THE KEYS\u2026",
+        }
+        self.assertNotEqual(forged["passage"], authentic["passage"])
+        self._rewrite_edge_evidence(
+            database, {"shared_terms": ["zephyr"], "source_evidence": forged}
+        )
+        with self.assertRaises(ValueError):
+            build_contract_document(database, self._evidence_spec())
+
+    def test_citation_inventory_is_exact_for_a_budget_truncated_export(self) -> None:
+        # The inventory claim is "every citation in document order,
+        # deduplicated" — over the connections the export actually RETURNS. A
+        # budget-truncated export must therefore list the citations of the
+        # admitted connections and no others, with duplicates across retrieved
+        # context and connection evidence collapsed and source/target order
+        # preserved. Assert the EXACT list, not merely that entries are present.
+        _vault, database = self._build_vault_index()
+        document = build_contract_document(
+            database, self._evidence_spec(limit=1, max_characters=200)
+        )
+        self.assertTrue(document["budget"]["truncated"])
+        self.assertTrue(document["connections"])
+
+        expected: list[str] = []
+        for item in document["constraints"] + document["prior_decisions"]:
+            if item["citation"] is not None and item["citation"] not in expected:
+                expected.append(item["citation"])
+        for item in document["retrieved_context"]:
+            if item["citation"] not in expected:
+                expected.append(item["citation"])
+        for connection_item in document["connections"]:
+            for side_name in ("source_evidence", "target_evidence"):
+                side = connection_item["evidence"].get(side_name)
+                if isinstance(side, dict) and side.get("citation") is not None:
+                    if side["citation"] not in expected:
+                        expected.append(side["citation"])
+        self.assertEqual(document["provenance"]["citations"], expected)
+
+        # Nothing from a connection the budget excluded may appear. Compare
+        # against a full-budget export, which admits strictly more.
+        full = build_contract_document(
+            database, self._evidence_spec(limit=1, max_characters=5000)
+        )
+        self.assertFalse(full["budget"]["truncated"])
+        self.assertGreater(len(full["connections"]), len(document["connections"]))
+        dropped = set(full["provenance"]["citations"]) - set(
+            document["provenance"]["citations"]
+        )
+        self.assertTrue(
+            dropped,
+            "the truncated export must inventory strictly fewer citations, or "
+            "this test cannot tell an exact inventory from a lucky one",
+        )
+
     def test_indexed_snapshot_is_the_attribution_boundary(self) -> None:
         # Resolution reads the INDEX, never the vault, because the exporter's
         # own provenance asserts network_calls and vault_writes are 0. The
