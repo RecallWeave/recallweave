@@ -95,36 +95,49 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-A sixth cycle just completed. Your cycle-5 findings:
+Cycle 7 is complete. The operator made two architectural decisions in response to
+your six consecutive escaping findings, and both are now implemented.
 
-- **High — bare CR escaped the blockquote.** Fixed: CR and CRLF are normalized at
-  the renderer's single line-splitting choke point, and the test oracle now
-  normalizes line endings before counting structure (it previously split on LF
-  only, which is why it missed this). Verified: `handling.statement` of
-  `safe# forged` produces no active heading after normalization.
-- **High — unapproved compatibility regression on falsy citations.** Fixed: the
-  prior truthiness condition is restored. Verified byte-identical to base
-  `bf1a5e7` for citation values `""`, `0`, `False`, and `None`, in both
-  single-line and multiline cited items, pinned by a golden test.
-- **Low — `_Escaped` accepted raw text.** Addressed by narrowing it.
+**Decision 1 — context-specific escaping abandoned for a uniform inert
+representation.** The invariant is now: no operator-controlled or vault-derived
+string may ever be interpreted as Markdown syntax. Only renderer-authored chrome
+is live Markdown; every value arriving from the document is emitted inside a
+fenced block (fence longer than any backtick run inside, info string `text`,
+content verbatim after CR/CRLF normalization). All context-specific escaping code
+is DELETED: `_inline`, `_inline_esc`, `_escape_inline`, `_escape_metachars`,
+`_collapse_newlines`, `_escape_blockquote_line`, `_citation_inline`, `_cell`,
+`_quote_line`. Grep confirms zero references.
 
-Suite: 301 tests passing.
+Approved appearance changes, all documented: trusted literal `# Task contract`
+title; the connections TABLE is removed (a table cell cannot contain a fence);
+acceptance criteria are label + fenced block rather than an interpolated
+checklist; citations are fenced rather than inline code spans; retrieved-context
+headings are trusted `### Passage N`; no handling blockquote. The eight numbered
+sections and their order are unchanged. The JSON schema did not change.
 
-This is the sixth review of this module. Your five previous cycles each found a
-further escaping edge case: block structure, inline constructs, `handling`
-routing, the multiline citation branch, and bare CR. The escaping approach is
-hand-rolled and stdlib-only by project policy.
+**Decision 2 — a CommonMark parser is now a test-only dependency.** `mistletoe`
+(pure Python, zero required dependencies) is declared under
+`[project.optional-dependencies] test`. `pip install -e .` still installs
+recallweave and nothing else — verified. CI installs `-e ".[test]"`.
+Parser-backed AST assertions are now the authoritative inertness gate; string
+heuristics are retained only as secondary regression checks.
 
-Two things worth your explicit judgment this round, stated plainly rather than
-buried:
+Suite: 322 tests with the parser, `compileall` clean, documented example runs
+verbatim in both formats.
 
-1. Whether the remaining risk in hand-rolled Markdown escaping is now acceptable,
-   or whether the surface keeps producing edge cases and the approach itself
-   should change — for example rendering every untrusted value inside a code span
-   or fence uniformly, so inline escaping correctness stops mattering. If you
-   believe the approach must change, say so directly; that is a design decision
-   the maintainer will weigh, and repeated narrow findings are evidence for it.
-2. Whether verification without a CommonMark parser is now sufficient. You
-   previously judged that no single finding justified a first test dependency.
-   With five escaping findings behind us, say whether that judgment still holds.
+Reassess, explicitly:
+1. every original Critical and High finding from all six previous cycles;
+2. the cycle-6 High (indented markers inside the handling blockquote);
+3. the new uniform-inert-rendering invariant — try hard to find ANY document
+   value that still reaches a Markdown-active position, including scalars where
+   a number is expected, and any way to break out of a fence;
+4. regressions introduced by this restructuring, especially in benign output,
+   and whether the golden expectation was regenerated honestly rather than
+   fitted to whatever the code happened to emit.
+
+Note one process fact for your judgment: the final Bead C commit was made by the
+architect rather than a swarm worker, after the assigned worker stalled with the
+substantive work already correct. Its diff is deletion plus routing four
+document-derived scalars through the fence, and a regenerated golden that was
+re-verified inert via the AST before being pinned.
 <!-- CYCLE-CONTEXT-END -->

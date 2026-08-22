@@ -40,8 +40,16 @@ suite="$review_dir/suite-$stamp.txt"
 # environment noise.
 print "running test suite for the reviewer -> $suite"
 {
-  print "# PYTHONPATH=src python3 -m unittest discover -s tests"
-  PYTHONPATH=src python3 -m unittest discover -s tests 2>&1
+  # Use an interpreter with the test extra installed, or the parser-backed
+  # Markdown-inertness tests silently skip and the gate reports a green suite
+  # that never ran its most important assertions.
+  venv="$review_dir/.venv"
+  if [[ ! -x $venv/bin/python ]]; then
+    python3 -m venv "$venv" >/dev/null 2>&1
+  fi
+  "$venv/bin/pip" install --quiet -e ".[test]" >/dev/null 2>&1
+  print "# PYTHONPATH=src .codex-reviews/.venv/bin/python -m unittest discover -s tests"
+  PYTHONPATH=src "$venv/bin/python" -m unittest discover -s tests 2>&1
   print "\n# python3 -m compileall -q src"
   python3 -m compileall -q src 2>&1 && print "compileall: OK"
 } > "$suite" 2>&1
