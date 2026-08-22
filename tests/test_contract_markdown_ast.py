@@ -306,6 +306,65 @@ def _set_connection_kind(doc, value):
     doc["connections"] = [{"source": "A", "target": "B", "kind": value, "verified": True}]
 
 
+def _set_connection_evidence_class(doc, value):
+    doc["connections"] = [
+        {"source": "A", "target": "B", "kind": "edge", "verified": True,
+         "evidence_class": value}
+    ]
+
+
+def _set_connection_score(doc, value):
+    doc["connections"] = [
+        {"source": "A", "target": "B", "kind": "edge", "verified": True,
+         "score": value}
+    ]
+
+
+def _set_connection_source_evidence(doc, value, key):
+    doc["connections"] = [
+        {"source": "A", "target": "B", "kind": "edge", "verified": True,
+         "evidence": {"source_evidence": {key: value}}}
+    ]
+
+
+def _set_connection_target_evidence(doc, value, key):
+    doc["connections"] = [
+        {"source": "A", "target": "B", "kind": "edge", "verified": True,
+         "evidence": {"target_evidence": {key: value}}}
+    ]
+
+
+def _set_connection_shared_term(doc, value):
+    doc["connections"] = [
+        {"source": "A", "target": "B", "kind": "edge", "verified": True,
+         "evidence": {"shared_terms": [value]}}
+    ]
+
+
+def _set_connection_source_citation(doc, value):
+    _set_connection_source_evidence(doc, value, "citation")
+
+
+def _set_connection_source_heading(doc, value):
+    _set_connection_source_evidence(doc, value, "heading")
+
+
+def _set_connection_source_passage(doc, value):
+    _set_connection_source_evidence(doc, value, "passage")
+
+
+def _set_connection_target_citation(doc, value):
+    _set_connection_target_evidence(doc, value, "citation")
+
+
+def _set_connection_target_heading(doc, value):
+    _set_connection_target_evidence(doc, value, "heading")
+
+
+def _set_connection_target_passage(doc, value):
+    _set_connection_target_evidence(doc, value, "passage")
+
+
 def _set_exclusion_path(doc, value):
     doc["exclusions"]["paths"] = [value]
 
@@ -381,6 +440,15 @@ UNTRUSTED_FIELDS = [
     ("connections[].source", _set_connection_source),
     ("connections[].target", _set_connection_target),
     ("connections[].kind", _set_connection_kind),
+    ("connections[].evidence_class", _set_connection_evidence_class),
+    ("connections[].score", _set_connection_score),
+    ("connections[].evidence_source_citation", _set_connection_source_citation),
+    ("connections[].evidence_source_heading", _set_connection_source_heading),
+    ("connections[].evidence_source_passage", _set_connection_source_passage),
+    ("connections[].evidence_target_citation", _set_connection_target_citation),
+    ("connections[].evidence_target_heading", _set_connection_target_heading),
+    ("connections[].evidence_target_passage", _set_connection_target_passage),
+    ("connections[].evidence_shared_term", _set_connection_shared_term),
     ("exclusions.paths[]", _set_exclusion_path),
     ("exclusions.globs[]", _set_exclusion_glob),
     ("exclusions.tags[]", _set_exclusion_tag),

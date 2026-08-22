@@ -223,18 +223,46 @@ def _render_retrieved(document: dict[str, Any]) -> list[_Escaped] | None:
     return parts or None
 
 
+def _render_connection_evidence(
+    base: str, evidence: Any
+) -> list[_Escaped]:
+    """Render a connection's bounded evidence as one fenced block per field:
+    each side's citation, heading and passage, plus the shared terms, each under
+    its own trusted label. An absent leaf renders the explicit trusted marker so
+    the projection is complete and absence is distinguishable from emptiness.
+    Values are rendered verbatim (the builder already bounds and sanitizes them;
+    this renderer does not invent new bounds)."""
+    lines: list[_Escaped] = []
+    evidence_dict = evidence if isinstance(evidence, dict) else {}
+    for side in ("source", "target"):
+        side_evidence = evidence_dict.get(f"{side}_evidence")
+        side_dict = side_evidence if isinstance(side_evidence, dict) else {}
+        for key in ("citation", "heading", "passage"):
+            lines.extend(
+                _field(f"{base} evidence {side} {key}:", side_dict.get(key))
+            )
+    shared_terms = evidence_dict.get("shared_terms")
+    if isinstance(shared_terms, list) and shared_terms:
+        for term in shared_terms:
+            lines.extend(_field(f"{base} evidence shared term:", term))
+    else:
+        lines.extend(_field(f"{base} evidence shared term:", None))
+    return lines
+
+
 def _render_connections(document: dict[str, Any]) -> list[_Escaped] | None:
     items = document.get("connections")
     if not isinstance(items, list) or not items:
         return None
     # The table is removed: a CommonMark table cell cannot hold a fenced block.
     # Each connection becomes a trusted label followed by fenced blocks — one
-    # fenced block PER field (source, target, kind, verified), each preceded by
-    # its own trusted label. Never concatenate two document fields into one
-    # fence: merging fields destroys the evidence boundary (a source carrying
-    # the target's bytes renders byte-identically to a target carrying them).
-    # An absent field renders the explicit trusted marker so that absence is
-    # distinguishable from an empty string.
+    # fenced block PER field (source, target, kind, verified, evidence class,
+    # score, and each evidence leaf), each preceded by its own trusted label.
+    # Never concatenate two document fields into one fence: merging fields
+    # destroys the evidence boundary (a source carrying the target's bytes
+    # renders byte-identically to a target carrying them). An absent field
+    # renders the explicit trusted marker so that absence is distinguishable
+    # from an empty string.
     lines: list[_Escaped] = []
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
@@ -248,6 +276,9 @@ def _render_connections(document: dict[str, Any]) -> list[_Escaped] | None:
         if verified is None:
             verified_str = NONE_RECORDED
         lines.extend(_field(f"{base} verified:", verified_str))
+        lines.extend(_field(f"{base} evidence class:", item.get("evidence_class")))
+        lines.extend(_field(f"{base} score:", item.get("score")))
+        lines.extend(_render_connection_evidence(base, item.get("evidence")))
     return lines or None
 
 

@@ -518,6 +518,61 @@ class ContractMarkdownTests(unittest.TestCase):
         self.assertIn("None recorded.", rendered)
         self.assertIn("source:\n```text\nNone recorded.\n```", rendered)
 
+    def test_connection_evidence_class_changes_output(self) -> None:
+        # The canonical connection carries evidence_class; the Markdown must
+        # render it, so two documents differing only in evidence_class render
+        # differently (recallweave-9ew.16).
+        a = base_document()
+        a["connections"] = [
+            {"source": "S", "target": "T", "kind": "K", "verified": True,
+             "evidence_class": "authored_link"}
+        ]
+        b = base_document()
+        b["connections"] = [
+            {"source": "S", "target": "T", "kind": "K", "verified": True,
+             "evidence_class": "discovery_candidate"}
+        ]
+        self.assertNotEqual(
+            render_contract_markdown(a),
+            render_contract_markdown(b),
+        )
+
+    def test_connection_score_changes_output(self) -> None:
+        # Two documents differing only in connection score must render
+        # differently.
+        a = base_document()
+        a["connections"] = [
+            {"source": "S", "target": "T", "kind": "K", "verified": True,
+             "score": 1}
+        ]
+        b = base_document()
+        b["connections"] = [
+            {"source": "S", "target": "T", "kind": "K", "verified": True,
+             "score": 2}
+        ]
+        self.assertNotEqual(
+            render_contract_markdown(a),
+            render_contract_markdown(b),
+        )
+
+    def test_connection_evidence_changes_output(self) -> None:
+        # Two documents differing only in connection evidence must render
+        # differently, so a reader can inspect WHY two notes are connected.
+        a = base_document()
+        a["connections"] = [
+            {"source": "S", "target": "T", "kind": "K", "verified": True,
+             "evidence": {"shared_terms": ["alpha"]}}
+        ]
+        b = base_document()
+        b["connections"] = [
+            {"source": "S", "target": "T", "kind": "K", "verified": True,
+             "evidence": {"shared_terms": ["beta"]}}
+        ]
+        self.assertNotEqual(
+            render_contract_markdown(a),
+            render_contract_markdown(b),
+        )
+
     def test_rendering_is_deterministic(self) -> None:
         document = base_document()
         document["retrieved_context"] = [
