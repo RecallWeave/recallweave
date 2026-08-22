@@ -95,32 +95,28 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-A fourth cycle just completed. Your cycle-3 findings:
+A fifth cycle just completed. Your cycle-4 finding:
 
-- **High — `handling.statement` and `_as_str()` scalars bypassed inline escaping.**
-  Fixed in `src/recallweave/contract_markdown.py`. Reproduced as failing first: a
-  document with `handling.statement` = `Safe ![beacon](https://attacker.example/pixel)
-## forged`
-  and hostile strings in `budget.character_budget` and `exclusions.suppressed.*`
-  now renders with zero live image constructs, exactly 8 real headings, and no
-  forged heading.
-- **Low — cumulative cited-passage case unpinned.** A multi-item test was added
-  to `tests/test_contract_document.py`.
-- **Low — tests assert on absent substrings rather than parsing CommonMark.**
-  **Deliberately not implemented, and this is a considered deviation, not an
-  oversight.** This project ships zero runtime and zero test dependencies and the
-  core is stdlib-only by design (`pyproject.toml` has an empty `dependencies`
-  list; `README.md` states the core uses only the standard library). Adding a
-  CommonMark parser to the test suite would break that property for the whole
-  project. The structural assertions were strengthened within the stdlib instead.
-  If you still consider parser-backed assertions necessary, say so explicitly and
-  say whether it justifies a first test dependency — that is a project-level
-  decision for the maintainer, not something to smuggle in through a test file.
+- **High — the multiline cited-item branch emitted citations unescaped**
+  (`contract_markdown.py:174-179`), reachable end to end because citations are
+  built from vault-relative paths, so a hostile Markdown filename reaches it.
+  Reproduced as failing first; now renders with no live image or autolink for
+  both `constraints` and `prior_decisions`.
 
-Suite: 284 tests passing. Diff base for this cycle: the previous review's HEAD.
+Your recommendation 4 was adopted as the primary fix, not just the one-line
+patch: renderer interpolation is now centralized behind position-specific
+helpers, so a future branch cannot emit an unconverted string. Four consecutive
+reviews each found one more unescaped branch; per-branch discipline had failed
+four times, so the class of defect was removed rather than the instance.
+Rendered output for benign documents is unchanged.
 
-Probe hardest at whether the escaping is now genuinely universal — every string
-that reaches the renderer, through every field, fenced and unfenced — and at
-whether escaping interacts badly with already-escaped input (backslash runs
-adjacent to metacharacters).
+Suite: 290 tests passing.
+
+Probe hardest at the restructuring itself: whether centralization is actually
+total (any path that still reaches the output buffer without a position helper),
+whether it changed rendering for benign input, and whether the helpers
+themselves are correct at their boundaries — particularly backslash runs
+adjacent to metacharacters, and any field whose position changed as a result of
+the refactor. Also confirm the end-to-end hostile-filename case is genuinely
+covered rather than only unit-tested through the public renderer.
 <!-- CYCLE-CONTEXT-END -->
