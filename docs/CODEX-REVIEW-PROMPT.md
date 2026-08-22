@@ -95,33 +95,44 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your cycle-7 finding is fixed.
+Your cycle-8 findings are fixed.
 
-- **High — `schema_version` silently dropped from the Markdown projection.**
-  Confirmed exactly as you described: base `da58ccd` emitted
-  `> Schema: recallweave.contract.v1`, the restructured renderer referenced only
-  `index.schema_version` inside provenance, and
-  `tests/test_contract_markdown.py:82` had been flipped from `assertIn` to
-  `assertNotIn`, pinning the removal rather than approving it. You were right
-  that removing the blockquote was approved but dropping the field it carried
-  was not.
+- **High — the projection destroyed evidence boundaries.** Confirmed exactly:
+  an operator-authored constraint with statement `"Author asserted.
+Vault.md:7-8"`
+  and citation `None` rendered byte-identically to a cited constraint with
+  statement `"Author asserted."` and citation `"Vault.md:7-8"`. Same collision for
+  retrieved-context citation vs passage and acceptance id vs statement. You were
+  right that this is an evidence-integrity violation and that the specification
+  shared the defect — the merged-block rule was an architect error in FROZEN
+  INTERFACE v3 and has been withdrawn.
 
-  Now: the top-level `schema_version` renders inside a `CodeFence` (it is
-  document-derived, so it is fenced like everything else), the flipped assertion
-  is restored as a presence assertion in the fenced form, and a new
-  projection-completeness test enumerates the semantic fields the `da58ccd`
-  renderer emitted and asserts each still appears — so a future formatting
-  change cannot silently delete content again. The skip-based gate was also
-  tightened so the authoritative security tests cannot report green while
-  skipped.
+  Now: **one fenced block per field**, each under its own renderer-authored label;
+  `evidence_class` is fenced in its own block rather than mapped to chrome; an
+  absent field renders its label with the trusted marker `None recorded`, so
+  absence is distinguishable from an empty string. All three collision pairs now
+  render differently, verified.
 
-Suite: 326 tests with the parser.
+- **Medium — projection-completeness checked presence, not preservation.**
+  A new `tests/test_contract_projection.py` adds injectivity (materially different
+  documents never render identically, covering the three collision shapes,
+  absent-vs-empty for every optional field, reordering, and differing
+  multiplicity) and strengthens completeness to verify labels, boundaries,
+  multiplicity and ordering.
 
-This was a gate failure on our side as much as a code failure: cycle 7 verified
-structural inertness and benign-vs-hostile heading equality, but nothing verified
-that every semantic field survived the restructuring. Probe that axis hard —
-look for any other content the restructuring dropped, reordered, or merged, and
-for any test that was adjusted to match emitted output rather than to assert an
-intended property. Also re-confirm the uniform-inertness invariant still holds
-now that a new field has been routed through the renderer.
+`docs/task-contracts.md` and `CHANGELOG.md` were updated to match, including the
+evidence-boundary rationale and injectivity as a contract property.
+
+Suite: 345 tests with the parser. Documented example runs verbatim in both formats.
+
+Process note for your judgment: two commits in this cycle were finished by the
+architect rather than a swarm worker — the Bead C deletion earlier, and the
+documentation prose here — in both cases after the assigned worker stalled with
+the substantive work already done. Both are in the diff and neither touched the
+renderer's security logic.
+
+Reassess every original Critical and High finding across all eight cycles, the
+new per-field projection, and any regression this restructuring introduced —
+particularly whether splitting fields reopened any Markdown-active position, and
+whether injectivity actually holds rather than merely being asserted.
 <!-- CYCLE-CONTEXT-END -->
