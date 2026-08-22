@@ -559,8 +559,11 @@ applicability tables are:
   `markdown_link`), `is_verified = 1`, `score = 1.0`, and a link that
   **re-derives from the index**.
 
-Re-derivation means the binding, not the parts. The persisted evidence names
-the link's line, that line's text and the link target; the exporter reads the
+Re-derivation means the binding, not the parts, and how much can be bound
+depends on where the link is.
+
+**A link in a section body is fully bound.** The persisted evidence names the
+link's line, that line's text and the link target; the exporter reads the
 **exact physical line** back out of the indexed section that covers it (the
 line at that coordinate, not any nearby text), requires the quoted source text
 to be that line, parses the **whole section** with the **indexer's own link
@@ -577,19 +580,35 @@ to be at the claimed line matters for the same reason: a section can hold both
 a fenced link and a real one, and a claim quoting the fenced line must not
 borrow the real link's authenticity.
 
-The indexer also finds links on **heading** lines, which are not in any
-section's text — the index keeps them in `sections.heading`. Those are
-re-derived by binding the quoted source text to that stored heading before
-parsing it, so the text still comes from the index rather than from the edge. A
-heading inside a fence never becomes a section, so a stored heading is by
-construction outside fenced code.
+**A link on a heading line is only partly bound, and this is a known gap.** The
+indexer also finds links on heading lines, which are in no section's text — the
+index keeps them in `sections.heading`. Those are re-derived by binding the
+quoted source text to that stored heading before parsing it, so the link TEXT
+still comes from the index rather than from the edge, and a heading inside a
+fence never becomes a section, so a stored heading is by construction outside
+fenced code.
+
+What is **not** bound for a heading link is its **coordinate** and its heading
+**level**: the `sections` table records a body's `line_start` and `line_end` but
+never the heading's own physical line or its `#` count. A tampered index can
+therefore pair an authentic indexed heading with a false `line`, or change `##`
+to `######`, and the export accepts it. The heading text, the link kind, the
+link target and the target's unique resolution are all still bound, so a
+heading link cannot be invented — only mis-coordinated.
+
+Closing this needs the index to record the heading's physical line, which is a
+core index schema change and is deliberately out of scope here. It is tracked
+as follow-up work, and this paragraph exists so the gap is disclosed rather
+than implied away. Until then, an authored heading link's `line` should be read
+as "somewhere in this note", not as a verified coordinate.
 
 Every one of those steps is load-bearing. An earlier version checked the parts
 independently — that the quoted text appeared somewhere in the covering
 section, and that the target name resolved — and never that the line contained
 a link at all, so a line reading "This line contains no link at all."
-authenticated a verified relationship. Nothing here reads the vault: `_links`
-runs over one line already stored in `sections.text`.
+authenticated a verified relationship. Nothing here reads the vault: a body link is parsed from
+the section already stored in `sections.text`, and a heading link from text
+bound to `sections.heading`.
 
 An authored edge's persisted `line` / `source_text` / `target_text` are **not
 projected** — `_edge_evidence` whitelists them away, which is why an

@@ -19,9 +19,11 @@
   candidate must carry the candidate kind, an unset verification flag and a
   cosine score in range, and an authored link must carry a real link kind, a
   set verification flag, a unit score, and a link that re-derives from the
-  index — the exact physical line read back from the indexed section, parsed
-  with the indexer's own link extractor and resolved with its own resolver,
-  uniqueness included — so a hand-written row can no longer export as an
+  index — for a link in a section body, the exact physical line read back from
+  the indexed section, parsed with the indexer's own link extractor and
+  resolved with its own resolver, uniqueness included; for a link on a heading
+  line the text, kind, target and resolution are bound but the coordinate and
+  heading level are not, which the docs disclose — so a hand-written row can no longer export as an
   authored, verified relationship. Candidate existence, ranking and `score` are
   deliberately not recomputed: a candidate's score is persisted and
   range-checked, not authenticated, and the docs say so;
