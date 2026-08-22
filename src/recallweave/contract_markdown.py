@@ -11,6 +11,39 @@ def _inline(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _collapse_newlines(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _escape_inline(value: str) -> str:
+    """Escape an untrusted single-line inline field for the position it holds.
+
+    Newlines are collapsed so the value cannot open a new structural line, then
+    leading Markdown block-structure characters are escaped so the single-line
+    value cannot start a construct (heading, list, quote, fence, code span).
+    """
+    value = _collapse_newlines(value)
+    value = _inline(value)
+    value = value.replace("\\", "\\\\")
+    if value and value[0] in "#>*+|-`":
+        value = "\\" + value
+    elif value and value[0].isdigit() and len(value) > 1 and value[1] in ".)":
+        value = "\\" + value
+    return value
+
+
+def _citation_inline(value: str) -> str:
+    """Collapse newlines and neutralize backticks for an inline code span."""
+    return _collapse_newlines(value).replace("`", " ")
+
+
+def _cell(value: Any) -> str:
+    """Escape an untrusted connection table cell."""
+    v = _collapse_newlines(_as_str(value))
+    v = _inline(v)
+    return v.replace("|", "\\|")
+
+
 def _as_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -48,10 +81,10 @@ def _title(document: dict[str, Any]) -> str:
     if isinstance(task, dict):
         task_id = task.get("id")
         if isinstance(task_id, str) and task_id:
-            return _inline(task_id)
+            return _escape_inline(task_id)
         objective = task.get("objective")
         if isinstance(objective, str) and objective:
-            return _inline(objective.split("\n", 1)[0])
+            return _escape_inline(objective.split("\n", 1)[0])
     return ""
 
 
@@ -59,12 +92,12 @@ def _blockquote(document: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     schema = document.get("schema_version")
     if isinstance(schema, str):
-        lines.append(f"> Schema: {_inline(schema)}")
+        lines.append(f"> Schema: {_escape_inline(schema)}")
     provenance = document.get("provenance")
     if isinstance(provenance, dict):
         generated = provenance.get("generated_at")
         if isinstance(generated, str):
-            lines.append(f"> Generated at: {_inline(generated)}")
+            lines.append(f"> Generated at: {_escape_inline(generated)}")
     handling = document.get("handling")
     if isinstance(handling, dict):
         statement = handling.get("statement")
@@ -78,7 +111,9 @@ def _render_objective(document: dict[str, Any]) -> str | list[str]:
     if isinstance(task, dict):
         objective = task.get("objective")
         if isinstance(objective, str) and objective:
-            return _inline(objective)
+            if "\n" in objective:
+                return _fenced(objective)
+            return _escape_inline(objective)
     return NONE_RECORDED
 
 
@@ -90,8 +125,8 @@ def _render_acceptance(document: dict[str, Any]) -> str | list[str]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        ac_id = _inline(_as_str(item.get("id")))
-        statement = _inline(_as_str(item.get("statement")))
+        ac_id = _escape_inline(_as_str(item.get("id")))
+        statement = _escape_inline(_as_str(item.get("statement")))
         lines.append(f"- [ ] {ac_id} {statement}")
     return lines or NONE_RECORDED
 
@@ -106,12 +141,19 @@ def _render_cited_items(
     for item in items:
         if not isinstance(item, dict):
             continue
-        statement = _inline(_as_str(item.get("statement")))
+        statement = _as_str(item.get("statement"))
         citation = item.get("citation")
-        if isinstance(citation, str) and citation:
-            lines.append(f"- {statement}  (`{citation}`)")
+        cit_str = _citation_inline(_as_str(citation)) if citation else None
+        if "\n" in statement:
+            if cit_str is not None:
+                lines.append(f"- {cit_str}")
+            lines.append(_fenced(statement))
         else:
-            lines.append(f"- {statement}")
+            stmt = _escape_inline(statement)
+            if cit_str is not None:
+                lines.append(f"- {stmt}  (`{cit_str}`)")
+            else:
+                lines.append(f"- {stmt}")
     return lines or NONE_RECORDED
 
 
@@ -123,7 +165,7 @@ def _render_retrieved(document: dict[str, Any]) -> str | list[str]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        citation = _inline(_as_str(item.get("citation")))
+        citation = _escape_inline(_as_str(item.get("citation")))
         parts.append(f"### {citation}")
         passage = _as_str(item.get("passage"))
         parts.append(_fenced(passage))
@@ -141,9 +183,9 @@ def _render_connections(document: dict[str, Any]) -> str | list[str]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        source = _inline(_as_str(item.get("source")))
-        target = _inline(_as_str(item.get("target")))
-        kind = _inline(_as_str(item.get("kind")))
+        source = _cell(item.get("source"))
+        target = _cell(item.get("target"))
+        kind = _cell(item.get("kind"))
         verified = "true" if item.get("verified") else "false"
         lines.append(f"| {source} | {target} | {kind} | {verified} |")
     return lines or NONE_RECORDED
@@ -163,7 +205,7 @@ def _render_exclusions(document: dict[str, Any]) -> str | list[str]:
         values = exclusions.get(key)
         if isinstance(values, list):
             for value in values:
-                lines.append(f"- {label}: {_inline(_as_str(value))}")
+                lines.append(f"- {label}: {_escape_inline(_as_str(value))}")
     suppressed = exclusions.get("suppressed")
     if isinstance(suppressed, dict):
         for key in ("retrieved_context", "connections", "notes"):
@@ -181,14 +223,14 @@ def _render_provenance(document: dict[str, Any]) -> str | list[str]:
     if isinstance(provenance, dict):
         index = provenance.get("index")
         if isinstance(index, dict):
-            schema = _inline(_as_str(index.get("schema_version")))
-            indexed_at = _inline(_as_str(index.get("indexed_at")))
+            schema = _escape_inline(_as_str(index.get("schema_version")))
+            indexed_at = _escape_inline(_as_str(index.get("indexed_at")))
             lines.append(f"- Index schema: {schema}, indexed at: {indexed_at}")
         citations = provenance.get("citations")
         if isinstance(citations, list) and citations:
             lines.append("- Citations:")
             for citation in citations:
-                lines.append(f"  - {_inline(_as_str(citation))}")
+                lines.append(f"  - {_escape_inline(_as_str(citation))}")
     budget = document.get("budget")
     if isinstance(budget, dict):
         used = _as_str(budget.get("characters_used"))

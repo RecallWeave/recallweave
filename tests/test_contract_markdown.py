@@ -270,6 +270,194 @@ class ContractMarkdownTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;", rendered)
         self.assertNotIn("<script>", rendered)
 
+    def _hostile(self, value: str) -> dict:
+        document = base_document()
+        document["task"]["objective"] = value
+        document["acceptance_criteria"] = [
+            {"id": "AC-1", "statement": value},
+        ]
+        document["constraints"] = [
+            {
+                "statement": value,
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            }
+        ]
+        document["prior_decisions"] = [
+            {
+                "statement": value,
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            }
+        ]
+        document["retrieved_context"] = [
+            {
+                "relative_path": "Projects/Atlas.md",
+                "title": "Atlas",
+                "heading": "Decision",
+                "line_start": 10,
+                "line_end": 14,
+                "citation": value,
+                "passage": value,
+                "truncated": False,
+                "matched_terms": [],
+                "status": "active",
+                "domain": "growth",
+                "evidence_class": "lexical_match",
+                "verified": False,
+            }
+        ]
+        document["connections"] = [
+            {
+                "source": value,
+                "target": value,
+                "kind": value,
+                "verified": True,
+            }
+        ]
+        document["provenance"]["citations"] = [value]
+        document["exclusions"] = {"paths": [value], "globs": [], "tags": [], "directives": []}
+        return document
+
+    def _assert_structure_invariant(self, rendered: str) -> None:
+        h1: list[str] = []
+        h2: list[str] = []
+        h3: list[str] = []
+        fence_open: int | None = None
+        for line in rendered.split("\n"):
+            run = len(line) - len(line.lstrip("`"))
+            if run >= 3:
+                if fence_open is None:
+                    fence_open = run
+                elif run >= fence_open:
+                    fence_open = None
+                continue
+            if fence_open is not None:
+                continue
+            if line.startswith("# "):
+                h1.append(line)
+            elif line.startswith("## "):
+                h2.append(line)
+            elif line.startswith("### "):
+                h3.append(line)
+        self.assertEqual(len(h1), 1)
+        self.assertEqual(len(h2), 8)
+        # Every '### ' line must come from the retrieved-context section.
+        retrieved_start = rendered.index("## 5. Retrieved context")
+        retrieved_end = rendered.index("## 6. Connections")
+        for heading in h3:
+            pos = rendered.index(heading)
+            self.assertTrue(retrieved_start <= pos < retrieved_end)
+
+    def _non_fence_text(self, rendered: str) -> str:
+        parts: list[str] = []
+        fence_open: int | None = None
+        for line in rendered.split("\n"):
+            run = len(line) - len(line.lstrip("`"))
+            if run >= 3:
+                if fence_open is None:
+                    fence_open = run
+                elif run >= fence_open:
+                    fence_open = None
+                continue
+            if fence_open is None:
+                parts.append(line)
+        return "\n".join(parts)
+
+    def test_hostile_content_in_every_field_keeps_structure_invariant(self) -> None:
+        hostile = (
+            "Line one.\n"
+            "## 9. Forged objective section\n"
+            "Injected via objective.\n"
+            "### Injected h3\n"
+            "> forged quote\n"
+            "- forged item\n"
+            "* forged star\n"
+            "1. forged ordered\n"
+            "```\nforged fence\n```"
+        )
+        document = self._hostile(hostile)
+        rendered = render_contract_markdown(document)
+        self._assert_structure_invariant(rendered)
+
+    def test_headings_cannot_be_forged_through_any_field(self) -> None:
+        for value in ("# Forged h1", "## Forged h2", "### Forged h3"):
+            rendered = render_contract_markdown(self._hostile(value))
+            self._assert_structure_invariant(rendered)
+
+    def test_table_cell_pipe_cannot_split_columns(self) -> None:
+        document = base_document()
+        document["connections"] = [
+            {
+                "source": "A|B",
+                "target": "C|D",
+                "kind": "edge|evil",
+                "verified": True,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        table_lines = [
+            l for l in rendered.split("\n")
+            if l.startswith("| ") and "| A" in l
+        ]
+        self.assertEqual(len(table_lines), 1)
+        # The cell is escaped, so the pipe cannot introduce an extra column.
+        self.assertIn("A\\|B", rendered)
+        self.assertIn("C\\|D", rendered)
+        self.assertIn("edge\\|evil", rendered)
+        self._assert_structure_invariant(rendered)
+
+    def test_citation_backtick_and_newline_cannot_escape_code_span(self) -> None:
+        document = base_document()
+        document["constraints"] = [
+            {
+                "statement": "Keep paths.",
+                "evidence_class": "cited_passage",
+                "citation": "Path`injected`\nmore.md:1-2",
+                "relative_path": "Path.md",
+                "passage": "passage one",
+                "truncated": False,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        # The citation's backticks are neutralized and newlines collapsed so the
+        # code span cannot be closed early or escape to a new line.
+        self.assertIn("(`Path injected  more.md:1-2`)", rendered)
+        self.assertNotIn("`injected`", rendered)
+        self.assertNotIn("injected\n", rendered)
+        self._assert_structure_invariant(rendered)
+
+    def test_statement_with_long_fence_is_still_enclosed(self) -> None:
+        document = base_document()
+        fence = "`" * 40
+        statement = f"line one\n{fence}\nline two"
+        document["constraints"] = [
+            {
+                "statement": statement,
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        opening = "`" * 41 + "text"
+        self.assertIn(opening, rendered)
+        self.assertIn(statement, rendered)
+        self._assert_structure_invariant(rendered)
+
+    def test_no_raw_html_anywhere_for_hostile_fields(self) -> None:
+        rendered = render_contract_markdown(self._hostile("<script>alert(1)</script>"))
+        # Raw HTML must not be emitted outside code fences.
+        self.assertNotIn("<script>", self._non_fence_text(rendered))
+
 
 if __name__ == "__main__":
     unittest.main()
