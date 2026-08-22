@@ -11,15 +11,30 @@ class _Escaped:
     """A string already escaped for a specific output position.
 
     Every value that reaches the output buffer is wrapped in _Escaped by an
-    explicit position helper (inline / cell / citation / fenced / quoted).
-    _join() refuses to accept a bare unconverted str, so a future branch must
-    make an explicit escaping choice for any new field before it can compile.
+    explicit position helper (inline / cell / citation / fenced / quoted) or
+    by _literal() for a trusted static literal. The instance cannot be built
+    directly from an arbitrary raw string; a future branch must make an
+    explicit escaping choice before a value can reach the buffer.
     """
 
     __slots__ = ("text",)
 
-    def __init__(self, text: str):
-        self.text = text
+    def __init__(self, text: str) -> None:
+        raise TypeError(
+            "_Escaped must be created via _literal() or a position helper"
+        )
+
+    @classmethod
+    def _make(cls, text: str) -> "_Escaped":
+        obj = cls.__new__(cls)
+        obj.text = text
+        return obj
+
+
+def _literal(text: str) -> _Escaped:
+    """Wrap a trusted static literal (format punctuation, headings, and other
+    text authored by this module). Dynamic values must use a position helper."""
+    return _Escaped._make(text)
 
 
 def _join(*pieces: _Escaped) -> _Escaped:
@@ -33,7 +48,7 @@ def _join(*pieces: _Escaped) -> _Escaped:
             raise TypeError(
                 f"unconverted string reached the output buffer: {piece!r}"
             )
-    return _Escaped("".join(piece.text for piece in pieces))
+    return _Escaped._make("".join(piece.text for piece in pieces))
 
 
 def _inline(value: str) -> str:
@@ -118,7 +133,7 @@ def _fenced(value: str) -> str:
 def _quote_line(text: str) -> str:
     return "\n".join(
         f"> {_escape_blockquote_line(line)}" if line else ">"
-        for line in text.split("\n")
+        for line in _normalize_lines(text).split("\n")
     )
 
 
@@ -140,57 +155,63 @@ def _escape_blockquote_line(line: str) -> str:
 # returns an _Escaped wrapper so it cannot be interpolated as a bare string.
 
 
+def _normalize_lines(value: str) -> str:
+    """Normalize CRLF and bare CR to LF so every line boundary is recognized
+    consistently (matching RecallWeave's model of CRLF, CR and LF)."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _inline_esc(value: Any) -> _Escaped:
-    return _Escaped(_escape_inline(_as_str(value)))
+    return _Escaped._make(_escape_inline(_as_str(value)))
 
 
 def _cell_esc(value: Any) -> _Escaped:
-    return _Escaped(_cell(value))
+    return _Escaped._make(_cell(value))
 
 
 def _citation_esc(value: Any) -> _Escaped:
     """A citation rendered inertly inside an inline code span."""
-    return _Escaped(_citation_inline(_as_str(value)))
+    return _Escaped._make(_citation_inline(_as_str(value)))
 
 
 def _fenced_esc(value: Any) -> _Escaped:
     """A block rendered raw inside a fence (already inert)."""
-    return _Escaped(_fenced(_as_str(value)))
+    return _Escaped._make(_fenced(_as_str(value)))
 
 
 def _quoted_esc(text: Any) -> _Escaped:
     """A multi-line string rendered as an escaped blockquote."""
-    return _Escaped(_quote_line(_as_str(text)))
+    return _Escaped._make(_quote_line(_as_str(text)))
 
 
-def _title(document: dict[str, Any]) -> str:
+def _title(document: dict[str, Any]) -> _Escaped:
     task = document.get("task")
     if isinstance(task, dict):
         task_id = task.get("id")
         if isinstance(task_id, str) and task_id:
-            return _escape_inline(task_id)
+            return _inline_esc(task_id)
         objective = task.get("objective")
         if isinstance(objective, str) and objective:
-            return _escape_inline(objective.split("\n", 1)[0])
-    return ""
+            return _inline_esc(objective.split("\n", 1)[0])
+    return _literal("")
 
 
 def _blockquote(document: dict[str, Any]) -> list[_Escaped]:
     lines: list[_Escaped] = []
     schema = document.get("schema_version")
     if isinstance(schema, str):
-        lines.append(_join(_Escaped("> Schema: "), _inline_esc(schema)))
+        lines.append(_join(_literal("> Schema: "), _inline_esc(schema)))
     provenance = document.get("provenance")
     if isinstance(provenance, dict):
         generated = provenance.get("generated_at")
         if isinstance(generated, str):
-            lines.append(_join(_Escaped("> Generated at: "), _inline_esc(generated)))
+            lines.append(_join(_literal("> Generated at: "), _inline_esc(generated)))
     handling = document.get("handling")
     if isinstance(handling, dict):
         statement = handling.get("statement")
         if isinstance(statement, str) and statement:
             lines.append(_quoted_esc(statement))
-    return lines or [_Escaped(f"> {NONE_RECORDED}")]
+    return lines or [_literal(f"> {NONE_RECORDED}")]
 
 
 def _render_objective(document: dict[str, Any]) -> list[_Escaped] | None:
@@ -198,7 +219,7 @@ def _render_objective(document: dict[str, Any]) -> list[_Escaped] | None:
     if isinstance(task, dict):
         objective = task.get("objective")
         if isinstance(objective, str) and objective:
-            if "\n" in objective:
+            if "\n" in _normalize_lines(objective):
                 return [_fenced_esc(objective)]
             return [_inline_esc(objective)]
     return None
@@ -214,9 +235,9 @@ def _render_acceptance(document: dict[str, Any]) -> list[_Escaped] | None:
             continue
         lines.append(
             _join(
-                _Escaped("- [ ] "),
+                _literal("- [ ] "),
                 _inline_esc(item.get("id")),
-                _Escaped(" "),
+                _literal(" "),
                 _inline_esc(item.get("statement")),
             )
         )
@@ -235,28 +256,29 @@ def _render_cited_items(
             continue
         statement = _as_str(item.get("statement"))
         citation = item.get("citation")
-        if "\n" in statement:
+        if "\n" in _normalize_lines(statement):
             # Multiline statements are fenced; their citation leads on its own
             # bullet line and must be inline-escaped (blockquote/code-span
             # neutralization does not apply here) so it cannot open a live
-            # construct. Same inertness policy as the single-line branch.
-            if citation is not None:
-                lines.append(_join(_Escaped("- "), _inline_esc(citation)))
+            # construct. Same inertness policy as the single-line branch. A
+            # falsy citation is omitted, matching prior behavior.
+            if citation:
+                lines.append(_join(_literal("- "), _inline_esc(citation)))
             lines.append(_fenced_esc(statement))
         else:
             stmt = _inline_esc(statement)
-            if citation is not None:
+            if citation:
                 lines.append(
                     _join(
-                        _Escaped("- "),
+                        _literal("- "),
                         stmt,
-                        _Escaped("  (`"),
+                        _literal("  (`"),
                         _citation_esc(citation),
-                        _Escaped("`)"),
+                        _literal("`)"),
                     )
                 )
             else:
-                lines.append(_join(_Escaped("- "), stmt))
+                lines.append(_join(_literal("- "), stmt))
     return lines or None
 
 
@@ -268,7 +290,7 @@ def _render_retrieved(document: dict[str, Any]) -> list[_Escaped] | None:
     for item in items:
         if not isinstance(item, dict):
             continue
-        parts.append(_join(_Escaped("### "), _inline_esc(item.get("citation"))))
+        parts.append(_join(_literal("### "), _inline_esc(item.get("citation"))))
         parts.append(_fenced_esc(item.get("passage")))
     return parts or None
 
@@ -278,8 +300,8 @@ def _render_connections(document: dict[str, Any]) -> list[_Escaped] | None:
     if not isinstance(items, list) or not items:
         return None
     lines: list[_Escaped] = [
-        _Escaped("| source | target | kind | verified |"),
-        _Escaped("| --- | --- | --- | --- |"),
+        _literal("| source | target | kind | verified |"),
+        _literal("| --- | --- | --- | --- |"),
     ]
     for item in items:
         if not isinstance(item, dict):
@@ -287,18 +309,18 @@ def _render_connections(document: dict[str, Any]) -> list[_Escaped] | None:
         source = _cell_esc(item.get("source"))
         target = _cell_esc(item.get("target"))
         kind = _cell_esc(item.get("kind"))
-        verified = _Escaped("true" if item.get("verified") else "false")
+        verified = _literal("true" if item.get("verified") else "false")
         lines.append(
             _join(
-                _Escaped("| "),
+                _literal("| "),
                 source,
-                _Escaped(" | "),
+                _literal(" | "),
                 target,
-                _Escaped(" | "),
+                _literal(" | "),
                 kind,
-                _Escaped(" | "),
+                _literal(" | "),
                 verified,
-                _Escaped(" |"),
+                _literal(" |"),
             )
         )
     return lines or None
@@ -319,7 +341,7 @@ def _render_exclusions(document: dict[str, Any]) -> list[_Escaped] | None:
         if isinstance(values, list):
             for value in values:
                 lines.append(
-                    _join(_Escaped(f"- {label}: "), _inline_esc(value))
+                    _join(_literal(f"- {label}: "), _inline_esc(value))
                 )
     suppressed = exclusions.get("suppressed")
     if isinstance(suppressed, dict):
@@ -327,14 +349,14 @@ def _render_exclusions(document: dict[str, Any]) -> list[_Escaped] | None:
             if key in suppressed:
                 lines.append(
                     _join(
-                        _Escaped(f"- suppressed.{key}: "),
+                        _literal(f"- suppressed.{key}: "),
                         _inline_esc(suppressed[key]),
                     )
                 )
     enforced = exclusions.get("enforced")
     if isinstance(enforced, bool):
         lines.append(
-            _join(_Escaped("- enforced: "), _Escaped(str(enforced).lower()))
+            _join(_literal("- enforced: "), _literal(str(enforced).lower()))
         )
     return lines or None
 
@@ -349,17 +371,17 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
             indexed_at = _inline_esc(index.get("indexed_at"))
             lines.append(
                 _join(
-                    _Escaped("- Index schema: "),
+                    _literal("- Index schema: "),
                     schema,
-                    _Escaped(", indexed at: "),
+                    _literal(", indexed at: "),
                     indexed_at,
                 )
             )
         citations = provenance.get("citations")
         if isinstance(citations, list) and citations:
-            lines.append(_Escaped("- Citations:"))
+            lines.append(_literal("- Citations:"))
             for citation in citations:
-                lines.append(_join(_Escaped("  - "), _inline_esc(citation)))
+                lines.append(_join(_literal("  - "), _inline_esc(citation)))
     budget = document.get("budget")
     if isinstance(budget, dict):
         used = _inline_esc(budget.get("characters_used"))
@@ -368,22 +390,22 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
         trunc = str(truncated).lower() if isinstance(truncated, bool) else ""
         lines.append(
             _join(
-                _Escaped("- Budget: "),
+                _literal("- Budget: "),
                 used,
-                _Escaped(" / "),
+                _literal(" / "),
                 total,
-                _Escaped(" characters (truncated: "),
-                _Escaped(trunc),
-                _Escaped(")"),
+                _literal(" characters (truncated: "),
+                _literal(trunc),
+                _literal(")"),
             )
         )
     return lines or None
 
 
 def _section(heading: str, body: list[_Escaped] | None) -> list[_Escaped]:
-    lines: list[_Escaped] = [_Escaped(f"## {heading}"), _Escaped("")]
+    lines: list[_Escaped] = [_literal(f"## {heading}"), _literal("")]
     if not body:
-        lines.append(_Escaped(NONE_RECORDED))
+        lines.append(_literal(NONE_RECORDED))
     else:
         lines.extend(body)
     return lines
@@ -391,28 +413,28 @@ def _section(heading: str, body: list[_Escaped] | None) -> list[_Escaped]:
 
 def render_contract_markdown(document: dict[str, Any]) -> str:
     lines: list[_Escaped] = [
-        _Escaped(f"# Task contract — {_title(document)}"),
-        _Escaped(""),
+        _join(_literal("# Task contract — "), _title(document)),
+        _literal(""),
     ]
     lines.extend(_blockquote(document))
-    lines.append(_Escaped(""))
+    lines.append(_literal(""))
     lines.extend(_section("1. Objective", _render_objective(document)))
-    lines.append(_Escaped(""))
+    lines.append(_literal(""))
     lines.extend(_section("2. Acceptance criteria", _render_acceptance(document)))
-    lines.append(_Escaped(""))
+    lines.append(_literal(""))
     lines.extend(
         _section("3. Constraints", _render_cited_items(document, "constraints"))
     )
-    lines.append(_Escaped(""))
+    lines.append(_literal(""))
     lines.extend(
         _section("4. Prior decisions", _render_cited_items(document, "prior_decisions"))
     )
-    lines.append(_Escaped(""))
+    lines.append(_literal(""))
     lines.extend(_section("5. Retrieved context", _render_retrieved(document)))
-    lines.append(_Escaped(""))
+    lines.append(_literal(""))
     lines.extend(_section("6. Connections", _render_connections(document)))
-    lines.append(_Escaped(""))
+    lines.append(_literal(""))
     lines.extend(_section("7. Exclusions and scope", _render_exclusions(document)))
-    lines.append(_Escaped(""))
+    lines.append(_literal(""))
     lines.extend(_section("8. Provenance", _render_provenance(document)))
     return "\n".join(line.text for line in lines) + "\n"

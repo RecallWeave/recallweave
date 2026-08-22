@@ -11,7 +11,9 @@ from __future__ import annotations
 # an accepted, documented deviation, not an oversight.
 
 import json
+import subprocess
 import tempfile
+import types
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -71,10 +73,14 @@ def base_document() -> dict:
     }
 
 
+def _normalize_lines(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _non_fence_lines(rendered: str) -> list[str]:
     lines: list[str] = []
     fence_open: int | None = None
-    for line in rendered.split("\n"):
+    for line in _normalize_lines(rendered).split("\n"):
         run = len(line) - len(line.lstrip("`"))
         if run >= 3:
             if fence_open is None:
@@ -610,6 +616,146 @@ class CitedCitationPolicyTest(unittest.TestCase):
         self.assertEqual(rendered, expected)
 
 
+class BareCrInjectionTest(unittest.TestCase):
+    """Bare CR and CRLF must be treated as line boundaries so a multi-line
+    field cannot escape its block and forge a live node."""
+
+    def test_handling_statement_bare_cr_cannot_forge_heading(self) -> None:
+        document = base_document()
+        document["handling"]["statement"] = "safe\r# forged"
+        rendered = render_contract_markdown(document)
+        assert_structure_invariant(self, rendered)
+        self.assertNotIn("> safe\r# forged", rendered)
+
+    def test_handling_statement_crlf_cannot_forge_heading(self) -> None:
+        document = base_document()
+        document["handling"]["statement"] = "safe\r\n# forged"
+        rendered = render_contract_markdown(document)
+        assert_structure_invariant(self, rendered)
+
+    def test_objective_bare_cr_is_multiline_and_fenced(self) -> None:
+        document = base_document()
+        document["task"]["objective"] = "Line one.\r## 9. Forged via CR"
+        rendered = render_contract_markdown(document)
+        assert_structure_invariant(self, rendered)
+
+    def test_cited_statement_bare_cr_cannot_forge_heading(self) -> None:
+        document = base_document()
+        document["constraints"] = [
+            {
+                "statement": "Line one.\r## 9. Forged via CR",
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        assert_structure_invariant(self, rendered)
+
+
+class GoldenCompatibilityTest(unittest.TestCase):
+    """Rendered output for benign documents must be byte-identical to the base
+    renderer at bf1a5e7, including empty and falsy optional values."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        src = subprocess.run(
+            ["git", "show", "bf1a5e7:src/recallweave/contract_markdown.py"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        cls.base = types.ModuleType("base")
+        exec(compile(src, "base", "exec"), cls.base.__dict__)
+
+    def _assert_matches_base(self, document: dict) -> None:
+        expected = self.base.render_contract_markdown(document)
+        actual = render_contract_markdown(document)
+        self.assertEqual(actual, expected)
+
+    def test_empty_and_falsy_citations_single_line_match_base(self) -> None:
+        for citation in ("", 0, False, None):
+            document = base_document()
+            document["constraints"] = [
+                {
+                    "statement": "Single line.",
+                    "evidence_class": "cited_passage",
+                    "citation": citation,
+                    "relative_path": "p.md",
+                    "passage": "p",
+                    "truncated": False,
+                }
+            ]
+            with self.subTest(citation=citation):
+                self._assert_matches_base(document)
+
+    def test_empty_and_falsy_citations_multiline_match_base(self) -> None:
+        for citation in ("", 0, False, None):
+            document = base_document()
+            document["constraints"] = [
+                {
+                    "statement": "Line one.\nLine two.",
+                    "evidence_class": "cited_passage",
+                    "citation": citation,
+                    "relative_path": "p.md",
+                    "passage": "p",
+                    "truncated": False,
+                }
+            ]
+            with self.subTest(citation=citation):
+                self._assert_matches_base(document)
+
+    def test_nonempty_citation_still_matches_base(self) -> None:
+        document = base_document()
+        document["constraints"] = [
+            {
+                "statement": "Single line.",
+                "evidence_class": "cited_passage",
+                "citation": "Projects/Atlas.md:10-14",
+                "relative_path": "Projects/Atlas.md",
+                "passage": "p",
+                "truncated": False,
+            }
+        ]
+        self._assert_matches_base(document)
+
+    def test_falsy_citation_is_omitted(self) -> None:
+        document = base_document()
+        document["constraints"] = [
+            {
+                "statement": "Single line.",
+                "evidence_class": "cited_passage",
+                "citation": "",
+                "relative_path": "p.md",
+                "passage": "p",
+                "truncated": False,
+            }
+        ]
+        rendered = render_contract_markdown(document)
+        self.assertIn("- Single line.\n", rendered)
+        self.assertNotIn("- Single line.  (", rendered)
+
+
+class EscapedDisciplineTest(unittest.TestCase):
+    """_Escaped cannot be built directly from a raw untrusted string; only the
+    trusted-literal factory and the position helpers construct it, and _join
+    rejects any bare str."""
+
+    def test_escaped_cannot_be_constructed_directly(self) -> None:
+        from recallweave.contract_markdown import _Escaped
+
+        with self.assertRaises(TypeError):
+            _Escaped("raw untrusted")
+
+    def test_join_rejects_bare_string(self) -> None:
+        from recallweave.contract_markdown import _join, _literal
+
+        with self.assertRaises(TypeError):
+            _join(_literal("a"), "raw untrusted")
+
+
 class ContractVaultInjectionTest(unittest.TestCase):
     """Routes fed from hostile vault text, including end-to-end through argv."""
 
@@ -773,6 +919,43 @@ class ContractVaultInjectionTest(unittest.TestCase):
         citation = document["constraints"][0]["citation"]
         self.assertIn("javascript:alert(1)", citation)
         self.assertIn("![pixel](x)", citation)
+        rendered = render_contract_markdown(document)
+        self.assertNotIn("[click](javascript:alert(1))", rendered)
+        _assert_no_live_inline(self, rendered)
+        assert_structure_invariant(self, rendered)
+
+    def test_hostile_vault_filename_citation_prior_decision_inert(self) -> None:
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        hostile_name = "![pixel](x)  [click](javascript:alert(1)).md"
+        note = vault / hostile_name
+        note.write_text(
+            "---\ntitle: Hostile\n---\n# Hostile\n\n## S\n\n"
+            "Line one.\nLine two with more text.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.05)
+        spec = TaskSpec.from_payload(
+            {
+                "task_id": "x",
+                "objective": "A",
+                "retrieval": {"query": "line", "limit": 8, "max_characters": 2000},
+                "constraints": [],
+                "prior_decisions": [{"note": hostile_name}],
+                "acceptance_criteria": ["OK."],
+                "exclusions": {"paths": [], "globs": [], "tags": [], "directives": []},
+            }
+        )
+        document = build_contract_document(database, spec)
+        citation = document["prior_decisions"][0]["citation"]
+        self.assertIn("javascript:alert(1)", citation)
         rendered = render_contract_markdown(document)
         self.assertNotIn("[click](javascript:alert(1))", rendered)
         _assert_no_live_inline(self, rendered)
