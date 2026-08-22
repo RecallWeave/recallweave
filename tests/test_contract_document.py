@@ -32,7 +32,10 @@ def _canonical_leaves(node, prefix: str = "") -> set[str]:
     """Every leaf path of a canonical contract document, in the same `[]`
     convention PROJECTED_FIELDS uses. Collections contribute the UNION of their
     items' leaves, not just the first item's, so a leaf that only some items
-    carry (connection evidence differs by evidence class) is still counted."""
+    carry (connection evidence differs by evidence class) is still counted. An
+    EMPTY collection contributes the bare container name `X[]`, because at that
+    moment its element shape is unknowable from the value alone;
+    _partition_leaves() resolves those against the other shapes."""
     if isinstance(node, dict):
         leaves: set[str] = set()
         for key, value in node.items():
@@ -46,6 +49,37 @@ def _canonical_leaves(node, prefix: str = "") -> set[str]:
             leaves |= _canonical_leaves(item, f"{prefix}[]")
         return leaves
     return {prefix}
+
+
+def _partition_leaves(documents: list[dict]) -> set[str]:
+    """The canonical leaf set to partition, unioned over several public builder
+    SHAPES rather than read off one lucky corpus.
+
+    A collection CONTAINER is not itself a leaf; its item fields are. A bare
+    `X[]` therefore survives only when no longer leaf `X[].…` exists anywhere in
+    the union — that is, when `X[]` is a SCALAR collection whose own name is the
+    field (`exclusions.paths[]`, `provenance.citations[]`,
+    `retrieved_context[].matched_terms[]`,
+    `connections[].evidence.shared_terms[]`), which must still be classified.
+    This cannot mask an unclassified scalar list, because a scalar list has no
+    `X[].` children to hide behind.
+
+    Without this, a minimal but publicly constructible document — no matching
+    query, no criteria, no constraints, no decisions, no connections — carried
+    `acceptance_criteria[]`, `connections[]`, `constraints[]`,
+    `prior_decisions[]` and `retrieved_context[]` as leaves in NEITHER inventory,
+    so the exhaustive-partition claim was false for that shape (cycle 15)."""
+    union: set[str] = set()
+    for document in documents:
+        union |= _canonical_leaves(document)
+    return {
+        leaf
+        for leaf in union
+        if not (
+            leaf.endswith("[]")
+            and any(other.startswith(f"{leaf}.") for other in union)
+        )
+    }
 
 
 class ContractDocumentTest(unittest.TestCase):
@@ -278,27 +312,85 @@ class ContractDocumentTest(unittest.TestCase):
                     f"{sorted((conn.get('evidence') or {}).keys())}",
                 )
 
+    def _builder_shapes(self) -> list[dict]:
+        """Documents from SEVERAL public builder shapes, so the partition is
+        proved across what the API can actually produce rather than over one
+        populated corpus: the full spec, a spec whose query matches nothing, one
+        with candidates excluded (no connections), one with no criteria,
+        constraints or decisions, and one with empty exclusions."""
+        shapes = [
+            self._full_spec(),
+            self._full_spec(
+                retrieval={
+                    "query": "zzzz-no-such-term-anywhere",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 5000,
+                }
+            ),
+            self._full_spec(
+                retrieval={
+                    "query": "zephyr quadrata",
+                    "limit": 8,
+                    "include_candidates": False,
+                    "max_characters": 5000,
+                }
+            ),
+            self._full_spec(
+                constraints=[], prior_decisions=[], acceptance_criteria=[]
+            ),
+            self._full_spec(
+                exclusions={"paths": [], "globs": [], "tags": [], "directives": []}
+            ),
+        ]
+        return [build_contract_document(self.database, spec) for spec in shapes]
+
     def test_projected_and_omitted_sets_partition_the_canonical_document(self) -> None:
-        # FAIL-FIRST (recallweave-3xl). The docs claim a projected set and an
-        # omitted set. Neither claim means anything unless together they ACCOUNT
-        # FOR EVERY canonical leaf: a field in neither set is one the reader was
-        # told nothing about, and the value-invariance omission proof never
-        # touches it. Before this test the documented omitted list named only
-        # ten retrieved_context leaves while the builder emitted thirty-one
-        # unprojected leaves, so twenty-one canonical fields were unclassified.
+        # FAIL-FIRST (recallweave-3xl, strengthened for recallweave-e1y). The
+        # docs claim a projected set and an omitted set. Neither claim means
+        # anything unless together they ACCOUNT FOR EVERY canonical leaf: a
+        # field in neither set is one the reader was told nothing about, and the
+        # value-invariance omission proof never touches it.
         #
-        # Driven from a document the PUBLIC builder produced, over a corpus
-        # carrying both connection evidence classes, so the partition is over
-        # what the implementation actually emits and not over a hand-written
-        # shape that agrees with the docs by construction.
-        document = build_contract_document(self.database, self._full_spec())
+        # Driven from documents the PUBLIC builder produced across SEVERAL
+        # shapes, so the partition is over what the implementation can actually
+        # emit and not over one hand-picked corpus that agrees with the docs by
+        # construction. Cycle 15 showed the single-corpus version was false for
+        # a minimal document whose collections are all empty.
+        documents = self._builder_shapes()
         self.assertEqual(
-            sorted({c["evidence_class"] for c in document["connections"]}),
+            sorted(
+                {
+                    connection["evidence_class"]
+                    for document in documents
+                    for connection in document["connections"]
+                }
+            ),
             ["authored_link", "discovery_candidate"],
-            "the corpus must exercise both connection evidence classes or the "
+            "the shapes must exercise both connection evidence classes or the "
             "partition is not over the full canonical leaf set",
         )
-        canonical = _canonical_leaves(document)
+        canonical = _partition_leaves(documents)
+        # Prove the empty-collection case is actually exercised by THESE
+        # documents: some shape must contribute a bare container leaf that the
+        # container rule then removes. Without this the shape list could be
+        # narrowed back to one populated corpus and the partition would pass
+        # again for the wrong reason -- which is precisely how the single-corpus
+        # version looked correct until cycle 15.
+        raw_union: set[str] = set()
+        for document in documents:
+            raw_union |= _canonical_leaves(document)
+        dropped_containers = raw_union - canonical
+        self.assertTrue(
+            dropped_containers,
+            "no shape produced an empty collection, so the container-versus-"
+            "scalar-collection rule was never exercised",
+        )
+        for container in dropped_containers:
+            self.assertTrue(
+                container.endswith("[]"),
+                f"only collection containers may be dropped, not {container!r}",
+            )
         projected = set(PROJECTED_FIELDS)
         omitted = set(_documented_not_projected_fields())
 

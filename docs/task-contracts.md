@@ -375,10 +375,16 @@ Together with the projected set above, the omitted set below is an **exhaustive
 partition** of the canonical document's leaves: every leaf a built document
 carries belongs to exactly one of the two lists, and
 `test_projected_and_omitted_sets_partition_the_canonical_document` enforces
-that against a document the public builder produced. A field can therefore
-never be added to the JSON without being classified as projected or omitted,
-and no field can be quietly omitted without appearing here. The omitted fields
-are:
+that against documents the public builder produced across **several shapes** —
+a full spec, a query that matches nothing, candidates excluded, no criteria or
+constraints or decisions, and empty exclusions — not against one corpus. A
+collection *container* is not itself a leaf; its item fields are. A bare `X[]`
+counts as a field only when it is a **scalar** collection (`exclusions.paths[]`,
+`provenance.citations[]`, `retrieved_context[].matched_terms[]`,
+`connections[].evidence.shared_terms[]`), and those are classified below or
+above like any other field. A field can therefore never be added to the JSON
+without being classified as projected or omitted, and no field can be quietly
+omitted without appearing here. The omitted fields are:
 
 - `constraints[].relative_path`
 - `constraints[].passage`
@@ -413,11 +419,17 @@ are:
 - `provenance.index.sections`
 
 Each of these is proved unreadable by the renderer through **value
-invariance**: the same document is rendered twice with the field set to two
-distinct, type-correct values and the output must be byte-identical. That
-proof holds whatever formatting a renderer might choose, so it cannot be
-evaded by a presentation change, and it now runs over every field in this
-list rather than over the retrieved-context leaves alone.
+invariance**: the same document is rendered with the field set to **several**
+distinct, type-correct values and every rendering must be byte-identical. The
+probe values vary **cardinality and falsiness** deliberately — lists span
+empty, one element and two elements; integers include `0`; strings include the
+empty string — so a renderer that read only `len(value)`, `bool(value)` or
+emptiness is caught. A two-value probe was not enough: two non-empty
+one-element lists render identically under a truthiness read, which would have
+let an omitted collection influence the artifact while the proof still passed.
+The proof holds whatever formatting a renderer might choose, so it cannot be
+evaded by a presentation change, and it runs over every field in this list
+rather than over the retrieved-context leaves alone.
 
 The JSON document `recallweave.contract.v1` remains canonical and complete; a
 consumer that needs any of these fields must read the JSON, not the Markdown.

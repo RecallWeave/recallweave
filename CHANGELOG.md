@@ -8,11 +8,15 @@
   documented projected field set (omitted canonical fields, such as connection
   score and evidence, are intentionally not projected; the JSON contract
   remains canonical and complete);
-- the task contract Markdown's projected and omitted field sets are now an
+- the task contract Markdown's projected and omitted field sets are an
   exhaustive partition of the canonical document, enforced against a document
-  the public builder produced, and the value-invariance proof that an omitted
-  field cannot influence the rendering runs over all thirty-one omitted fields
-  rather than the ten retrieved-context leaves alone;
+  the public builder produced across several shapes, and the value-invariance
+  proof that an omitted field cannot influence the rendering runs over all
+  thirty-one omitted fields, driving each to several values that vary
+  cardinality and falsiness so a renderer reading only a length, a truthiness
+  or an emptiness is caught;
+- `contract` failure receipts carry no vault content: a refused export names
+  the offending edge by its database id rather than by its endpoint note paths;
 - `contract` fails closed on malformed persisted connection evidence: the
   builder enforces its own well-formedness predicate on every connection before
   the budget is consulted and raises rather than exporting a document its

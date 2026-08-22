@@ -848,29 +848,39 @@ def _set_at_path(container, path: tuple[str, ...], value) -> None:
     container[path[-1]] = value
 
 
-def _not_projected_pair(field: str):
-    """Return two distinct, type-correct values for a documented not-projected
-    field, used to prove the field cannot influence the rendered Markdown.
+def _not_projected_values(field: str) -> list:
+    """Return SEVERAL distinct, type-correct values for a documented
+    not-projected field, used to prove the field cannot influence the rendered
+    Markdown.
 
-    The pair is derived from the value the populated document ACTUALLY carries
-    at that path, so it stays type-correct as the canonical document grows and
+    The values are derived from what the populated document ACTUALLY carries at
+    that path, so they stay type-correct as the canonical document grows and
     cannot drift from a hand-maintained table. A leaf whose populated value is
     None, or of an unhandled type, is a hard error rather than a silently weak
-    string pair: an untyped probe could fail to distinguish anything and would
-    make the invariance proof pass vacuously."""
+    probe: an untyped probe could fail to distinguish anything and would make
+    the invariance proof pass vacuously.
+
+    Cardinality and falsiness are varied deliberately. The previous version
+    returned two ONE-ELEMENT non-empty lists and never a falsy scalar, so a
+    renderer reading only `len(value)`, `bool(value)` or emptiness produced
+    identical output for both probes and the proof passed while the omitted
+    field influenced the Markdown (cycle 15, reproduced by leaking
+    `retrieved_context[].matched_terms` truthiness). Lists now span empty, one
+    element and two elements; integers include 0; strings include "".
+    """
     current = _populated_projected()
     for step in _not_projected_path(field):
         current = current[step]
     if isinstance(current, bool):
-        return True, False
+        return [True, False]
     if isinstance(current, int):
-        return 1111, 2222
+        return [0, 1111, 2222]
     if isinstance(current, str):
-        return "value-A", "value-B"
+        return ["", "value-A", "value-BB"]
     if isinstance(current, list):
-        return ["list-A"], ["list-B"]
+        return [[], ["list-A"], ["list-A", "list-B"]]
     raise AssertionError(
-        f"no type-correct probe pair for not-projected field {field!r}: the "
+        f"no type-correct probe values for not-projected field {field!r}: the "
         f"populated document carries {current!r}. Give it a concrete value in "
         "_populated_projected() so the invariance proof is not vacuous."
     )
@@ -1278,17 +1288,23 @@ class InjectivityTest(unittest.TestCase):
         for field in _documented_not_projected_fields():
             with self.subTest(field=field):
                 path = _not_projected_path(field)
-                value_a, value_b = _not_projected_pair(field)
-                doc_a = _populated_projected()
-                doc_b = _populated_projected()
-                _set_at_path(doc_a, path, value_a)
-                _set_at_path(doc_b, path, value_b)
-                self.assertEqual(
-                    render_contract_markdown(doc_a),
-                    render_contract_markdown(doc_b),
-                    f"documented not-projected field {field!r} must not "
-                    "influence the rendered Markdown",
+                values = _not_projected_values(field)
+                self.assertGreaterEqual(
+                    len(values), 2, f"probe for {field!r} is not a probe"
                 )
+                renderings = []
+                for value in values:
+                    document = _populated_projected()
+                    _set_at_path(document, path, value)
+                    renderings.append(render_contract_markdown(document))
+                for index, rendering in enumerate(renderings[1:], start=1):
+                    self.assertEqual(
+                        renderings[0],
+                        rendering,
+                        f"documented not-projected field {field!r} must not "
+                        "influence the rendered Markdown, but setting it to "
+                        f"{values[index]!r} changed the output",
+                    )
 
     def test_documented_projected_set_matches_tested(self) -> None:
         # The documentation names the projected field set explicitly, parsed the
