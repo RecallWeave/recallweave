@@ -22,9 +22,30 @@ from recallweave.index import build_index
 from tests.test_contract_projection import (
     CONDITIONAL_PROJECTED_FIELDS,
     PROJECTED_FIELDS,
+    _documented_not_projected_fields,
     _has_key_at_path,
     _projected_path,
 )
+
+
+def _canonical_leaves(node, prefix: str = "") -> set[str]:
+    """Every leaf path of a canonical contract document, in the same `[]`
+    convention PROJECTED_FIELDS uses. Collections contribute the UNION of their
+    items' leaves, not just the first item's, so a leaf that only some items
+    carry (connection evidence differs by evidence class) is still counted."""
+    if isinstance(node, dict):
+        leaves: set[str] = set()
+        for key, value in node.items():
+            leaves |= _canonical_leaves(value, f"{prefix}.{key}" if prefix else key)
+        return leaves
+    if isinstance(node, list):
+        if not node:
+            return {f"{prefix}[]"}
+        leaves = set()
+        for item in node:
+            leaves |= _canonical_leaves(item, f"{prefix}[]")
+        return leaves
+    return {prefix}
 
 
 class ContractDocumentTest(unittest.TestCase):
@@ -256,6 +277,49 @@ class ContractDocumentTest(unittest.TestCase):
                     f"evidence_class={conn['evidence_class']!r}: "
                     f"{sorted((conn.get('evidence') or {}).keys())}",
                 )
+
+    def test_projected_and_omitted_sets_partition_the_canonical_document(self) -> None:
+        # FAIL-FIRST (recallweave-3xl). The docs claim a projected set and an
+        # omitted set. Neither claim means anything unless together they ACCOUNT
+        # FOR EVERY canonical leaf: a field in neither set is one the reader was
+        # told nothing about, and the value-invariance omission proof never
+        # touches it. Before this test the documented omitted list named only
+        # ten retrieved_context leaves while the builder emitted thirty-one
+        # unprojected leaves, so twenty-one canonical fields were unclassified.
+        #
+        # Driven from a document the PUBLIC builder produced, over a corpus
+        # carrying both connection evidence classes, so the partition is over
+        # what the implementation actually emits and not over a hand-written
+        # shape that agrees with the docs by construction.
+        document = build_contract_document(self.database, self._full_spec())
+        self.assertEqual(
+            sorted({c["evidence_class"] for c in document["connections"]}),
+            ["authored_link", "discovery_candidate"],
+            "the corpus must exercise both connection evidence classes or the "
+            "partition is not over the full canonical leaf set",
+        )
+        canonical = _canonical_leaves(document)
+        projected = set(PROJECTED_FIELDS)
+        omitted = set(_documented_not_projected_fields())
+
+        self.assertEqual(
+            projected & omitted,
+            set(),
+            "a field cannot be both projected and documented as omitted",
+        )
+        unclassified = canonical - projected - omitted
+        self.assertEqual(
+            unclassified,
+            set(),
+            "canonical leaves in neither the projected nor the documented "
+            f"omitted set: {sorted(unclassified)}",
+        )
+        phantom = omitted - canonical
+        self.assertEqual(
+            phantom,
+            set(),
+            f"documented as omitted but not a canonical leaf: {sorted(phantom)}",
+        )
 
     def test_connection_evidence_applicability_table_is_decisive(self) -> None:
         # The table must state the applicability of EVERY evidence member for

@@ -368,9 +368,24 @@ names and assert the documentation agrees with them, so the two cannot drift.
 
 The canonical JSON fields **not** listed here are intentionally **not**
 projected. The Markdown artifact is a safe, human-readable projection, not a
-complete dump; it omits structural and detail that a reader does not need and
-that would enlarge the surface of untrusted text. The omitted fields are:
+complete dump; it omits structure and detail that a reader does not need and
+that would enlarge the surface of untrusted text.
 
+Together with the projected set above, the omitted set below is an **exhaustive
+partition** of the canonical document's leaves: every leaf a built document
+carries belongs to exactly one of the two lists, and
+`test_projected_and_omitted_sets_partition_the_canonical_document` enforces
+that against a document the public builder produced. A field can therefore
+never be added to the JSON without being classified as projected or omitted,
+and no field can be quietly omitted without appearing here. The omitted fields
+are:
+
+- `constraints[].relative_path`
+- `constraints[].passage`
+- `constraints[].truncated`
+- `prior_decisions[].relative_path`
+- `prior_decisions[].passage`
+- `prior_decisions[].truncated`
 - `retrieved_context[].relative_path`
 - `retrieved_context[].title`
 - `retrieved_context[].heading`
@@ -381,6 +396,28 @@ that would enlarge the surface of untrusted text. The omitted fields are:
 - `retrieved_context[].status`
 - `retrieved_context[].domain`
 - `retrieved_context[].verified`
+- `connections[].evidence.source_evidence.truncated`
+- `connections[].evidence.target_evidence.truncated`
+- `connections[].evidence.method`
+- `connections[].evidence.explanation`
+- `handling.content_is_data_not_instructions`
+- `disclosure.profile`
+- `disclosure.includes_passage_text`
+- `disclosure.includes_paths_titles_tags`
+- `disclosure.includes_operator_statements`
+- `disclosure.includes_candidate_edges`
+- `provenance.generated_locally`
+- `provenance.network_calls`
+- `provenance.vault_writes`
+- `provenance.index.notes`
+- `provenance.index.sections`
+
+Each of these is proved unreadable by the renderer through **value
+invariance**: the same document is rendered twice with the field set to two
+distinct, type-correct values and the output must be byte-identical. That
+proof holds whatever formatting a renderer might choose, so it cannot be
+evaded by a presentation change, and it now runs over every field in this
+list rather than over the retrieved-context leaves alone.
 
 The JSON document `recallweave.contract.v1` remains canonical and complete; a
 consumer that needs any of these fields must read the JSON, not the Markdown.

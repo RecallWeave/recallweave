@@ -231,13 +231,16 @@ def _populated_projected() -> dict:
         "scope": "hsc",
     }
     document["acceptance_criteria"] = [{"id": "acid", "statement": "acst"}]
+    # Omitted leaves carry concrete, type-correct values here (not None) so the
+    # value-invariance proof below can derive a distinct pair from the value's
+    # own type instead of a hand-maintained table that could drift.
     document["constraints"] = [
         {
             "statement": "cst",
             "evidence_class": "ccit",
             "citation": "ccit",
-            "relative_path": None,
-            "passage": None,
+            "relative_path": "Projects/Constraint.md",
+            "passage": "cpas",
             "truncated": False,
         }
     ]
@@ -246,8 +249,8 @@ def _populated_projected() -> dict:
             "statement": "pst",
             "evidence_class": "pcit",
             "citation": "pcit",
-            "relative_path": None,
-            "passage": None,
+            "relative_path": "Projects/Decision.md",
+            "passage": "ppas",
             "truncated": False,
         }
     ]
@@ -281,13 +284,17 @@ def _populated_projected() -> dict:
                     "citation": "scit",
                     "heading": "shed",
                     "passage": "spas",
+                    "truncated": False,
                 },
                 "target_evidence": {
                     "citation": "tcit",
                     "heading": "thead",
                     "passage": "tpas",
+                    "truncated": False,
                 },
                 "shared_terms": ["term"],
+                "method": "tfidf",
+                "explanation": "expl",
             },
         }
     ]
@@ -313,6 +320,13 @@ def _populated_projected() -> dict:
         "citations": ["cit"],
     }
     document["budget"] = {"character_budget": 8000, "characters_used": 10, "truncated": False}
+    document["disclosure"] = {
+        "profile": "bounded",
+        "includes_passage_text": True,
+        "includes_paths_titles_tags": True,
+        "includes_operator_statements": True,
+        "includes_candidate_edges": True,
+    }
     return document
 
 
@@ -803,24 +817,28 @@ def _has_key_at_path(container, path: tuple[str, ...]) -> bool:
 # true/false). No omitted field's detection depends on a specific label or
 # serialization.
 
-def _not_projected_leaf(field: str) -> str:
-    """Return the bare leaf key of a documented not-projected field name (e.g.
-    ``retrieved_context[].line_start`` -> ``line_start``), stripping a trailing
-    ``[]`` collection marker (``retrieved_context[].matched_terms[]`` ->
-    ``matched_terms``). Every documented-omitted field lives on a
-    retrieved-context item."""
-    assert field.startswith("retrieved_context[].")
-    leaf = field[len("retrieved_context[].") :]
-    if leaf.endswith("[]"):
-        leaf = leaf[:-2]
-    return leaf
 
-
-def _not_projected_path(field: str) -> tuple[str, ...]:
+def _not_projected_path(field: str) -> tuple:
     """Return the key path of a documented not-projected field in the document.
-    Every such field lives on a retrieved-context item, resolved to the first
-    item (the disclosure population uses a single item)."""
-    return ("retrieved_context", 0, _not_projected_leaf(field))
+
+    Generic over the WHOLE canonical document, not only retrieved-context
+    items: a dotted field name is split on `.`, and any segment ending in `[]`
+    is a collection resolved to its FIRST item. A trailing `[]` on the final
+    segment means the leaf itself is a list. The previous version hard-asserted
+    a `retrieved_context[].` prefix, so the value-invariance proof silently
+    covered ten of the thirty-one fields the implementation actually omits
+    (recallweave-3xl)."""
+    path: list = []
+    segments = field.split(".")
+    for index, segment in enumerate(segments):
+        is_last = index == len(segments) - 1
+        if segment.endswith("[]"):
+            path.append(segment[:-2])
+            if not is_last:
+                path.append(0)
+        else:
+            path.append(segment)
+    return tuple(path)
 
 
 def _set_at_path(container, path: tuple[str, ...], value) -> None:
@@ -832,18 +850,30 @@ def _set_at_path(container, path: tuple[str, ...], value) -> None:
 
 def _not_projected_pair(field: str):
     """Return two distinct, type-correct values for a documented not-projected
-    field, used to prove the field cannot influence the rendered Markdown. The
-    values are type-appropriate (booleans differ as True/False, integers as two
-    distinct ints, collections as two distinct lists, strings as two distinct
-    strings), so the proof is not evadable by re-serialization."""
-    leaf = _not_projected_leaf(field)
-    if leaf in ("truncated", "verified"):
+    field, used to prove the field cannot influence the rendered Markdown.
+
+    The pair is derived from the value the populated document ACTUALLY carries
+    at that path, so it stays type-correct as the canonical document grows and
+    cannot drift from a hand-maintained table. A leaf whose populated value is
+    None, or of an unhandled type, is a hard error rather than a silently weak
+    string pair: an untyped probe could fail to distinguish anything and would
+    make the invariance proof pass vacuously."""
+    current = _populated_projected()
+    for step in _not_projected_path(field):
+        current = current[step]
+    if isinstance(current, bool):
         return True, False
-    if leaf in ("line_start", "line_end"):
+    if isinstance(current, int):
         return 1111, 2222
-    if leaf == "matched_terms":
-        return ["matched-A"], ["matched-B"]
-    return "value-A", "value-B"
+    if isinstance(current, str):
+        return "value-A", "value-B"
+    if isinstance(current, list):
+        return ["list-A"], ["list-B"]
+    raise AssertionError(
+        f"no type-correct probe pair for not-projected field {field!r}: the "
+        f"populated document carries {current!r}. Give it a concrete value in "
+        "_populated_projected() so the invariance proof is not vacuous."
+    )
 
 
 # Every projected collection whose element order the renderer must preserve:
