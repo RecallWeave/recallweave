@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from recallweave.contract import CONTRACT_SCHEMA_VERSION, build_contract_document
@@ -328,11 +329,53 @@ class ContractDocumentTest(unittest.TestCase):
         )
         self.assertTrue(any(rc["truncated"] for rc in document["retrieved_context"]))
 
+    def test_cited_passages_cannot_breach_character_budget(self) -> None:
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        note = vault / "N.md"
+        note.write_text(
+            "---\ntitle: N\n---\n# N\n\n## S\n\nabcdefgh\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.05)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "A",
+                "retrieval": {
+                    "query": "abcdefgh",
+                    "limit": 8,
+                    "max_characters": 10,
+                },
+                "constraints": [{"note": "N.md"}],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"paths": [], "globs": [], "tags": [], "directives": []},
+            }
+        )
+        # The cited passage plus operator text (17 chars) cannot fit a 10-char
+        # budget; the build must reject rather than emit an oversized artifact.
+        with self.assertRaises(ValueError):
+            build_contract_document(database, spec)
+
     def test_two_builds_differ_only_in_generated_at(self) -> None:
         spec = self._full_spec()
         first = build_contract_document(self.database, spec)
         second = build_contract_document(self.database, spec)
-        self.assertEqual(first["provenance"]["generated_at"], first["provenance"]["generated_at"])
+        first_ts = first["provenance"]["generated_at"]
+        second_ts = second["provenance"]["generated_at"]
+        first_dt = datetime.fromisoformat(first_ts)
+        second_dt = datetime.fromisoformat(second_ts)
+        self.assertIsNotNone(first_dt.tzinfo)
+        self.assertIsNotNone(second_dt.tzinfo)
+        self.assertEqual(first_dt.utcoffset(), timedelta(0))
+        self.assertEqual(second_dt.utcoffset(), timedelta(0))
         first_copy = json.loads(json.dumps(first))
         second_copy = json.loads(json.dumps(second))
         first_copy["provenance"].pop("generated_at")
