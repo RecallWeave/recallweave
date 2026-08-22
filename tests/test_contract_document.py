@@ -775,6 +775,113 @@ class ContractDocumentTest(unittest.TestCase):
                         self.assertNotIn("\u200b", value)
                         self.assertNotIn("\u0007", value)
 
+    def _rewrite_edge_evidence(self, database: Path, evidence: dict) -> None:
+        """Overwrite every persisted edge's evidence_json, so the builder reads
+        a shape it did not itself generate. Persisted rows are the real input to
+        build_contract_document: an index may predate a schema change or have
+        been written by an older or hand-edited producer, so the builder cannot
+        assume the shapes its own current code path would produce."""
+        import sqlite3
+
+        with sqlite3.connect(str(database)) as connection:
+            connection.execute(
+                "UPDATE edges SET evidence_json = ?", (json.dumps(evidence),)
+            )
+
+    def test_builder_rejects_persisted_malformed_evidence(self) -> None:
+        # FAIL-FIRST (recallweave-4su). The public builder must ENFORCE
+        # connection_evidence_is_well_formed(), not merely have a predicate that
+        # tests call directly. _edge_evidence's bounded_side() preserves each
+        # whitelisted leaf independently, so persisted evidence carrying a
+        # partial side survives sanitization as a partial side. Before the fix
+        # the builder exported it and the Markdown rendered it, which is the
+        # cycle-14 High: the contract's own validator declared the artifact
+        # malformed while the artifact was being handed to another agent.
+        #
+        # Approved behaviour is FAIL CLOSED: raise ValueError naming the
+        # offending connection. The CLI turns that into exit code 2. Nothing is
+        # silently dropped and nothing malformed is silently shown.
+        malformed = {
+            "citation-only side": {
+                "source_evidence": {"citation": "Alpha.md:1-2"},
+                "shared_terms": ["zephyr"],
+            },
+            "heading-only side": {
+                "source_evidence": {"heading": "S"},
+                "shared_terms": ["zephyr"],
+            },
+            "truncated-only side": {
+                "source_evidence": {"truncated": True},
+                "shared_terms": ["zephyr"],
+            },
+            "citation-only target side": {
+                "target_evidence": {"citation": "Beta.md:1-2"},
+                "shared_terms": ["zephyr"],
+            },
+            "missing required shared_terms": {
+                "source_evidence": {
+                    "citation": "Alpha.md:1-2",
+                    "heading": "S",
+                    "passage": "zephyr quadrata",
+                },
+            },
+        }
+        for label, evidence in malformed.items():
+            with self.subTest(shape=label):
+                _vault, database = self._build_vault_index()
+                self._rewrite_edge_evidence(database, evidence)
+                with self.assertRaises(ValueError) as raised:
+                    build_contract_document(database, self._evidence_spec())
+                # The message must identify WHICH connection, or an operator
+                # cannot act on it.
+                self.assertIn("evidence", str(raised.exception).lower())
+
+    def test_builder_output_always_satisfies_its_own_validator(self) -> None:
+        # The general form: whatever the persisted evidence looks like, every
+        # connection the builder RETURNS satisfies the predicate. Driven from
+        # deliberately malformed persisted JSON rather than only from a freshly
+        # built index, so it cannot pass merely because the generator happens to
+        # produce good shapes today. A build that raises satisfies this
+        # vacuously and is covered by the fail-closed test above; a build that
+        # succeeds must be well-formed throughout.
+        shapes = [
+            {"source_evidence": {"citation": "Alpha.md:1-2"}, "shared_terms": ["z"]},
+            {"source_evidence": {}, "shared_terms": ["z"]},
+            {"shared_terms": ["z"]},
+            {
+                "source_evidence": {
+                    "citation": "Alpha.md:1-2",
+                    "heading": "S",
+                    "passage": "zephyr quadrata",
+                },
+                "shared_terms": ["z"],
+            },
+        ]
+        for index, evidence in enumerate(shapes):
+            with self.subTest(shape=index):
+                _vault, database = self._build_vault_index()
+                self._rewrite_edge_evidence(database, evidence)
+                try:
+                    document = build_contract_document(
+                        database, self._evidence_spec()
+                    )
+                except ValueError:
+                    continue
+                for conn in document["connections"]:
+                    self.assertTrue(
+                        connection_evidence_is_well_formed(conn),
+                        f"builder returned malformed connection: {conn!r}",
+                    )
+
+    def test_well_formed_persisted_evidence_still_exports(self) -> None:
+        # The fail-closed gate must not reject a healthy index. A freshly built
+        # index exports connections, and each one passes the predicate.
+        _vault, database = self._build_vault_index()
+        document = build_contract_document(database, self._evidence_spec())
+        self.assertTrue(document["connections"])
+        for conn in document["connections"]:
+            self.assertTrue(connection_evidence_is_well_formed(conn))
+
     def test_connection_evidence_whitelists_keys(self) -> None:
         import sqlite3
 

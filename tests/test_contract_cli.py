@@ -143,6 +143,44 @@ class ContractCliTest(unittest.TestCase):
         self.assertIn(str(output), error["message"])
         self.assertEqual(output.read_text(encoding="utf-8"), "old")
 
+    def test_cli_malformed_persisted_evidence_exits_2_and_writes_nothing(self) -> None:
+        # The fail-closed builder gate (recallweave-4su) must surface through
+        # the CLI as the ordinary error contract: exit 2, a structured error on
+        # stderr naming the offending connection, NOTHING on stdout, and no
+        # artifact written. An operator must be able to see which edge is bad
+        # and act on it, rather than receive a contract whose evidence this
+        # project's own validator rejects.
+        import sqlite3
+
+        with sqlite3.connect(str(self.database)) as connection:
+            connection.execute(
+                "UPDATE edges SET evidence_json = ?",
+                (
+                    json.dumps(
+                        {
+                            "source_evidence": {"citation": "Projects/Alpha.md:1-2"},
+                            "shared_terms": ["zephyr"],
+                        }
+                    ),
+                ),
+            )
+        output = self.root / "contract-malformed.json"
+        exit_code, out, err = self.run_cli(
+            "contract",
+            str(self.spec_path),
+            "--database",
+            str(self.database),
+            "--output",
+            str(output),
+        )
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(out, "")
+        error = json.loads(err)
+        self.assertEqual(error["operation"], "contract")
+        self.assertEqual(error["error"], "ValueError")
+        self.assertIn("malformed connection evidence", error["message"])
+        self.assertFalse(output.exists(), "no artifact may be written on failure")
+
     def test_cli_force_two_phase_replacement_retains_backup(self) -> None:
         output = self.root / "contract.json"
         output.write_text("approved old output", encoding="utf-8")

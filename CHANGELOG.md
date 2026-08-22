@@ -8,6 +8,11 @@
   documented projected field set (omitted canonical fields, such as connection
   score and evidence, are intentionally not projected; the JSON contract
   remains canonical and complete);
+- `contract` fails closed on malformed persisted connection evidence: the
+  builder enforces its own well-formedness predicate on every connection before
+  the budget is consulted and raises rather than exporting a document its
+  validator rejects, so nothing malformed is silently shown and nothing is
+  silently dropped;
 - task contract Markdown signals an absent field structurally — its trusted
   label followed by the marker as a bare chrome line, with no fenced block —
   so a field whose value is literally that marker text can no longer imitate

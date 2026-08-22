@@ -447,6 +447,30 @@ otherwise unreachable through the public API — it occurs only in hand-crafted
 dicts — and the renderer treats a missing key and an explicit `None`
 identically for every projected field.
 
+#### Malformed persisted evidence fails the export closed
+
+`build_contract_document` **enforces** that predicate on every connection it is
+about to admit, before the character budget is consulted, so a malformed edge
+cannot escape validation by being too expensive to include. If any connection
+fails, the export **raises `ValueError` naming that connection** and the CLI
+exits `2` with the usual structured error on standard error; nothing is written
+to standard output and no artifact file is created.
+
+This matters because the input is not what this module just generated, it is
+what an index **persisted**. `_edge_evidence` whitelists, sanitizes and bounds
+the stored shape, but it preserves each leaf independently, so an index written
+by an older or hand-edited producer can yield a **partial** side that the tables
+declare malformed. Freshly generated sides always carry a `passage`; persisted
+ones need not.
+
+The alternative behaviours were considered and rejected. Silently dropping the
+offending connection would hand the reader a quietly smaller graph. Normalizing
+the partial side away inside `_edge_evidence` would discard a citation the
+reader may be entitled to see, relocating the problem instead of reporting it.
+Failing closed is the only option under which nothing malformed is silently
+shown **and** nothing is silently dropped. A healthy index is unaffected: the
+gate never fires on evidence this version generated.
+
 Over well-formed documents the projection is injective **over the projected
 field set**, holding up to line-ending normalization: two well-formed documents
 that differ in any **projected** field never **render identically**, with the

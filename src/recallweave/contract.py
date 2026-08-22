@@ -79,8 +79,12 @@ EVIDENCE_SIDE_LEAF_TYPES: dict[str, type] = {
 # The substantive side leaf. A PRESENT side must carry `passage` — the actual
 # cited content — so a partial side (citation- or heading-only), a truncated-
 # only side, or an empty side cannot masquerade as an absent one. This is the
-# injectivity hole this module exists to close. Real builder sides always carry
-# passage, so this never rejects a real artifact.
+# injectivity hole this module exists to close. Freshly generated sides always
+# carry passage, but PERSISTED edge JSON need not: an index written by an older
+# or hand-edited producer can hold a partial side, and _edge_evidence preserves
+# each whitelisted leaf independently. That is precisely why
+# build_contract_document ENFORCES this predicate rather than assuming it
+# (recallweave-4su); do not weaken it back into an assumption.
 SUBSTANTIVE_SIDE_LEAVES = ("passage",)
 
 
@@ -433,6 +437,35 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                     continue
                 verified = bool(row["is_verified"])
                 evidence = _edge_evidence(str(row["evidence_json"]))
+                candidate = {
+                    "source": row["source_path"],
+                    "target": row["target_path"],
+                    "kind": row["kind"],
+                    "verified": verified,
+                    "score": row["score"],
+                    "evidence": evidence,
+                    "evidence_class": "authored_link" if verified else "discovery_candidate",
+                }
+                # FAIL CLOSED on malformed persisted evidence. _edge_evidence
+                # whitelists and bounds the persisted shape but preserves each
+                # leaf independently, so an index written by an older or
+                # hand-edited producer can yield a PARTIAL evidence side that
+                # the applicability tables declare malformed. Emitting it would
+                # hand another agent an artifact this module's own validator
+                # rejects, so the export stops instead: nothing malformed is
+                # silently shown, and nothing is silently dropped either.
+                # Validation happens BEFORE the budget check below, so a
+                # malformed edge cannot escape it by being too expensive to
+                # admit.
+                if not connection_evidence_is_well_formed(candidate):
+                    raise ValueError(
+                        "malformed connection evidence in the index for "
+                        f"{row['source_path']} -> {row['target_path']} "
+                        f"({candidate['evidence_class']}): the persisted "
+                        "evidence does not satisfy the connection-evidence "
+                        "applicability rules for its evidence class. Re-index "
+                        "the vault, or exclude the offending note."
+                    )
                 evidence_cost = _evidence_cost(evidence)
                 # Connections are admitted last. When the budget is exhausted,
                 # stop adding connections rather than emitting an oversized
@@ -441,17 +474,7 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                 if remaining <= 0 or evidence_cost > remaining:
                     budget_truncated = True
                     break
-                connections.append(
-                    {
-                        "source": row["source_path"],
-                        "target": row["target_path"],
-                        "kind": row["kind"],
-                        "verified": verified,
-                        "score": row["score"],
-                        "evidence": evidence,
-                        "evidence_class": "authored_link" if verified else "discovery_candidate",
-                    }
-                )
+                connections.append(candidate)
                 used += evidence_cost
 
         citations: list[str] = []
