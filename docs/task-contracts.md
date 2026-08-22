@@ -169,7 +169,10 @@ Each item carries `source`, `target`, `kind`, `verified`, `score`, `evidence`,
 and `evidence_class`. `evidence_class` is `"authored_link"` for authored,
 verified edges or `"discovery_candidate"` for unverified lexical candidates.
 Candidate edges appear only when `include_candidates` is set in the spec; the
-list is bounded at 200 rows, same as `query`. The `evidence` members are
+list is bounded at 200 rows, same as `query`. `score` is the value the **index
+persisted**, checked to be finite and in range but **not** recomputed at export
+time, so it is a score the index claims rather than one the artifact
+authenticates — see [the edge record](#the-edge-record-itself-is-authenticated). The `evidence` members are
 present exactly as `CONNECTION_EVIDENCE_APPLICABILITY` (see
 [Injectivity](#injectivity)) dictates: an `authored_link` carries no
 `source_evidence`, `target_evidence`, or `shared_terms`; a
@@ -548,22 +551,37 @@ The envelope rules are declared as data (`AUTHORED_LINK_KINDS`,
 applicability tables are:
 
 - a **discovery candidate** carries `kind = "discovery_candidate"`,
-  `is_verified = 0`, and a cosine score in `(0, 1]`;
+  `is_verified = 0`, and a **persisted, range-checked** score in `(0, 1]`. The
+  exporter checks that the value is finite and in range; it does **not**
+  recompute the cosine, so `score` is a number the index claims, not one the
+  export authenticates (see below);
 - an **authored link** carries a real link kind (`wikilink` or
   `markdown_link`), `is_verified = 1`, `score = 1.0`, and a link that
-  **re-derives from the index**: its persisted evidence names the link's line,
-  the source line's text and the link target; the source note must really have
-  an indexed section covering that line whose text contains that source text;
-  and the target text must really resolve to the target note, by name or by
-  path, the same two routes `_resolve_link` takes.
+  **re-derives from the index**.
+
+Re-derivation means the binding, not the parts. The persisted evidence names
+the link's line, that line's text and the link target; the exporter reads the
+**exact physical line** back out of the indexed section that covers it (the
+line at that coordinate, not any nearby text), requires the quoted source text
+to be that line, parses it with the **indexer's own link extractor**, requires
+an extracted link whose kind and target match the edge, and resolves that link
+through the **indexer's own resolver** — uniqueness included, so an ambiguous
+target name is rejected exactly as the indexer rejects it.
+
+Every one of those steps is load-bearing. An earlier version checked the parts
+independently — that the quoted text appeared somewhere in the covering
+section, and that the target name resolved — and never that the line contained
+a link at all, so a line reading "This line contains no link at all."
+authenticated a verified relationship. Nothing here reads the vault: `_links`
+runs over one line already stored in `sections.text`.
 
 An authored edge's persisted `line` / `source_text` / `target_text` are **not
 projected** — `_edge_evidence` whitelists them away, which is why an
 `authored_link` renders with empty evidence — but they are what makes the link
 re-derivable, so they are validated even though they are never emitted.
 
-**What is deliberately not authenticated.** Candidate EXISTENCE and RANKING are
-not recomputed: the exporter does not re-run the TF-IDF cosine, the score
+**What is deliberately not authenticated.** Candidate EXISTENCE, RANKING and
+`score` are not recomputed: the exporter does not re-run the TF-IDF cosine, the score
 threshold, or the bounded top-per-note selection. Doing so would duplicate
 `index.py` inside the exporter and make export time scale with index size. So a
 candidate is checked to be *shaped and evidenced* like one the indexer produces,

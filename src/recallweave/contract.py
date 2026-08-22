@@ -16,8 +16,8 @@ from .contract_text import (
     bounded,
     sanitize,
 )
-from .index import connect
-from .parser import normalize_name
+from .index import _path_key, _resolve_link, connect
+from .parser import _links
 from .query import MAX_EDGE_ROWS, _edge_rows, _resolve_note, _search
 
 CONTRACT_SCHEMA_VERSION = "recallweave.contract.v1"
@@ -340,18 +340,35 @@ def _persisted_terms_are_all_strings(raw: str) -> bool:
     return all(isinstance(term, str) for term in terms)
 
 
-def _authored_link_is_rederivable(connection, row) -> bool:
-    """True iff an authored edge can be RE-DERIVED from the index: its persisted
-    evidence carries the link's line, the source line's text and the link target;
-    the source note really has an indexed section covering that line whose text
-    contains that source text; and the target text really resolves to the target
-    note.
+class _SourceNote:
+    """The only thing _resolve_link reads from a note: its vault-relative path,
+    used for source-relative path resolution."""
 
-    This is not a re-index. It is the bounded check that the link the edge claims
-    is one the indexed source note actually contains, which is what separates an
-    authored, verified relationship from a row somebody wrote into the database.
-    Without it, an edge with `is_verified = 1`, a plausible kind and score, and
-    empty evidence exported as an authored link between any two notes."""
+    __slots__ = ("relative_path",)
+
+    def __init__(self, relative_path: str) -> None:
+        self.relative_path = relative_path
+
+
+def _authored_link_is_rederivable(connection, row) -> bool:
+    """True iff an authored edge RE-DERIVES from the index: the exact physical
+    line the edge claims, read back out of the indexed section that covers it,
+    parses through the INDEXER'S OWN link extractor into a link whose kind and
+    target match the edge, and that link resolves — through the indexer's own
+    resolver, uniqueness included — to this edge's target note.
+
+    The first attempt at this check (recallweave-o6r) verified the pieces
+    INDEPENDENTLY: that `source_text` was some substring of the covering
+    section, and that `target_text` resolved to the target note. It never
+    established that the source line contained a link at all, that the link
+    pointed at that target, or that its syntax matched the declared kind, so a
+    line reading "This line contains no link at all." still authenticated a
+    verified relationship (recallweave-ze7). Checking the parts is not
+    re-derivation; the binding between them is the whole claim.
+
+    Everything here reads the INDEX. `_links` runs over one physical line
+    already stored in `sections.text`, not over the vault, so the exporter still
+    performs no file reads and `network_calls` and `vault_writes` stay 0."""
     try:
         persisted = json.loads(str(row["evidence_json"]))
     except (json.JSONDecodeError, TypeError):
@@ -366,43 +383,78 @@ def _authored_link_is_rederivable(connection, row) -> bool:
             return False
     line = persisted["line"]
     source_text = persisted["source_text"]
-    if line < 1 or not source_text:
+    target_text = persisted["target_text"]
+    if line < 1 or not source_text or not target_text:
         return False
-    covering = connection.execute(
+
+    # The EXACT physical line, not any substring of the section. sections.text
+    # holds the lines from line_start to line_end in order, so the claimed line
+    # maps to one position; a claim that does not land on it is not a claim
+    # about a line this index holds.
+    section = connection.execute(
         """
-        SELECT text FROM sections
+        SELECT line_start, text FROM sections
         WHERE note_id = ? AND line_start <= ? AND line_end >= ?
+        LIMIT 1
         """,
         (int(row["source_note_id"]), line, line),
-    ).fetchall()
-    if not any(source_text in str(section["text"]) for section in covering):
-        return False
-    # The link target must resolve to THIS edge's target note. A name match
-    # covers the unqualified form the indexer resolves through note_names; a
-    # path-qualified target is matched against the target note's own path, the
-    # same two routes _resolve_link takes.
-    target_text = persisted["target_text"]
-    normalized = normalize_name(target_text)
-    name_row = connection.execute(
-        "SELECT 1 FROM note_names WHERE note_id = ? AND normalized_name = ? LIMIT 1",
-        (int(row["target_note_id"]), normalized),
     ).fetchone()
-    if name_row is not None:
-        return True
-    path_row = connection.execute(
-        "SELECT relative_path FROM notes WHERE id = ?",
-        (int(row["target_note_id"]),),
-    ).fetchone()
-    if path_row is None:
+    if section is None:
         return False
-    target_path = str(path_row["relative_path"])
-    stripped = target_text.replace("\\", "/").split("#", 1)[0].strip()
-    return bool(stripped) and (
-        target_path == stripped
-        or target_path == f"{stripped}.md"
-        or target_path.endswith(f"/{stripped}")
-        or target_path.endswith(f"/{stripped}.md")
-    )
+    section_lines = str(section["text"]).split("\n")
+    offset = line - int(section["line_start"])
+    if not 0 <= offset < len(section_lines):
+        return False
+    physical_line = section_lines[offset]
+    if physical_line.strip() != source_text:
+        return False
+
+    # Parse that one line with the indexer's own extractor and require a link
+    # that matches this edge's declared kind and target. Reusing _links rather
+    # than re-implementing link syntax is the point: a parallel matcher would
+    # drift from the parser and reopen exactly this hole.
+    matches = [
+        link
+        for link in _links([physical_line], 0)
+        if link.kind == row["kind"] and link.target == target_text
+    ]
+    if not matches:
+        return False
+
+    # Resolve through the indexer's own resolver, so uniqueness and the exact
+    # path rules are the indexer's and not a looser parallel set. The previous
+    # version accepted any matching note_names row (the indexer rejects an
+    # ambiguous name) and matched paths by suffix (the indexer matches only the
+    # exact vault-relative and source-relative keys).
+    source_row = connection.execute(
+        "SELECT relative_path FROM notes WHERE id = ?", (int(row["source_note_id"]),)
+    ).fetchone()
+    if source_row is None:
+        return False
+    # One note contributes several note_names rows for the same normalized name
+    # (title and stem), so the ids must be DE-DUPLICATED per name. Without that
+    # a single unambiguous note looks like two candidates and _resolve_link's
+    # uniqueness rule rejects every genuine link. Distinct ids under one name is
+    # what ambiguity actually means, and that must still be rejected.
+    lookup: dict[str, list[int]] = {}
+    for name_row in connection.execute(
+        "SELECT DISTINCT normalized_name, note_id FROM note_names"
+    ):
+        note_ids = lookup.setdefault(str(name_row["normalized_name"]), [])
+        note_id = int(name_row["note_id"])
+        if note_id not in note_ids:
+            note_ids.append(note_id)
+    exact_paths = {
+        _path_key(str(path_row["relative_path"])): int(path_row["id"])
+        for path_row in connection.execute("SELECT id, relative_path FROM notes")
+    }
+    note = _SourceNote(str(source_row["relative_path"]))
+    for link in matches:
+        candidates, reason = _resolve_link(note, link, lookup, exact_paths)
+        if reason is None and len(candidates) == 1:
+            if candidates[0] == int(row["target_note_id"]):
+                return True
+    return False
 
 
 def _edge_envelope_is_authentic(connection, row) -> bool:

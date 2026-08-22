@@ -2004,6 +2004,210 @@ class ContractDocumentTest(unittest.TestCase):
                                 (raw, edge_id),
                             )
 
+    def _authored_link_vault(self, extra: dict[str, str] | None = None):
+        """A vault whose source note contains a real wikilink, plus whatever
+        extra notes a test needs. Returns (vault, database)."""
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        pages = {
+            "Source.md": (
+                "---\ntitle: Source\n---\n# Source\n\n## S\n\n"
+                "This line contains no link at all.\n"
+                "See the [[Target]] reference here.\n"
+            ),
+            "Target.md": "---\ntitle: Target\n---\n# Target\n\n## S\n\nzephyr body.\n",
+            "Other.md": "---\ntitle: Other\n---\n# Other\n\n## S\n\nzephyr body.\n",
+        }
+        pages.update(extra or {})
+        for relative, text in pages.items():
+            path = vault / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8", newline="")
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        return vault, database
+
+    def _authored_spec(self) -> TaskSpec:
+        return TaskSpec.from_payload(
+            {
+                "objective": "authored link test",
+                "retrieval": {
+                    "query": "zephyr link reference target",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 5000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                },
+            }
+        )
+
+    def test_authored_link_binding_is_rederived_not_merely_corroborated(self) -> None:
+        # FAIL-FIRST (recallweave-ze7). The first attempt at re-derivation
+        # checked the pieces INDEPENDENTLY -- that source_text was some
+        # substring of the covering section, and that target_text resolved to
+        # the target note -- and never that the source line contained a link,
+        # that the link pointed at that target, or that its syntax matched the
+        # declared kind. A line reading "This line contains no link at all."
+        # therefore authenticated a verified relationship. Checking the parts is
+        # not re-derivation; the BINDING between them is the whole claim.
+        import sqlite3
+
+        _vault, database = self._authored_link_vault()
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            edge = connection.execute(
+                "SELECT * FROM edges WHERE is_verified = 1 LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(edge, "fixture must contain an authored link")
+            authentic = json.loads(edge["evidence_json"])
+            note_ids = {
+                row["relative_path"]: row["id"]
+                for row in connection.execute("SELECT id, relative_path FROM notes")
+            }
+        self.assertEqual(authentic["target_text"], "Target")
+
+        forgeries = {
+            # The reproduced bypass: a real indexed line with no link on it.
+            "line containing no link": {
+                **authentic,
+                "line": authentic["line"] - 1,
+                "source_text": "This line contains no link at all.",
+            },
+            # A real link, but pointing somewhere other than this edge's target.
+            "link target disagrees with the edge endpoint": {
+                **authentic,
+                "target_text": "Other",
+            },
+            # Wikilink syntax declared as a markdown link.
+            "declared kind disagrees with the syntax": {**authentic},
+            # The target's name present as ordinary prose, not as link syntax.
+            "target name without link syntax": {
+                **authentic,
+                "line": authentic["line"] - 1,
+                "source_text": "This line contains no link at all.",
+                "target_text": "Target",
+            },
+            # The claimed line really does carry the link, but the quoted
+            # source text is a DIFFERENT line of the same section. The line
+            # must be the exact physical line, not any line nearby: the quoted
+            # text is what a reader is shown as the evidence, so it has to be
+            # the text at the coordinate the edge claims.
+            "source text belongs to another line of the section": {
+                **authentic,
+                "source_text": "This line contains no link at all.",
+            },
+        }
+        for label, forged in forgeries.items():
+            with self.subTest(forgery=label):
+                with closing(
+                    sqlite3.connect(str(database))
+                ) as connection, connection:
+                    if label == "declared kind disagrees with the syntax":
+                        connection.execute(
+                            "UPDATE edges SET kind = 'markdown_link' "
+                            "WHERE is_verified = 1"
+                        )
+                    connection.execute(
+                        "UPDATE edges SET evidence_json = ? WHERE is_verified = 1",
+                        (json.dumps(forged),),
+                    )
+                with self.assertRaises(ValueError) as raised:
+                    build_contract_document(database, self._authored_spec())
+                self.assertRegex(str(raised.exception), r"edge \d+")
+                # Restore for the next subtest.
+                with closing(
+                    sqlite3.connect(str(database))
+                ) as connection, connection:
+                    connection.execute(
+                        "UPDATE edges SET kind = 'wikilink', evidence_json = ? "
+                        "WHERE is_verified = 1",
+                        (json.dumps(authentic),),
+                    )
+        # The authentic edge still exports.
+        document = build_contract_document(database, self._authored_spec())
+        self.assertIn(
+            "authored_link",
+            {item["evidence_class"] for item in document["connections"]},
+        )
+        self.assertTrue(note_ids)
+
+    def test_authored_link_rejects_an_ambiguous_target_name(self) -> None:
+        # FAIL-FIRST (recallweave-ze7). The indexer refuses a link whose target
+        # name resolves to more than one note; the exporter accepted any
+        # matching note_names row, so an ambiguous name authenticated. Two notes
+        # sharing a normalized title make the link unresolvable, and an edge
+        # claiming it must be rejected rather than silently bound to whichever
+        # note the row happens to name.
+        import sqlite3
+
+        _vault, database = self._authored_link_vault(
+            {
+                "Nested/Target.md": (
+                    "---\ntitle: Target\n---\n# Target\n\n## S\n\nzephyr body.\n"
+                )
+            }
+        )
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            names = connection.execute(
+                "SELECT COUNT(DISTINCT note_id) AS n FROM note_names "
+                "WHERE normalized_name = 'target'"
+            ).fetchone()
+            self.assertGreater(
+                names["n"], 1, "the fixture must make 'Target' ambiguous"
+            )
+            # The indexer itself refuses the ambiguous link, so forge the edge
+            # the exporter must now refuse too.
+            target_id = connection.execute(
+                "SELECT id FROM notes WHERE relative_path = 'Target.md'"
+            ).fetchone()["id"]
+            source_id = connection.execute(
+                "SELECT id FROM notes WHERE relative_path = 'Source.md'"
+            ).fetchone()["id"]
+            nested_id = connection.execute(
+                "SELECT id FROM notes WHERE relative_path = 'Nested/Target.md'"
+            ).fetchone()["id"]
+        # Try BOTH ambiguous notes as the endpoint. A resolver that returned
+        # several candidates and simply took the first would authenticate
+        # whichever one happened to sort first, so testing only one endpoint
+        # could pass by luck.
+        for endpoint in (target_id, nested_id):
+            with self.subTest(endpoint=endpoint):
+                with closing(
+                    sqlite3.connect(str(database))
+                ) as connection, connection:
+                    connection.execute("DELETE FROM edges WHERE is_verified = 1")
+                    connection.execute(
+                        "INSERT INTO edges("
+                        "source_note_id, target_note_id, kind, is_verified, "
+                        "score, evidence_json) VALUES (?, ?, 'wikilink', 1, 1.0, ?)",
+                        (
+                            source_id,
+                            endpoint,
+                            json.dumps(
+                                {
+                                    "line": 9,
+                                    "source_text": "See the [[Target]] reference here.",
+                                    "target_text": "Target",
+                                }
+                            ),
+                        ),
+                    )
+                with self.assertRaises(ValueError):
+                    build_contract_document(database, self._authored_spec())
+
     def test_a_genuine_index_still_exports_every_class(self) -> None:
         # The gate must not reject what the indexer really produces. The default
         # fixture carries BOTH an authored wikilink and lexical candidates, so a

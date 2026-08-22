@@ -19,9 +19,12 @@
   candidate must carry the candidate kind, an unset verification flag and a
   cosine score in range, and an authored link must carry a real link kind, a
   set verification flag, a unit score, and a link that re-derives from the
-  index — so a hand-written row can no longer export as an authored, verified
-  relationship. Candidate existence and ranking are deliberately not
-  recomputed, and the docs say so;
+  index — the exact physical line read back from the indexed section, parsed
+  with the indexer's own link extractor and resolved with its own resolver,
+  uniqueness included — so a hand-written row can no longer export as an
+  authored, verified relationship. Candidate existence, ranking and `score` are
+  deliberately not recomputed: a candidate's score is persisted and
+  range-checked, not authenticated, and the docs say so;
 - `contract` authenticates a discovery candidate's own evidence, not only its
   passages: `shared_terms` must be at least two non-empty strings that both
   endpoint notes actually carry in the index, and `method` and `explanation`

@@ -73,6 +73,30 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         # coordinates, is compared.
         self.assertIn("Checking the coordinates alone is", contract_docs)
 
+    def test_docs_do_not_claim_the_candidate_score_is_authenticated(self) -> None:
+        # The exporter checks that a candidate's score is finite and in range;
+        # it does not recompute the cosine. Documentation must describe the
+        # value as persisted and range-checked, and must say so where the
+        # `connections` contract is first described, not only in a later
+        # section a reader may never reach (cycle 22).
+        # Assertions use substrings that survive Markdown emphasis, since the
+        # docs bold the negation.
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("range-checked", text)
+        self.assertIn("recomputed at export time", text)
+        self.assertIn("a score the index claims rather than one the artifact", text)
+        self.assertNotIn("and a cosine score in", text)
+
+    def test_docs_describe_authored_link_rederivation_as_a_binding(self) -> None:
+        # Re-derivation means the BINDING among line, link syntax, declared kind
+        # and resolved target -- not the parts checked independently, which is
+        # what an earlier version did while the docs already claimed the
+        # stronger property.
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("Re-derivation means the binding, not the parts", text)
+        self.assertIn("indexer's own link extractor", text)
+        self.assertIn("uniqueness included", text)
+
     def test_changelog_documents_per_field_projection(self) -> None:
         text = _norm(_text("CHANGELOG.md"))
         self.assertIn("per field", text)
