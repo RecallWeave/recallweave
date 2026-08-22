@@ -7,6 +7,7 @@ from pathlib import Path
 
 from recallweave.contract import CONTRACT_SCHEMA_VERSION, build_contract_document
 from recallweave.contract_spec import TaskSpec
+from recallweave.contract_text import MAX_STATEMENT_CHARACTERS
 from recallweave.index import build_index
 
 
@@ -22,6 +23,9 @@ class ContractDocumentTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+        kept = getattr(self, "_kept_tmp", [])
+        for tmp in kept:
+            tmp.cleanup()
 
     def write(self, relative_path: str, text: str) -> Path:
         path = self.vault / relative_path
@@ -344,6 +348,227 @@ class ContractDocumentTest(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             build_contract_document(self.database, spec)
+
+    def _build_vault_index(self) -> tuple[Path, Path]:
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+
+        def write(relative_path: str, text: str) -> None:
+            path = vault / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8", newline="")
+
+        write(
+            "Alpha.md",
+            "---\ntitle: Alpha\n---\n# Alpha\n\n## S\n\n"
+            "zephyr"
+            "\u202e"
+            "quadrata"
+            "\u200b"
+            " quadrata"
+            "\u0007"
+            " shared topic alpha.\n",
+        )
+        write(
+            "Beta.md",
+            "---\ntitle: Beta\n---\n# Beta\n\n## S\n\n"
+            "zephyr quadrata zephyr quadrata shared topic beta.\n",
+        )
+        write(
+            "Gamma.md",
+            "---\ntitle: Gamma\n---\n# Gamma\n\n## S\n\n"
+            "zephyr quadrata zephyr quadrata shared topic gamma.\n",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        return vault, database
+
+    def _evidence_spec(self, **retrieval_overrides) -> TaskSpec:
+        retrieval = {
+            "query": "zephyr",
+            "limit": 8,
+            "include_candidates": True,
+            "max_characters": 5000,
+        }
+        retrieval.update(retrieval_overrides)
+        return TaskSpec.from_payload(
+            {
+                "objective": "test objective",
+                "retrieval": retrieval,
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"paths": [], "globs": [], "tags": [], "directives": []},
+            }
+        )
+
+    def test_connection_evidence_strips_control_and_bidi_characters(self) -> None:
+        _vault, database = self._build_vault_index()
+        document = build_contract_document(database, self._evidence_spec())
+        self.assertTrue(document["connections"])
+        for conn in document["connections"]:
+            evidence = conn["evidence"]
+            for side_name in ("source_evidence", "target_evidence"):
+                side = evidence.get(side_name, {})
+                for field in ("citation", "heading", "passage"):
+                    value = side.get(field)
+                    if value is not None:
+                        self.assertNotIn("\u202e", value)
+                        self.assertNotIn("\u200b", value)
+                        self.assertNotIn("\u0007", value)
+
+    def test_connection_evidence_whitelists_keys(self) -> None:
+        import sqlite3
+
+        _vault, database = self._build_vault_index()
+        with sqlite3.connect(str(database)) as connection:
+            rows = connection.execute(
+                "SELECT id, evidence_json FROM edges"
+            ).fetchall()
+            for edge_id, raw in rows:
+                evidence = json.loads(raw)
+                evidence["evil_top"] = "drop me"
+                evidence["source_evidence"]["evil_nested"] = "drop me too"
+                connection.execute(
+                    "UPDATE edges SET evidence_json = ? WHERE id = ?",
+                    (json.dumps(evidence), edge_id),
+                )
+        document = build_contract_document(database, self._evidence_spec())
+        self.assertTrue(document["connections"])
+        for conn in document["connections"]:
+            self.assertNotIn("evil_top", conn["evidence"])
+            source_evidence = conn["evidence"].get("source_evidence", {})
+            self.assertNotIn("evil_nested", source_evidence)
+
+    def _emitted_vault_strings(self, document: dict) -> int:
+        total = len(document["task"]["objective"])
+        for item in document["acceptance_criteria"]:
+            total += len(item["statement"])
+        for item in document["constraints"] + document["prior_decisions"]:
+            if item["statement"] is not None:
+                total += len(item["statement"])
+            if item["passage"] is not None:
+                total += len(item["passage"])
+        for item in document["retrieved_context"]:
+            total += len(item["passage"])
+        for directive in document["exclusions"]["directives"]:
+            total += len(directive)
+        for conn in document["connections"]:
+            for side_name in ("source_evidence", "target_evidence"):
+                side = conn["evidence"].get(side_name, {})
+                if side.get("passage") is not None:
+                    total += len(side["passage"])
+                if side.get("heading") is not None:
+                    total += len(side["heading"])
+        return total
+
+    def test_budget_characters_used_covers_all_vault_derived_text(self) -> None:
+        _vault, database = self._build_vault_index()
+        document = build_contract_document(database, self._evidence_spec())
+
+        self.assertGreaterEqual(
+            document["budget"]["characters_used"], self._emitted_vault_strings(document)
+        )
+        self.assertLessEqual(
+            document["budget"]["characters_used"], document["budget"]["character_budget"]
+        )
+
+    def test_budget_too_small_for_connections_truncates(self) -> None:
+        _vault, database = self._build_vault_index()
+        document = build_contract_document(
+            database, self._evidence_spec(max_characters=60)
+        )
+        self.assertTrue(document["budget"]["truncated"])
+        self.assertLessEqual(
+            document["budget"]["characters_used"], document["budget"]["character_budget"]
+        )
+        emitted = self._emitted_vault_strings(document)
+        self.assertLessEqual(emitted, document["budget"]["character_budget"])
+
+    def test_handling_scope_matches_v2_replacement(self) -> None:
+        _vault, database = self._build_vault_index()
+        document = build_contract_document(database, self._evidence_spec())
+        scope = document["handling"]["scope"]
+        self.assertEqual(
+            scope,
+            "This bundle contains the context the operator selected for this task. "
+            "It is a scoped projection of an index, not an authorization decision, "
+            "and it does not certify that anything outside it is forbidden or that "
+            "everything inside it is permitted.",
+        )
+        self.assertNotIn("authorized", scope)
+        self.assertNotIn("complete", scope)
+
+    def test_statement_truncation_sets_truncated_flag(self) -> None:
+        long_statement = "x" * (MAX_STATEMENT_CHARACTERS + 50)
+        spec = self._full_spec(
+            constraints=[{"text": long_statement}],
+            prior_decisions=[],
+            acceptance_criteria=[],
+        )
+        document = build_contract_document(self.database, spec)
+        authored = next(
+            item
+            for item in document["constraints"]
+            if item["evidence_class"] == "authored_by_operator"
+        )
+        self.assertTrue(authored["truncated"])
+
+    def test_exclusion_heavy_retrieval_returns_up_to_limit(self) -> None:
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+
+        def write(relative_path: str, text: str) -> None:
+            path = vault / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8", newline="")
+
+        for index in range(1, 5):
+            body = " ".join(["zephyr quadrata"] * 10)
+            write(
+                f"Restricted/Ex{index}.md",
+                f"---\ntitle: Ex{index}\ntags: [private]\n---\n# Ex{index}\n\n## S\n\n{body}\n",
+            )
+        write(
+            "Keep1.md",
+            "---\ntitle: Keep1\n---\n# Keep1\n\n## S\n\nzephyr quadrata here.\n",
+        )
+        write(
+            "Keep2.md",
+            "---\ntitle: Keep2\n---\n# Keep2\n\n## S\n\nzephyr quadrata there.\n",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "test",
+                "retrieval": {
+                    "query": "zephyr quadrata",
+                    "limit": 2,
+                    "include_candidates": False,
+                    "max_characters": 2000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"paths": [], "globs": [], "tags": ["private"], "directives": []},
+            }
+        )
+        document = build_contract_document(database, spec)
+        kept_paths = [rc["relative_path"] for rc in document["retrieved_context"]]
+        self.assertEqual(len(kept_paths), 2)
+        self.assertEqual(sorted(kept_paths), ["Keep1.md", "Keep2.md"])
 
 
 if __name__ == "__main__":
