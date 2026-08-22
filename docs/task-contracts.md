@@ -231,6 +231,43 @@ spec that requests retrieval but whose query returns nothing excluded yields
 block because untrusted vault text may contain prompt injection; passage text
 is always presented as quoted data.
 
+## The Markdown projection
+
+The structured JSON document `recallweave.contract.v1` described above is the
+canonical contract. The Markdown artifact is a safe, human-readable projection
+of the same content, rendered for reading. A richer human presentation, if
+ever wanted, is a separate renderer built from the structured contract — never
+a relaxation of this one.
+
+The projection treats every string that arrives from the document as untrusted
+and emits it only inside a fenced code block, so it can never be interpreted
+as Markdown syntax. Only renderer-authored structural chrome — the section
+headings, field labels, the trusted literal `# Task contract` title, and the
+`### Passage N` headings — is live Markdown. Nothing untrusted appears outside
+a fence: not in a heading, not in a table cell, not in a list item, not in a
+blockquote, not in a link, not in an info string. The opening fence is a run of
+backticks strictly longer than any backtick run inside the content (minimum
+three), so no content line can close it and nothing inside a fence is parsed as
+Markdown.
+
+This shape is deliberate and differs from a prettier layout:
+
+- the title is the trusted literal `# Task contract`; the task id and objective
+  render in fenced blocks under section 1;
+- each acceptance criterion is a trusted label line followed by a fenced block,
+  not a `- [ ]` checklist of interpolated text;
+- each constraint and prior decision is a trusted label line followed by one
+  fenced block carrying the statement and, on its own line, the citation —
+  citations are no longer inline code spans;
+- the connections table is removed, because a table cell cannot contain a
+  fenced block; each connection is a trusted label line followed by a fenced
+  block;
+- retrieved-context headings are the trusted `### Passage N`, with the citation
+  inside the fenced block rather than in the heading;
+- the handling blockquote is removed; both handling strings are fenced.
+
+The eight numbered sections and their order do not change.
+
 ## The receipt
 
 On success, `recallweave contract` writes exactly one JSON object to standard
