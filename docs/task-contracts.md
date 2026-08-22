@@ -283,16 +283,76 @@ by a real cited citation. A reader could not tell what the **operator asserted**
 from the evidence attached to it. For an engine built on keeping evidence classes
 visibly separate, that is a **first-order defect**, not a formatting preference.
 
+### Projected field set
+
+The Markdown artifact carries exactly the canonical fields listed below, each
+rendered in its own fenced block under its own trusted label (or a single
+trusted inline literal for `exclusions.enforced`). This is the single source
+of truth for the projected set — the tests drive injectivity over exactly these
+names and assert the documentation agrees with them, so the two cannot drift.
+
+- `schema_version`
+- `task.id`
+- `task.objective`
+- `handling.statement`
+- `handling.scope`
+- `acceptance_criteria[].id`
+- `acceptance_criteria[].statement`
+- `constraints[].statement`
+- `constraints[].citation`
+- `constraints[].evidence_class`
+- `prior_decisions[].statement`
+- `prior_decisions[].citation`
+- `prior_decisions[].evidence_class`
+- `retrieved_context[].citation`
+- `retrieved_context[].passage`
+- `retrieved_context[].evidence_class`
+- `connections[].source`
+- `connections[].target`
+- `connections[].kind`
+- `connections[].verified`
+- `exclusions.paths[]`
+- `exclusions.globs[]`
+- `exclusions.tags[]`
+- `exclusions.directives[]`
+- `exclusions.suppressed.retrieved_context`
+- `exclusions.suppressed.connections`
+- `exclusions.suppressed.notes`
+- `exclusions.enforced`
+- `provenance.generated_at`
+- `provenance.index.schema_version`
+- `provenance.index.indexed_at`
+- `provenance.citations[]`
+- `budget.characters_used`
+- `budget.character_budget`
+- `budget.truncated`
+
+The canonical JSON fields **not** listed here are intentionally **not**
+projected. The Markdown artifact is a safe, human-readable projection, not a
+complete dump; it omits structural and evidence detail that a reader does not
+need and that would enlarge the surface of untrusted text. The omitted fields
+include connection `score` and `evidence`, and retrieved-context `relative_path`,
+`title`, `heading`, `line_start`, `line_end`, `truncated`, `matched_terms`,
+`status`, `domain`, and `verified`. The JSON document `recallweave.contract.v1`
+remains canonical and complete; a consumer that needs any of these fields must
+read the JSON, not the Markdown.
+
 ### Injectivity
 
-The projection is injective: two materially different contract documents never
-**render identically**. This is part of the **contract**, not an incidental
-property of the current layout, and it is enforced by tests rather than assumed.
-Any future formatting change that merged fields, dropped a field, or collapsed
-absence into emptiness would break injectivity and must be rejected on that
-ground alone.
+The projection is injective **over the projected field set**: two documents that
+differ in any **projected** field never **render identically**. This is part of
+the **contract**, not an incidental property of the current layout, and it is
+enforced by tests rather than assumed. Any future formatting change that merged
+fields, dropped a projected field, or collapsed absence into emptiness would
+break injectivity and must be rejected on that ground alone.
 
-Each document field is rendered in its own fenced block under its own trusted
+Because every projected field carries its own label and its own fence, a change
+in any projected field changes the projection. Injectivity is deliberately
+**not** claimed over the fields listed above as not projected: they are omitted
+from the Markdown, so changing one of them does not change the rendered
+artifact. That is the intended honesty of the projection, not a defect.
+
+Each projected field is rendered in its own fenced block under its own trusted
 label. Two fields are never concatenated into one fence: merging a statement
 with its citation, or a passage with its citation, would destroy the boundary
 between what the operator asserted and the evidence attached to it. For a
@@ -301,10 +361,6 @@ distinguish the operator's assertion from its attached evidence is a defect of
 the first order. An absent field renders its trusted label with an explicit
 trusted marker — `None recorded.` — rather than vanishing, so absence and
 emptiness are distinguishable.
-
-Injectivity is part of the contract: two materially different documents must
-not render to identical Markdown. Because every field carries its own label and
-its own fence, a change in any field changes the projection.
 
 The eight numbered sections and their order do not change.
 

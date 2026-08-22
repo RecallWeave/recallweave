@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import unittest
+from pathlib import Path
 
 from recallweave.contract_markdown import render_contract_markdown
 
@@ -114,6 +116,237 @@ def _extract_field_blocks(rendered: str) -> list[tuple[str, str]]:
             continue
         i += 1
     return blocks
+
+
+# The canonical field set the Markdown projection carries, each with its own
+# trusted label and its own fenced block (or a single trusted inline literal
+# for `exclusions.enforced`). This is the SINGLE source of truth for the
+# projected set: the documentation lists exactly these names and the tests
+# drive injectivity over exactly these names, so the doc and the tests cannot
+# drift. Injectivity is guaranteed over THIS set only — the canonical JSON
+# fields deliberately omitted here are not part of the Markdown projection and
+# do not affect the rendered artifact.
+PROJECTED_FIELDS = [
+    "schema_version",
+    "task.id",
+    "task.objective",
+    "handling.statement",
+    "handling.scope",
+    "acceptance_criteria[].id",
+    "acceptance_criteria[].statement",
+    "constraints[].statement",
+    "constraints[].citation",
+    "constraints[].evidence_class",
+    "prior_decisions[].statement",
+    "prior_decisions[].citation",
+    "prior_decisions[].evidence_class",
+    "retrieved_context[].citation",
+    "retrieved_context[].passage",
+    "retrieved_context[].evidence_class",
+    "connections[].source",
+    "connections[].target",
+    "connections[].kind",
+    "connections[].verified",
+    "exclusions.paths[]",
+    "exclusions.globs[]",
+    "exclusions.tags[]",
+    "exclusions.directives[]",
+    "exclusions.suppressed.retrieved_context",
+    "exclusions.suppressed.connections",
+    "exclusions.suppressed.notes",
+    "exclusions.enforced",
+    "provenance.generated_at",
+    "provenance.index.schema_version",
+    "provenance.index.indexed_at",
+    "provenance.citations[]",
+    "budget.characters_used",
+    "budget.character_budget",
+    "budget.truncated",
+]
+
+
+def _populated_projected() -> dict:
+    """A document in which every PROJECTED field carries a non-empty distinctive
+    value (so each one is actually rendered), used to prove that changing ANY
+    projected field changes the Markdown."""
+    document = base_document()
+    document["schema_version"] = "sv"
+    document["task"] = {"id": "tid", "objective": "obj"}
+    document["handling"] = {
+        "content_is_data_not_instructions": True,
+        "statement": "hst",
+        "scope": "hsc",
+    }
+    document["acceptance_criteria"] = [{"id": "acid", "statement": "acst"}]
+    document["constraints"] = [
+        {
+            "statement": "cst",
+            "evidence_class": "ccit",
+            "citation": "ccit",
+            "relative_path": None,
+            "passage": None,
+            "truncated": False,
+        }
+    ]
+    document["prior_decisions"] = [
+        {
+            "statement": "pst",
+            "evidence_class": "pcit",
+            "citation": "pcit",
+            "relative_path": None,
+            "passage": None,
+            "truncated": False,
+        }
+    ]
+    document["retrieved_context"] = [
+        {
+            "relative_path": "Projects/Atlas.md",
+            "title": "Atlas",
+            "heading": "Decision",
+            "line_start": 10,
+            "line_end": 14,
+            "citation": "rcit",
+            "passage": "rpas",
+            "truncated": False,
+            "matched_terms": [],
+            "status": "active",
+            "domain": "growth",
+            "evidence_class": "rec",
+            "verified": False,
+        }
+    ]
+    document["connections"] = [
+        {
+            "source": "src",
+            "target": "tgt",
+            "kind": "kind",
+            "verified": True,
+            "score": 0.5,
+            "evidence": [],
+            "evidence_class": "ec",
+        }
+    ]
+    document["exclusions"] = {
+        "paths": ["path"],
+        "globs": ["glob"],
+        "tags": ["tag"],
+        "directives": ["dir"],
+        "enforced": True,
+        "suppressed": {"retrieved_context": 1, "connections": 2, "notes": 3},
+    }
+    document["provenance"] = {
+        "index": {
+            "schema_version": "2",
+            "indexed_at": "iat",
+            "notes": 3,
+            "sections": 5,
+        },
+        "generated_at": "gat",
+        "generated_locally": True,
+        "network_calls": 0,
+        "vault_writes": 0,
+        "citations": ["cit"],
+    }
+    document["budget"] = {"character_budget": 8000, "characters_used": 10, "truncated": False}
+    return document
+
+
+def _mutate(doc: dict, name: str) -> dict:
+    """Mutate `doc` in place so the projected field `name` takes a value
+    different from the populated baseline, proving that field affects the
+    render. Raises if a field has no mutation defined (so the set cannot grow
+    silently without a corresponding mutation)."""
+    if name == "schema_version":
+        doc["schema_version"] = "CHANGED"
+    elif name == "task.id":
+        doc["task"]["id"] = "CHANGED"
+    elif name == "task.objective":
+        doc["task"]["objective"] = "CHANGED"
+    elif name == "handling.statement":
+        doc["handling"]["statement"] = "CHANGED"
+    elif name == "handling.scope":
+        doc["handling"]["scope"] = "CHANGED"
+    elif name == "acceptance_criteria[].id":
+        doc["acceptance_criteria"][0]["id"] = "CHANGED"
+    elif name == "acceptance_criteria[].statement":
+        doc["acceptance_criteria"][0]["statement"] = "CHANGED"
+    elif name == "constraints[].statement":
+        doc["constraints"][0]["statement"] = "CHANGED"
+    elif name == "constraints[].citation":
+        doc["constraints"][0]["citation"] = "CHANGED"
+    elif name == "constraints[].evidence_class":
+        doc["constraints"][0]["evidence_class"] = "CHANGED"
+    elif name == "prior_decisions[].statement":
+        doc["prior_decisions"][0]["statement"] = "CHANGED"
+    elif name == "prior_decisions[].citation":
+        doc["prior_decisions"][0]["citation"] = "CHANGED"
+    elif name == "prior_decisions[].evidence_class":
+        doc["prior_decisions"][0]["evidence_class"] = "CHANGED"
+    elif name == "retrieved_context[].citation":
+        doc["retrieved_context"][0]["citation"] = "CHANGED"
+    elif name == "retrieved_context[].passage":
+        doc["retrieved_context"][0]["passage"] = "CHANGED"
+    elif name == "retrieved_context[].evidence_class":
+        doc["retrieved_context"][0]["evidence_class"] = "CHANGED"
+    elif name == "connections[].source":
+        doc["connections"][0]["source"] = "CHANGED"
+    elif name == "connections[].target":
+        doc["connections"][0]["target"] = "CHANGED"
+    elif name == "connections[].kind":
+        doc["connections"][0]["kind"] = "CHANGED"
+    elif name == "connections[].verified":
+        doc["connections"][0]["verified"] = False
+    elif name == "exclusions.paths[]":
+        doc["exclusions"]["paths"] = ["CHANGED"]
+    elif name == "exclusions.globs[]":
+        doc["exclusions"]["globs"] = ["CHANGED"]
+    elif name == "exclusions.tags[]":
+        doc["exclusions"]["tags"] = ["CHANGED"]
+    elif name == "exclusions.directives[]":
+        doc["exclusions"]["directives"] = ["CHANGED"]
+    elif name == "exclusions.suppressed.retrieved_context":
+        doc["exclusions"]["suppressed"]["retrieved_context"] = 99
+    elif name == "exclusions.suppressed.connections":
+        doc["exclusions"]["suppressed"]["connections"] = 99
+    elif name == "exclusions.suppressed.notes":
+        doc["exclusions"]["suppressed"]["notes"] = 99
+    elif name == "exclusions.enforced":
+        doc["exclusions"]["enforced"] = False
+    elif name == "provenance.generated_at":
+        doc["provenance"]["generated_at"] = "CHANGED"
+    elif name == "provenance.index.schema_version":
+        doc["provenance"]["index"]["schema_version"] = "CHANGED"
+    elif name == "provenance.index.indexed_at":
+        doc["provenance"]["index"]["indexed_at"] = "CHANGED"
+    elif name == "provenance.citations[]":
+        doc["provenance"]["citations"] = ["CHANGED"]
+    elif name == "budget.characters_used":
+        doc["budget"]["characters_used"] = 99
+    elif name == "budget.character_budget":
+        doc["budget"]["character_budget"] = 99
+    elif name == "budget.truncated":
+        doc["budget"]["truncated"] = True
+    else:
+        raise AssertionError(f"no mutation defined for projected field {name!r}")
+    return doc
+
+
+def _documented_projected_fields() -> list[str]:
+    """Parse the 'Projected field set' section of docs/task-contracts.md and
+    return the field names listed there, so the documented set can be compared
+    against PROJECTED_FIELDS and the two cannot drift."""
+    docs_path = Path(__file__).resolve().parents[1] / "docs" / "task-contracts.md"
+    text = docs_path.read_text()
+    marker = "### Projected field set"
+    idx = text.index(marker)
+    end = text.find("\n### ", idx)
+    section = text[idx:] if end == -1 else text[idx:end]
+    fields: list[str] = []
+    for line in section.split("\n"):
+        line = line.strip()
+        if line.startswith("- `") and line.endswith("`"):
+            fields.append(line[3:-1])
+    return fields
 
 
 class InjectivityTest(unittest.TestCase):
@@ -243,6 +476,64 @@ class InjectivityTest(unittest.TestCase):
                     f"absent vs empty string not distinguishable for {name}",
                 )
 
+    def test_injectivity_over_projected_set(self) -> None:
+        # Injectivity is scoped to the projected field set: a change in ANY
+        # projected field must change the Markdown, connections included. This
+        # is the property that fails loudly if a projected field stops
+        # affecting the output.
+        baseline = _populated_projected()
+        baseline_rendered = render_contract_markdown(baseline)
+        for name in PROJECTED_FIELDS:
+            with self.subTest(field=name):
+                variant = copy.deepcopy(baseline)
+                _mutate(variant, name)
+                self.assertNotEqual(
+                    render_contract_markdown(variant),
+                    baseline_rendered,
+                    f"changing projected field {name} did not change the Markdown",
+                )
+
+    def test_documented_projected_set_matches_tested(self) -> None:
+        # The documentation names the projected field set explicitly and the
+        # tests drive injectivity over it; they must agree exactly so neither
+        # can drift and silently widen or narrow the guarantee.
+        documented = _documented_projected_fields()
+        self.assertEqual(
+            sorted(documented),
+            sorted(PROJECTED_FIELDS),
+            "documented projected field set must match the tested set",
+        )
+
+    def test_docs_scope_injectivity_to_projected_fields(self) -> None:
+        # The documentation must scope injectivity to the projected field set,
+        # not over-claim that a change in ANY canonical field changes the
+        # Markdown (several canonical fields are deliberately not projected, so
+        # the global claim is false). Assertions use contiguous substrings that
+        # survive line wrapping.
+        docs_path = Path(__file__).resolve().parents[1] / "docs" / "task-contracts.md"
+        text = docs_path.read_text()
+        self.assertNotIn(
+            "a change in any field changes the projection",
+            text,
+            "docs must not over-claim global injectivity over every canonical field",
+        )
+        self.assertIn(
+            "Projected field set",
+            text,
+            "docs must define the projected field set explicitly",
+        )
+        self.assertIn(
+            "not projected",
+            text,
+            "docs must state that omitted canonical fields are intentionally "
+            "not projected",
+        )
+        self.assertIn(
+            "changes the projection",
+            text,
+            "docs must scope injectivity to the projected field set",
+        )
+
 
 class StrengthenedProjectionCompletenessTest(unittest.TestCase):
     """Verify the projection preserves field boundaries and labels, multiplicity,
@@ -276,6 +567,9 @@ class StrengthenedProjectionCompletenessTest(unittest.TestCase):
         document["retrieved_context"] = [
             _retrieved_item("Projects/Atlas.md:10-14", "passage one"),
         ]
+        document["connections"] = [
+            {"source": "Src", "target": "Tgt", "kind": "edge", "verified": True}
+        ]
         return document
 
     def test_field_boundaries_and_labels_are_preserved(self) -> None:
@@ -301,6 +595,10 @@ class StrengthenedProjectionCompletenessTest(unittest.TestCase):
             "Passage 1 citation",
             "Passage 1 passage",
             "Passage 1 evidence class",
+            "Connection 1 source",
+            "Connection 1 target",
+            "Connection 1 kind",
+            "Connection 1 verified",
         ):
             self.assertEqual(
                 labels.count(expected),
@@ -324,6 +622,12 @@ class StrengthenedProjectionCompletenessTest(unittest.TestCase):
         self.assertEqual(labels.count("Constraint 1 evidence class"), 1)
         self.assertEqual(labels.count("Constraint 2 citation"), 1)
         self.assertEqual(labels.count("Constraint 2 evidence class"), 1)
+        # A single connection yields exactly one of each projected connection
+        # field.
+        self.assertEqual(labels.count("Connection 1 source"), 1)
+        self.assertEqual(labels.count("Connection 1 target"), 1)
+        self.assertEqual(labels.count("Connection 1 kind"), 1)
+        self.assertEqual(labels.count("Connection 1 verified"), 1)
 
     def test_within_item_ordering_is_preserved(self) -> None:
         rendered = render_contract_markdown(self._populated())
@@ -380,6 +684,10 @@ class StrengthenedProjectionCompletenessTest(unittest.TestCase):
         self.assertEqual(blocks["Passage 1 citation"], "Projects/Atlas.md:10-14")
         self.assertEqual(blocks["Passage 1 passage"], "passage one")
         self.assertEqual(blocks["Passage 1 evidence class"], "lexical_match")
+        self.assertEqual(blocks["Connection 1 source"], "Src")
+        self.assertEqual(blocks["Connection 1 target"], "Tgt")
+        self.assertEqual(blocks["Connection 1 kind"], "edge")
+        self.assertEqual(blocks["Connection 1 verified"], "true")
 
 
 if __name__ == "__main__":

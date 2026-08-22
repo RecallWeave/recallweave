@@ -4,7 +4,10 @@
 
 - task contract Markdown renders one fenced block per field with a trusted
   label, preserving the evidence boundary between an operator's statement and
-  the citation attached to it, and keeping the projection injective;
+  the citation attached to it, and keeping the projection injective over a
+  documented projected field set (omitted canonical fields, such as connection
+  score and evidence, are intentionally not projected; the JSON contract
+  remains canonical and complete);
 - optional RecallWeave Atlas viewer with deterministic, in-browser graph
   exploration and a synthetic demonstration graph;
 - `export-viewer` structure-only and bounded-passage profiles, bilateral
