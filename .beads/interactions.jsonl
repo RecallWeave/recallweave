@@ -66,3 +66,4 @@
 {"id":"int-bd210d8cc2d5518b7e40297605d2857a","kind":"field_change","created_at":"2026-08-22T14:25:38.412945Z","actor":"josh","issue_id":"recallweave-3jt","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-e494dcc3d52e8523b7eaad8c221b6fb8","kind":"field_change","created_at":"2026-08-22T16:00:21.896875Z","actor":"josh","issue_id":"recallweave-3jt","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-8b2f2179e37102e4f52585fb43118e0c","kind":"field_change","created_at":"2026-08-22T17:47:09.437891Z","actor":"josh","issue_id":"recallweave-3jt","extra":{"field":"status","new_value":"open","old_value":"closed"}}
+{"id":"int-99a57575caf5f22bcd64cc5a11544171","kind":"field_change","created_at":"2026-08-22T17:47:56.21857Z","actor":"josh","issue_id":"recallweave-3jt","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
