@@ -110,7 +110,7 @@ class ContractMarkdownTests(unittest.TestCase):
         # Opening fence must be strictly longer than the longest inner run (5) -> 6.
         self.assertIn("`" * 6 + "text", rendered)
         self.assertNotIn("`" * 7, rendered)
-        self.assertIn("### Projects/Atlas.md:10-14", rendered)
+        self.assertIn("### Passage 1", rendered)
         self.assertIn(passage, rendered)
         # Structure after the passage is intact.
         self.assertIn("## 6. Connections", rendered)
@@ -218,8 +218,11 @@ class ContractMarkdownTests(unittest.TestCase):
             },
         ]
         rendered = render_contract_markdown(document)
-        self.assertIn("- Never infer identities.", rendered)
-        self.assertIn("- Keep paths.  (`Projects/Atlas.md:10-14`)", rendered)
+        self.assertIn("Constraint 1:\n```text\nNever infer identities.\n```", rendered)
+        self.assertIn(
+            "Constraint 2:\n```text\nKeep paths.\nProjects/Atlas.md:10-14\n```",
+            rendered,
+        )
 
     def test_rendering_is_deterministic(self) -> None:
         document = base_document()
@@ -281,8 +284,10 @@ class ContractMarkdownTests(unittest.TestCase):
             }
         ]
         rendered = render_contract_markdown(document)
-        self.assertIn("&lt;script&gt;", rendered)
-        self.assertNotIn("<script>", rendered)
+        # Raw HTML must not survive outside a fenced block; the statement is
+        # fenced, so the raw HTML is inert inside the fence.
+        self.assertNotIn("<script>", self._non_fence_text(rendered))
+        self.assertNotIn("&lt;script&gt;", rendered)
 
     def _hostile(self, value: str) -> dict:
         document = base_document()
@@ -405,7 +410,7 @@ class ContractMarkdownTests(unittest.TestCase):
             rendered = render_contract_markdown(self._hostile(value))
             self._assert_structure_invariant(rendered)
 
-    def test_table_cell_pipe_cannot_split_columns(self) -> None:
+    def test_connection_pipe_values_are_inert(self) -> None:
         document = base_document()
         document["connections"] = [
             {
@@ -416,18 +421,16 @@ class ContractMarkdownTests(unittest.TestCase):
             }
         ]
         rendered = render_contract_markdown(document)
-        table_lines = [
-            l for l in rendered.split("\n")
-            if l.startswith("| ") and "| A" in l
-        ]
-        self.assertEqual(len(table_lines), 1)
-        # The cell is escaped, so the pipe cannot introduce an extra column.
-        self.assertIn("A\\|B", rendered)
-        self.assertIn("C\\|D", rendered)
-        self.assertIn("edge\\|evil", rendered)
+        # The table is removed; connection values are fenced and inert, so a pipe
+        # can never split a column.
+        self.assertNotIn("| source | target | kind | verified |", rendered)
+        self.assertNotIn("A\\|B", rendered)
+        self.assertIn("A|B", rendered)
+        self.assertIn("C|D", rendered)
+        self.assertIn("edge|evil", rendered)
         self._assert_structure_invariant(rendered)
 
-    def test_citation_backtick_and_newline_cannot_escape_code_span(self) -> None:
+    def test_citation_backtick_and_newline_cannot_escape_fence(self) -> None:
         document = base_document()
         document["constraints"] = [
             {
@@ -440,11 +443,10 @@ class ContractMarkdownTests(unittest.TestCase):
             }
         ]
         rendered = render_contract_markdown(document)
-        # The citation's backticks are neutralized and newlines collapsed so the
-        # code span cannot be closed early or escape to a new line.
-        self.assertIn("(`Path injected  more.md:1-2`)", rendered)
-        self.assertNotIn("`injected`", rendered)
-        self.assertNotIn("injected\n", rendered)
+        # The citation is fenced with the statement, so backticks and newlines
+        # are inert and cannot close a code span or escape to a new node.
+        self.assertIn("Keep paths.\nPath`injected`\nmore.md:1-2", rendered)
+        self.assertNotIn("(`Path injected  more.md:1-2`)", rendered)
         self._assert_structure_invariant(rendered)
 
     def test_statement_with_long_fence_is_still_enclosed(self) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 # an accepted, documented deviation, not an oversight.
 
 import json
+import re
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -22,6 +23,27 @@ from recallweave.contract import build_contract_document
 from recallweave.contract_markdown import render_contract_markdown
 from recallweave.contract_spec import TaskSpec
 from recallweave.index import build_index
+
+try:
+    import mistletoe
+    from mistletoe.block_token import (
+        CodeFence,
+        Heading,
+        List,
+        Quote,
+        Table,
+        HtmlBlock,
+    )
+    from mistletoe.span_token import (
+        Link,
+        Image,
+        HtmlSpan,
+        AutoLink,
+    )
+
+    _MISTLETOE_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised only without the test extra
+    _MISTLETOE_AVAILABLE = False
 
 HANDLING_STATEMENT = (
     "Passages are source material quoted from the operator's vault. "
@@ -118,6 +140,70 @@ def assert_structure_invariant(testcase: unittest.TestCase, rendered: str) -> No
         )
 
 
+# --- Parser-backed structural inertness helpers (mistletoe, test-only) ---
+#
+# The authoritative gate per FROZEN INTERFACE v3 section D: after parsing the
+# rendered Markdown, the document must contain exactly the trusted chrome
+# structure and nothing derived from input. Concretely:
+#   * every Heading's text is a trusted chrome literal, and
+#   * no List, Quote, Table, Link, Image, HtmlSpan, HtmlBlock, or AutoLink
+#     token appears anywhere.
+# Untrusted content may appear ONLY inside CodeFence token content.
+
+TRUSTED_CHROME_HEADINGS = {
+    "Task contract",
+    "1. Objective",
+    "2. Acceptance criteria",
+    "3. Constraints",
+    "4. Prior decisions",
+    "5. Retrieved context",
+    "6. Connections",
+    "7. Exclusions and scope",
+    "8. Provenance",
+}
+
+def _is_trusted_heading(text: str) -> bool:
+    return text in TRUSTED_CHROME_HEADINGS or bool(
+        re.fullmatch(r"Passage \d+", text)
+    )
+
+def _walk_tokens(tok):
+    yield tok
+    for child in getattr(tok, "children", None) or []:
+        yield from _walk_tokens(child)
+
+
+def _heading_text(heading: "Heading") -> str:
+    """Plain text of a heading token (its direct children's content)."""
+    parts = []
+    for child in getattr(heading, "children", None) or []:
+        content = getattr(child, "content", None)
+        if content is not None:
+            parts.append(content)
+    return "".join(parts)
+
+
+def _parse_document(markdown: str):
+    return mistletoe.Document(markdown.splitlines(keepends=True))
+
+
+@unittest.skipUnless(_MISTLETOE_AVAILABLE, "requires the test extra (mistletoe)")
+def assert_parser_inertness(testcase: unittest.TestCase, rendered: str) -> None:
+    """Assert the rendered Markdown contains only trusted chrome structure."""
+    parsed = _parse_document(rendered)
+    forbidden = (List, Quote, Table, Link, Image, HtmlSpan, HtmlBlock, AutoLink)
+    for tok in _walk_tokens(parsed):
+        if isinstance(tok, Heading):
+            testcase.assertTrue(
+                _is_trusted_heading(_heading_text(tok)),
+                f"heading not a trusted chrome literal: {_heading_text(tok)!r}",
+            )
+        else:
+            testcase.assertNotIsInstance(
+                tok, forbidden, f"unexpected structural token: {type(tok).__name__}"
+            )
+
+
 class RendererApiInjectionTest(unittest.TestCase):
     """Every route through the renderer API, outside retrieved passages."""
 
@@ -180,7 +266,10 @@ class RendererApiInjectionTest(unittest.TestCase):
         ]
         rendered = render_contract_markdown(document)
         assert_structure_invariant(self, rendered)
-        self.assertNotIn("`injected`", rendered)
+        # The citation is fenced with the statement; its backticks are inert
+        # inside the fence and can never open a live code span.
+        self.assertNotIn("(`Path injected", rendered)
+        self.assertIn("Path`injected`\nmore.md:1-2", rendered)
 
     def test_citation_with_newline_cannot_escape_heading(self) -> None:
         document = base_document()
@@ -210,9 +299,11 @@ class RendererApiInjectionTest(unittest.TestCase):
         ]
         rendered = render_contract_markdown(document)
         assert_structure_invariant(self, rendered)
-        self.assertIn("A\\|B", rendered)
-        self.assertIn("C\\|D", rendered)
-        self.assertIn("edge\\|evil", rendered)
+        # No table is emitted; the pipe values are fenced and inert.
+        self.assertIn("A|B", rendered)
+        self.assertIn("C|D", rendered)
+        self.assertIn("edge|evil", rendered)
+        self.assertNotIn("A\\|B", rendered)
 
     def test_connection_endpoint_newline_cannot_escape_table(self) -> None:
         document = base_document()
@@ -523,14 +614,15 @@ class CitedCitationPolicyTest(unittest.TestCase):
         )
         rendered = render_contract_markdown(doc)
         self.assert_no_live_inline(rendered)
+        non_fence = "\n".join(_non_fence_lines(rendered))
         for marker in ("*stressed*", "_under_", "~~strike~~", "`inline code`"):
-            self.assertNotIn(marker, rendered)
+            self.assertNotIn(marker, non_fence)
         assert_structure_invariant(self, rendered)
 
     def test_single_and_multiline_citations_same_policy(self) -> None:
-        # Both cited-item branches must make a hostile citation inert: the
-        # single-line branch neutralizes it inside a code span, and the
-        # multiline branch inline-escapes it on its own bullet line.
+        # Both cited-item branches must make a hostile citation inert: each is
+        # fenced with its statement, so no live construct survives outside a
+        # fence.
         hostile = f"Image: {LIVE_IMAGE} {LIVE_LINK}"
         single = base_document()
         single["constraints"] = [
@@ -544,15 +636,11 @@ class CitedCitationPolicyTest(unittest.TestCase):
             }
         ]
         single_rendered = render_contract_markdown(single)
-        # The single-line citation is inert because it sits inside a code span.
-        self.assertIn("  (`Image: ", single_rendered)
-        self.assertIn("`)", single_rendered)
+        self.assertIn("Single line.\nImage: ", single_rendered)
         assert_structure_invariant(self, single_rendered)
 
         multi = self._multiline_doc("constraints", hostile)
         multi_rendered = render_contract_markdown(multi)
-        # The multiline citation is inert because every metacharacter is
-        # escaped; no live construct survives.
         self.assert_no_live_inline(multi_rendered)
         assert_structure_invariant(self, multi_rendered)
 
@@ -606,13 +694,26 @@ class CitedCitationPolicyTest(unittest.TestCase):
             "\n"
             "## 2. Acceptance criteria\n"
             "\n"
-            "- [ ] AC1 First.\n"
-            "- [ ] AC2 Second.\n"
+            "AC1:\n"
+            "```text\n"
+            "First.\n"
+            "```\n"
+            "AC2:\n"
+            "```text\n"
+            "Second.\n"
+            "```\n"
             "\n"
             "## 3. Constraints\n"
             "\n"
-            "- Keep it simple.\n"
-            "- Cited line.  (`Projects/Atlas.md:10-14`)\n"
+            "Constraint 1:\n"
+            "```text\n"
+            "Keep it simple.\n"
+            "```\n"
+            "Constraint 2:\n"
+            "```text\n"
+            "Cited line.\n"
+            "Projects/Atlas.md:10-14\n"
+            "```\n"
             "\n"
             "## 4. Prior decisions\n"
             "\n"
@@ -624,32 +725,36 @@ class CitedCitationPolicyTest(unittest.TestCase):
             "\n"
             "## 6. Connections\n"
             "\n"
-            "| source | target | kind | verified |\n"
-            "| --- | --- | --- | --- |\n"
-            "| A | B | edge | true |\n"
+            "Connection 1:\n"
+            "```text\n"
+            "source: A\n"
+            "target: B\n"
+            "kind: edge\n"
+            "verified: true\n"
+            "```\n"
             "\n"
             "## 7. Exclusions and scope\n"
             "\n"
-            "- suppressed.retrieved_context: 0\n"
-            "- suppressed.connections: 0\n"
-            "- suppressed.notes: 0\n"
-            "- enforced: true\n"
+            "suppressed.retrieved_context: 0\n"
+            "suppressed.connections: 0\n"
+            "suppressed.notes: 0\n"
+            "enforced: true\n"
             "\n"
             "## 8. Provenance\n"
             "\n"
-            "- Generated at:\n"
+            "Generated at:\n"
             "```text\n"
             "2026-08-21T12:00:00+00:00\n"
             "```\n"
-            "- Index schema:\n"
+            "Index schema:\n"
             "```text\n"
             "2\n"
             "```\n"
-            "- indexed at:\n"
+            "indexed at:\n"
             "```text\n"
             "2026-08-21T00:00:00+00:00\n"
             "```\n"
-            "- Budget: 0 / 8000 characters (truncated: false)\n"
+            "Budget: 0 / 8000 characters (truncated: false)\n"
         )
         self.assertEqual(rendered, expected)
 
@@ -698,7 +803,7 @@ class GoldenCompatibilityTest(unittest.TestCase):
     the old renderer, so a byte-identical guarantee against the bf1a5e7 base no
     longer holds. These tests now assert the new stable shape and preserve the
     real per-field properties: falsy citations are omitted, a nonempty citation
-    renders inside a code span, and output is deterministic."""
+    is fenced with its statement, and output is deterministic."""
 
     def _assert_new_shape_stable(self, document: dict) -> None:
         first = render_contract_markdown(document)
@@ -724,8 +829,8 @@ class GoldenCompatibilityTest(unittest.TestCase):
             with self.subTest(citation=citation):
                 rendered = render_contract_markdown(document)
                 self._assert_new_shape_stable(document)
-                self.assertIn("- Single line.", rendered)
-                self.assertNotIn("- Single line.  (", rendered)
+                self.assertIn("```text\nSingle line.\n```", rendered)
+                self.assertNotIn("Single line.\nProjects", rendered)
 
     def test_empty_and_falsy_citations_multiline_omitted(self) -> None:
         for citation in ("", 0, False, None):
@@ -746,7 +851,7 @@ class GoldenCompatibilityTest(unittest.TestCase):
                 self.assertIn("Line one.\nLine two.", rendered)
                 self.assertNotIn("- Line one.", rendered)
 
-    def test_nonempty_citation_rendered_in_code_span(self) -> None:
+    def test_nonempty_citation_is_fenced_after_statement(self) -> None:
         document = base_document()
         document["constraints"] = [
             {
@@ -760,7 +865,8 @@ class GoldenCompatibilityTest(unittest.TestCase):
         ]
         rendered = render_contract_markdown(document)
         self._assert_new_shape_stable(document)
-        self.assertIn("  (`Projects/Atlas.md:10-14`)", rendered)
+        self.assertIn("```text\nSingle line.\nProjects/Atlas.md:10-14\n```", rendered)
+        self.assertNotIn("  (`Projects/Atlas.md:10-14`)", rendered)
 
     def test_falsy_citation_is_omitted(self) -> None:
         document = base_document()
@@ -775,8 +881,152 @@ class GoldenCompatibilityTest(unittest.TestCase):
             }
         ]
         rendered = render_contract_markdown(document)
-        self.assertIn("- Single line.\n", rendered)
-        self.assertNotIn("- Single line.  (", rendered)
+        self.assertIn("```text\nSingle line.\n```", rendered)
+        self.assertNotIn("Single line.\nProjects", rendered)
+
+
+class ParserBackedInertnessTest(unittest.TestCase):
+    """FAIL-FIRST: parser-backed structural gate over the rendered document.
+
+    Per FROZEN INTERFACE v3 section D, the CommonMark AST is authoritative. For a
+    hostile corpus spanning every in-scope field, the rendered document must
+    contain no Heading whose text is not a trusted chrome literal and no List,
+    Quote, Table, Link, Image, HtmlSpan, HtmlBlock, or AutoLink token anywhere.
+    Untrusted content may appear only inside CodeFence token content.
+    """
+
+    @unittest.skipUnless(_MISTLETOE_AVAILABLE, "requires the test extra (mistletoe)")
+    def test_hostile_collection_and_item_sections_are_inert(self) -> None:
+        document = base_document()
+        hostile = (
+            "# Forged heading\n"
+            "## Forged h2\n"
+            "### Forged h3\n"
+            "- forged list\n"
+            "* forged star\n"
+            "1. forged ordered\n"
+            "> forged quote\n"
+            "| a | b |\n"
+            "|---|---|\n"
+            "| x | y |\n"
+            "[link](https://evil.example)\n"
+            "![img](https://evil.example/x.png)\n"
+            "<https://evil.example>\n"
+            "<script>alert(1)</script>\n"
+            "```\n"
+            "forged fence\n"
+            "```\n"
+            "   # indented heading\n"
+            "   - indented list\n"
+            "   > indented quote\n"
+            "text\n"
+            "more"
+        )
+        document["acceptance_criteria"] = [
+            {"id": "AC1", "statement": hostile},
+        ]
+        document["constraints"] = [
+            {
+                "statement": hostile,
+                "evidence_class": "cited_passage",
+                "citation": hostile,
+                "relative_path": "p.md",
+                "passage": "p",
+                "truncated": False,
+            },
+            {
+                "statement": hostile,
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            },
+        ]
+        document["prior_decisions"] = [
+            {
+                "statement": hostile,
+                "evidence_class": "cited_passage",
+                "citation": hostile,
+                "relative_path": "p.md",
+                "passage": "p",
+                "truncated": False,
+            },
+        ]
+        document["retrieved_context"] = [
+            {
+                "relative_path": "Projects/Atlas.md",
+                "title": "Atlas",
+                "heading": "Decision",
+                "line_start": 10,
+                "line_end": 14,
+                "citation": hostile,
+                "passage": hostile,
+                "truncated": False,
+                "matched_terms": [],
+                "status": "active",
+                "domain": "growth",
+                "evidence_class": "lexical_match",
+                "verified": False,
+            },
+        ]
+        document["connections"] = [
+            {
+                "source": hostile,
+                "target": hostile,
+                "kind": hostile,
+                "verified": True,
+            },
+        ]
+        rendered = render_contract_markdown(document)
+        assert_parser_inertness(self, rendered)
+
+    @unittest.skipUnless(_MISTLETOE_AVAILABLE, "requires the test extra (mistletoe)")
+    def test_benign_document_is_parser_inert(self) -> None:
+        document = base_document()
+        document["acceptance_criteria"] = [
+            {"id": "AC1", "statement": "First."},
+            {"id": "AC2", "statement": "Second."},
+        ]
+        document["constraints"] = [
+            {
+                "statement": "Keep it simple.",
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            },
+            {
+                "statement": "Cited line.",
+                "evidence_class": "cited_passage",
+                "citation": "Projects/Atlas.md:10-14",
+                "relative_path": "Projects/Atlas.md",
+                "passage": "p",
+                "truncated": False,
+            },
+        ]
+        document["retrieved_context"] = [
+            {
+                "relative_path": "Projects/Atlas.md",
+                "title": "Atlas",
+                "heading": "Decision",
+                "line_start": 10,
+                "line_end": 14,
+                "citation": "Projects/Atlas.md:10-14",
+                "passage": "passage one",
+                "truncated": False,
+                "matched_terms": [],
+                "status": "active",
+                "domain": "growth",
+                "evidence_class": "lexical_match",
+                "verified": False,
+            }
+        ]
+        document["connections"] = [
+            {"source": "A", "target": "B", "kind": "edge", "verified": True}
+        ]
+        assert_parser_inertness(self, render_contract_markdown(document))
 
 
 class EscapedDisciplineTest(unittest.TestCase):

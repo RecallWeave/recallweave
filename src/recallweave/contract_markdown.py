@@ -229,14 +229,14 @@ def _render_acceptance(document: dict[str, Any]) -> list[_Escaped] | None:
     for item in items:
         if not isinstance(item, dict):
             continue
-        lines.append(
-            _join(
-                _literal("- [ ] "),
-                _inline_esc(item.get("id")),
-                _literal(" "),
-                _inline_esc(item.get("statement")),
-            )
-        )
+        statement = _as_str(item.get("statement"))
+        if not statement:
+            continue
+        # The generated AC id is a trusted chrome label; the statement is
+        # untrusted and renders inside a fenced block (no - [ ] checklist).
+        label = _as_str(item.get("id")) or f"AC{len(lines) // 2 + 1}"
+        lines.append(_join(_inline_esc(label), _literal(":")))
+        lines.append(_fenced_esc(statement))
     return lines or None
 
 
@@ -246,35 +246,20 @@ def _render_cited_items(
     items = document.get(key)
     if not isinstance(items, list) or not items:
         return None
+    label = "Constraint" if key == "constraints" else "Prior decision"
     lines: list[_Escaped] = []
-    for item in items:
+    for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
         statement = _as_str(item.get("statement"))
         citation = item.get("citation")
-        if "\n" in _normalize_lines(statement):
-            # Multiline statements are fenced; their citation leads on its own
-            # bullet line and must be inline-escaped (blockquote/code-span
-            # neutralization does not apply here) so it cannot open a live
-            # construct. Same inertness policy as the single-line branch. A
-            # falsy citation is omitted, matching prior behavior.
-            if citation:
-                lines.append(_join(_literal("- "), _inline_esc(citation)))
-            lines.append(_fenced_esc(statement))
-        else:
-            stmt = _inline_esc(statement)
-            if citation:
-                lines.append(
-                    _join(
-                        _literal("- "),
-                        stmt,
-                        _literal("  (`"),
-                        _citation_esc(citation),
-                        _literal("`)"),
-                    )
-                )
-            else:
-                lines.append(_join(_literal("- "), stmt))
+        # A trusted label line followed by one fenced block carrying the
+        # statement and, on its own line, the citation. No inline code span.
+        lines.append(_literal(f"{label} {index}:"))
+        content = statement
+        if citation:
+            content = (content + "\n" if content else "") + _as_str(citation)
+        lines.append(_fenced_esc(content))
     return lines or None
 
 
@@ -283,11 +268,18 @@ def _render_retrieved(document: dict[str, Any]) -> list[_Escaped] | None:
     if not isinstance(items, list) or not items:
         return None
     parts: list[_Escaped] = []
-    for item in items:
+    for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
-        parts.append(_join(_literal("### "), _inline_esc(item.get("citation"))))
-        parts.append(_fenced_esc(item.get("passage")))
+        # Trusted '### Passage N' heading; citation and passage render inside
+        # the fenced block, so the citation can never become a live heading.
+        parts.append(_literal(f"### Passage {index}"))
+        citation = _as_str(item.get("citation"))
+        passage = _as_str(item.get("passage"))
+        content = citation
+        if passage:
+            content = (content + "\n" if content else "") + passage
+        parts.append(_fenced_esc(content))
     return parts or None
 
 
@@ -295,30 +287,21 @@ def _render_connections(document: dict[str, Any]) -> list[_Escaped] | None:
     items = document.get("connections")
     if not isinstance(items, list) or not items:
         return None
-    lines: list[_Escaped] = [
-        _literal("| source | target | kind | verified |"),
-        _literal("| --- | --- | --- | --- |"),
-    ]
-    for item in items:
+    # The table is removed: a CommonMark table cell cannot hold a fenced block.
+    # Each connection becomes a trusted label followed by a fenced block.
+    lines: list[_Escaped] = []
+    for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
-        source = _cell_esc(item.get("source"))
-        target = _cell_esc(item.get("target"))
-        kind = _cell_esc(item.get("kind"))
-        verified = _literal("true" if item.get("verified") else "false")
-        lines.append(
-            _join(
-                _literal("| "),
-                source,
-                _literal(" | "),
-                target,
-                _literal(" | "),
-                kind,
-                _literal(" | "),
-                verified,
-                _literal(" |"),
-            )
+        lines.append(_literal(f"Connection {index}:"))
+        verified = "true" if item.get("verified") else "false"
+        content = (
+            f"source: {_as_str(item.get('source'))}\n"
+            f"target: {_as_str(item.get('target'))}\n"
+            f"kind: {_as_str(item.get('kind'))}\n"
+            f"verified: {verified}"
         )
+        lines.append(_fenced_esc(content))
     return lines or None
 
 
@@ -336,7 +319,7 @@ def _render_exclusions(document: dict[str, Any]) -> list[_Escaped] | None:
         values = exclusions.get(key)
         if isinstance(values, list):
             for value in values:
-                lines.append(_literal(f"- {label}:"))
+                lines.append(_literal(f"{label}:"))
                 lines.append(_fenced_esc(value))
     suppressed = exclusions.get("suppressed")
     if isinstance(suppressed, dict):
@@ -344,14 +327,14 @@ def _render_exclusions(document: dict[str, Any]) -> list[_Escaped] | None:
             if key in suppressed:
                 lines.append(
                     _join(
-                        _literal(f"- suppressed.{key}: "),
+                        _literal(f"suppressed.{key}: "),
                         _inline_esc(suppressed[key]),
                     )
                 )
     enforced = exclusions.get("enforced")
     if isinstance(enforced, bool):
         lines.append(
-            _join(_literal("- enforced: "), _literal(str(enforced).lower()))
+            _join(_literal("enforced: "), _literal(str(enforced).lower()))
         )
     return lines or None
 
@@ -362,21 +345,21 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
     if isinstance(provenance, dict):
         generated = provenance.get("generated_at")
         if isinstance(generated, str) and generated:
-            lines.append(_literal("- Generated at:"))
+            lines.append(_literal("Generated at:"))
             lines.append(_fenced_esc(generated))
         index = provenance.get("index")
         if isinstance(index, dict):
             schema = index.get("schema_version")
             if isinstance(schema, str) and schema:
-                lines.append(_literal("- Index schema:"))
+                lines.append(_literal("Index schema:"))
                 lines.append(_fenced_esc(schema))
             indexed_at = index.get("indexed_at")
             if isinstance(indexed_at, str) and indexed_at:
-                lines.append(_literal("- indexed at:"))
+                lines.append(_literal("indexed at:"))
                 lines.append(_fenced_esc(indexed_at))
         citations = provenance.get("citations")
         if isinstance(citations, list) and citations:
-            lines.append(_literal("- Citations:"))
+            lines.append(_literal("Citations:"))
             for citation in citations:
                 lines.append(_fenced_esc(citation))
     budget = document.get("budget")
@@ -387,7 +370,7 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
         trunc = str(truncated).lower() if isinstance(truncated, bool) else ""
         lines.append(
             _join(
-                _literal("- Budget: "),
+                _literal("Budget: "),
                 used,
                 _literal(" / "),
                 total,
