@@ -95,44 +95,36 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your cycle-8 findings are fixed.
+Your cycle-9 findings are fixed.
 
-- **High — the projection destroyed evidence boundaries.** Confirmed exactly:
-  an operator-authored constraint with statement `"Author asserted.
-Vault.md:7-8"`
-  and citation `None` rendered byte-identically to a cited constraint with
-  statement `"Author asserted."` and citation `"Vault.md:7-8"`. Same collision for
-  retrieved-context citation vs passage and acceptance id vs statement. You were
-  right that this is an evidence-integrity violation and that the specification
-  shared the defect — the merged-block rule was an architect error in FROZEN
-  INTERFACE v3 and has been withdrawn.
+- **High — connection fields still collided.** Confirmed: `source "A
+target: X"`
+  / `target "B"` rendered byte-identically to `source "A"` / `target "X
+target: B"`.
+  You were right that the previous bead swept only the sections named in its
+  acceptance criteria; connections were missed because the criteria listed three
+  specific collisions instead of requiring a full sweep. Connection `source`,
+  `target`, `kind` and `verified` now each render in their own labelled fenced
+  block, and the collision pair renders differently. The worker also swept the
+  remaining sections for the same pattern.
 
-  Now: **one fenced block per field**, each under its own renderer-authored label;
-  `evidence_class` is fenced in its own block rather than mapped to chrome; an
-  absent field renders its label with the trusted marker `None recorded`, so
-  absence is distinguishable from an empty string. All three collision pairs now
-  render differently, verified.
+- **Medium — the injectivity claim exceeded what the renderer establishes.** You
+  were right and this mattered: the documentation claimed a change in *any* field
+  changes the projection, while the renderer deliberately omits connection
+  `score`, `evidence`, `evidence_class` and retrieved-context `title`, `status`,
+  `domain`, `verified`. Rather than rendering everything, the claim is now scoped
+  honestly: `docs/task-contracts.md` defines an explicit **projected field set**,
+  states which canonical fields are intentionally not projected and why, and
+  scopes injectivity to that set. `tests/test_contract_projection.py` pins the set
+  as `PROJECTED_FIELDS`, asserts a change in any of them changes the Markdown
+  (connections included), and asserts the documented set and the tested set cannot
+  drift. The CHANGELOG claim was corrected to match.
 
-- **Medium — projection-completeness checked presence, not preservation.**
-  A new `tests/test_contract_projection.py` adds injectivity (materially different
-  documents never render identically, covering the three collision shapes,
-  absent-vs-empty for every optional field, reordering, and differing
-  multiplicity) and strengthens completeness to verify labels, boundaries,
-  multiplicity and ordering.
+Suite: 351 tests with the parser, `compileall` clean.
 
-`docs/task-contracts.md` and `CHANGELOG.md` were updated to match, including the
-evidence-boundary rationale and injectivity as a contract property.
-
-Suite: 345 tests with the parser. Documented example runs verbatim in both formats.
-
-Process note for your judgment: two commits in this cycle were finished by the
-architect rather than a swarm worker — the Bead C deletion earlier, and the
-documentation prose here — in both cases after the assigned worker stalled with
-the substantive work already done. Both are in the diff and neither touched the
-renderer's security logic.
-
-Reassess every original Critical and High finding across all eight cycles, the
-new per-field projection, and any regression this restructuring introduced —
-particularly whether splitting fields reopened any Markdown-active position, and
-whether injectivity actually holds rather than merely being asserted.
+Reassess every Critical and High from all nine cycles, plus: whether the
+projected-field set is honestly complete (any field a reader would reasonably
+expect the human artifact to carry that is silently absent), whether injectivity
+now holds over exactly that set, and whether per-field separation left any
+value-to-label attribution ambiguity anywhere.
 <!-- CYCLE-CONTEXT-END -->
