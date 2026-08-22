@@ -95,56 +95,55 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-The cycle-19 Medium is fixed, and all five of your suggested tests are in the
-suite. You were right that it was the next level below cycle 18, and finding it
-was worth more than the fix itself.
+Both cycle-20 findings are fixed, and every one of your six suggested tests is
+in the suite. You were right that it was the fourth "one level below", and you
+were right that the suite was blessing a contradiction.
 
-- **Medium — a side could omit a leaf and pass** (`recallweave-zwj`).
-  Reproduced exactly as you described: an authentic long indexed passage, exact
-  bounded text and ellipsis intact, citation intact, with only `"truncated"`
-  deleted — the export succeeded and emitted a shortened passage with nothing
-  declaring it shortened. A false claim by silence, contradicting
-  ARCHITECTURE.md. Dropping `heading` likewise produced a shape the indexer
-  never emits.
+- **High — a discovery candidate's own evidence was unauthenticated**
+  (`recallweave-5vk`). Reproduced exactly: empty `shared_terms`, `[1, {"vault":
+  "secret"}]` silently filtered to `[]`, a single term, and two wholly
+  fabricated terms with `method` and `explanation` rewritten to `"forged"` all
+  exported and rendered like real candidates.
 
-  A present side must now reproduce the COMPLETE shape `cited_passage()` emits —
-  exactly `citation`, `heading`, `passage`, `truncated` — and the attribution
-  check compares all four unconditionally. `cited_passage()` always emits all
-  four when it resolves a section at all, so this rejects no real evidence.
-  `docs/task-contracts.md`, which had documented the four leaves as optional,
-  and the CHANGELOG now state the rule and why omitting `truncated` is a false
-  claim rather than a sparse one.
+  `shared_terms` must now be at least two non-empty strings, and every claimed
+  term must be one **both** endpoint notes carry in the index. The exporter does
+  NOT recompute the TF-IDF ranking — it checks the weaker, sufficient property
+  that the ranking is a selection FROM the shared vocabulary, which a fabricated
+  term cannot satisfy. The PERSISTED list is checked for non-string elements
+  directly, because `_edge_evidence`'s sanitizing turns corruption into a
+  well-typed empty list that a rule inspecting only the emitted list cannot see.
+  `method` and `explanation` are required and must be the indexer's own —
+  `explanation` is the standing warning that lexical overlap is not proof, so
+  rewriting or dropping it is a content change dressed as metadata.
 
-- **The more important half, which you did not ask for but which your finding
-  exposed:** the complete-shape rule was NOT enforced by any test. Removing it
-  from the predicate left all 397 tests green, because the builder's
-  leaf-by-leaf comparison caught the same shapes through a different path. That
-  is this project's recurring defect class — an invariant asserted at one level
-  while the defect lives at another — so a PREDICATE-LEVEL test now drives each
-  leaf out in turn on both sides, and is mutation-proven to fail when the rule
-  is removed **or** relaxed from an exact set to a subset check. The positive
-  form is pinned too: every side the public builder emits carries exactly those
-  four leaves.
+- **Medium — the suite blessed a contradiction.** Corrected: `{"shared_terms":
+  []}` is no longer expected to be well formed. A drift check now builds a real
+  index and asserts its candidate edges carry exactly the declared constants and
+  at least two terms, so the exporter's constants cannot diverge from `index.py`.
 
-Suite: 398 tests with the parser, green under `-W error::ResourceWarning`;
-`compileall` clean. Runtime dependencies are still empty; `mistletoe` remains
-test-only.
+Four mutations killed: removing the index authenticity check, removing the
+minimum-two-terms rule, dropping the `explanation` requirement, and removing the
+persisted-string faithfulness check.
 
-This cycle decides promotion.
+Suite: 401 tests with the parser, green under `-W error::ResourceWarning`;
+`compileall` clean. Runtime dependencies are still empty.
 
-1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-   Name anything that blocks promotion at any severity, and if nothing does,
-   say that.
-2. Three times now a fix has left the defect one level below it (15 after 14,
-   18 after 17, 19 after 18). Look for the fourth. In particular: is the
-   evidence side now fully pinned, or is there a level below the shape rule —
-   the `shared_terms`, `method` and `explanation` members, the top-level
-   applicability table, or `_edge_evidence`'s own whitelisting?
-3. Look for rules that are real in the code but unenforced by the suite, the
-   way the shape rule was. That class of gap has produced a finding in three
-   separate cycles.
+This cycle decides promotion. Four consecutive cycles have found the next level
+down (15 after 14, 18 after 17, 19 after 18, 20 after 19), so the honest
+question is whether that sequence has converged.
+
+1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
+   nothing blocks promotion, say so explicitly. If something does, name it and
+   its severity.
+2. Is there a fifth level? The candidate envelope and the evidence sides are now
+   both authenticated against the index. What remains unauthenticated —
+   `score`, `kind`, `verified`, the edge's very existence, the note-level
+   metadata retrieved context carries, the operator-supplied constraint and
+   decision citations?
+3. Keep hunting for rules that are real in the code but unenforced by the suite.
+   That class has produced a finding in four separate cycles.
 4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
    `PRIVACY.md` and `CHANGELOG.md` against the code.
-5. Reassess every Critical and High from all nineteen cycles and say which
-   remain closed.
+5. Reassess every Critical and High from all twenty cycles and say which remain
+   closed.
 <!-- CYCLE-CONTEXT-END -->
