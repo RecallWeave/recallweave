@@ -11,10 +11,10 @@ class _Escaped:
     """A string already escaped for a specific output position.
 
     Every value that reaches the output buffer is wrapped in _Escaped by an
-    explicit position helper (inline / cell / citation / fenced / quoted) or
-    by _literal() for a trusted static literal. The instance cannot be built
-    directly from an arbitrary raw string; a future branch must make an
-    explicit escaping choice before a value can reach the buffer.
+    explicit position helper (inline / fenced) or by _literal() for a trusted
+    static literal. The instance cannot be built directly from an arbitrary
+    raw string; a future branch must make an explicit escaping choice before
+    a value can reach the buffer.
     """
 
     __slots__ = ("text",)
@@ -51,57 +51,6 @@ def _join(*pieces: _Escaped) -> _Escaped:
     return _Escaped._make("".join(piece.text for piece in pieces))
 
 
-def _inline(value: str) -> str:
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _collapse_newlines(value: str) -> str:
-    return " ".join(value.split())
-
-
-def _escape_metachars(value: str) -> str:
-    """Backslash-escape the inline Markdown metacharacters that can open a live
-    inline construct: backslash, backtick, brackets, parentheses, exclamation
-    (image), emphasis markers, and tilde. Angle brackets are handled separately
-    by _inline's HTML-escaping so autolinks stay inert."""
-    value = value.replace("\\", "\\\\")
-    for ch in "`[]()!*_~":
-        value = value.replace(ch, "\\" + ch)
-    return value
-
-
-def _escape_inline(value: str) -> str:
-    """Escape an untrusted single-line inline field for the position it holds.
-
-    Newlines are collapsed so the value cannot open a new structural line, then
-    leading Markdown block-structure characters are escaped so the single-line
-    value cannot start a construct (heading, list, quote, fence, code span).
-    Inline metacharacters are escaped so no live image, link, autolink, code
-    span, or emphasis marker survives.
-    """
-    value = _collapse_newlines(value)
-    value = _inline(value)
-    value = _escape_metachars(value)
-    if value and value[0] in "#>*+|-`":
-        value = "\\" + value
-    elif value and value[0].isdigit() and len(value) > 1 and value[1] in ".)":
-        value = "\\" + value
-    return value
-
-
-def _citation_inline(value: str) -> str:
-    """Collapse newlines and neutralize backticks for an inline code span."""
-    return _collapse_newlines(value).replace("`", " ")
-
-
-def _cell(value: Any) -> str:
-    """Escape an untrusted connection table cell."""
-    v = _collapse_newlines(_as_str(value))
-    v = _inline(v)
-    v = _escape_metachars(v)
-    return v.replace("|", "\\|")
-
-
 def _as_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -130,26 +79,6 @@ def _fenced(value: str) -> str:
     return f"{fence}{FENCE_LANGUAGE}\n{value}\n{fence}"
 
 
-def _quote_line(text: str) -> str:
-    return "\n".join(
-        f"> {_escape_blockquote_line(line)}" if line else ">"
-        for line in _normalize_lines(text).split("\n")
-    )
-
-
-def _escape_blockquote_line(line: str) -> str:
-    """Escape a single line destined for a blockquote. Inline metacharacters
-    (image, link, autolink, code span, emphasis) and leading block-structure
-    markers are escaped so the line cannot open a live construct or node."""
-    line = _inline(line)
-    line = _escape_metachars(line)
-    if line and line[0] in "#>*+|-`":
-        line = "\\" + line
-    elif line and line[0].isdigit() and len(line) > 1 and line[1] in ".)":
-        line = "\\" + line
-    return line
-
-
 # --- Position helpers: every untrusted value reaching the output buffer must
 # pass through exactly one of these, which both performs the escaping and
 # returns an _Escaped wrapper so it cannot be interpolated as a bare string.
@@ -161,28 +90,10 @@ def _normalize_lines(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _inline_esc(value: Any) -> _Escaped:
-    return _Escaped._make(_escape_inline(_as_str(value)))
-
-
-def _cell_esc(value: Any) -> _Escaped:
-    return _Escaped._make(_cell(value))
-
-
-def _citation_esc(value: Any) -> _Escaped:
-    """A citation rendered inertly inside an inline code span."""
-    return _Escaped._make(_citation_inline(_as_str(value)))
-
-
 def _fenced_esc(value: Any) -> _Escaped:
     """A block rendered raw inside a fence (already inert). Content is emitted
     verbatim after normalizing CRLF and bare CR to LF, per the fence rule."""
     return _Escaped._make(_fenced(_normalize_lines(_as_str(value))))
-
-
-def _quoted_esc(text: Any) -> _Escaped:
-    """A multi-line string rendered as an escaped blockquote."""
-    return _Escaped._make(_quote_line(_as_str(text)))
 
 
 def _render_handling(document: dict[str, Any]) -> list[_Escaped]:
@@ -226,17 +137,20 @@ def _render_acceptance(document: dict[str, Any]) -> list[_Escaped] | None:
     if not isinstance(items, list) or not items:
         return None
     lines: list[_Escaped] = []
-    for item in items:
+    for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
         statement = _as_str(item.get("statement"))
         if not statement:
             continue
-        # The generated AC id is a trusted chrome label; the statement is
-        # untrusted and renders inside a fenced block (no - [ ] checklist).
-        label = _as_str(item.get("id")) or f"AC{len(lines) // 2 + 1}"
-        lines.append(_join(_inline_esc(label), _literal(":")))
-        lines.append(_fenced_esc(statement))
+        # The AC id is read from the document and is therefore untrusted; a
+        # trusted literal label precedes a fenced block carrying the id and
+        # the statement (no - [ ] checklist, no inline id).
+        lines.append(_literal(f"Acceptance criterion {index}:"))
+        content = _as_str(item.get("id"))
+        if statement:
+            content = (content + "\n" if content else "") + statement
+        lines.append(_fenced_esc(content))
     return lines or None
 
 
@@ -325,12 +239,10 @@ def _render_exclusions(document: dict[str, Any]) -> list[_Escaped] | None:
     if isinstance(suppressed, dict):
         for key in ("retrieved_context", "connections", "notes"):
             if key in suppressed:
-                lines.append(
-                    _join(
-                        _literal(f"suppressed.{key}: "),
-                        _inline_esc(suppressed[key]),
-                    )
-                )
+                # The suppressed count is document-derived and therefore
+                # untrusted; a trusted literal label precedes a fenced block.
+                lines.append(_literal(f"suppressed.{key}:"))
+                lines.append(_fenced_esc(suppressed[key]))
     enforced = exclusions.get("enforced")
     if isinstance(enforced, bool):
         lines.append(
@@ -364,21 +276,20 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
                 lines.append(_fenced_esc(citation))
     budget = document.get("budget")
     if isinstance(budget, dict):
-        used = _inline_esc(budget.get("characters_used"))
-        total = _inline_esc(budget.get("character_budget"))
+        used = _as_str(budget.get("characters_used"))
+        total = _as_str(budget.get("character_budget"))
         truncated = budget.get("truncated")
         trunc = str(truncated).lower() if isinstance(truncated, bool) else ""
-        lines.append(
-            _join(
-                _literal("Budget: "),
-                used,
-                _literal(" / "),
-                total,
-                _literal(" characters (truncated: "),
-                _literal(trunc),
-                _literal(")"),
-            )
-        )
+        # The budget numbers are document-derived and therefore untrusted; a
+        # trusted literal label precedes a fenced block carrying them.
+        lines.append(_literal("Budget:"))
+        content = ""
+        if used:
+            content += "characters_used: " + used + "\n"
+        if total:
+            content += "character_budget: " + total + "\n"
+        content += "truncated: " + trunc
+        lines.append(_fenced_esc(content))
     return lines or None
 
 
