@@ -2,6 +2,9 @@
 
 ## 0.1.0 - Unreleased
 
+- task contract Markdown renders one fenced block per field with a trusted
+  label, preserving the evidence boundary between an operator's statement and
+  the citation attached to it, and keeping the projection injective;
 - optional RecallWeave Atlas viewer with deterministic, in-browser graph
   exploration and a synthetic demonstration graph;
 - `export-viewer` structure-only and bounded-passage profiles, bilateral

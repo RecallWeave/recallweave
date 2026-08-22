@@ -254,17 +254,57 @@ This shape is deliberate and differs from a prettier layout:
 
 - the title is the trusted literal `# Task contract`; the task id and objective
   render in fenced blocks under section 1;
-- each acceptance criterion is a trusted label line followed by a fenced block,
-  not a `- [ ]` checklist of interpolated text;
-- each constraint and prior decision is a trusted label line followed by one
-  fenced block carrying the statement and, on its own line, the citation —
-  citations are no longer inline code spans;
+- each acceptance criterion is split into a trusted `Acceptance criterion N id:`
+  label and an `Acceptance criterion N statement:` label, each followed by its
+  own fenced block — not a `- [ ]` checklist of interpolated text;
+- each constraint and prior decision is split into trusted `statement`,
+  `citation`, and `evidence class` labels, each followed by its own fenced
+  block — citations are no longer inline code spans;
 - the connections table is removed, because a table cell cannot contain a
   fenced block; each connection is a trusted label line followed by a fenced
   block;
-- retrieved-context headings are the trusted `### Passage N`, with the citation
-  inside the fenced block rather than in the heading;
+- retrieved-context headings are the trusted `### Passage N`, with the
+  `citation`, `passage`, and `evidence class` each in their own fenced block;
 - the handling blockquote is removed; both handling strings are fenced.
+
+### One fenced block per field
+
+The renderer emits **one fenced block per field**, never two document fields in a
+single block, and every fenced block is preceded by its own renderer-authored
+label. A field that is absent renders its label with the trusted marker
+`None recorded`, so **absence** is distinguishable from **emptiness**: an absent
+citation and an empty-string citation do not produce the same output.
+
+This exists because the earlier shape merged a statement with its citation into
+one block, and that destroyed the **evidence boundary**. A constraint whose
+operator-authored statement happened to end with a line resembling a citation
+rendered byte-for-byte identically to a constraint whose statement was followed
+by a real cited citation. A reader could not tell what the **operator asserted**
+from the evidence attached to it. For an engine built on keeping evidence classes
+visibly separate, that is a **first-order defect**, not a formatting preference.
+
+### Injectivity
+
+The projection is injective: two materially different contract documents never
+**render identically**. This is part of the **contract**, not an incidental
+property of the current layout, and it is enforced by tests rather than assumed.
+Any future formatting change that merged fields, dropped a field, or collapsed
+absence into emptiness would break injectivity and must be rejected on that
+ground alone.
+
+Each document field is rendered in its own fenced block under its own trusted
+label. Two fields are never concatenated into one fence: merging a statement
+with its citation, or a passage with its citation, would destroy the boundary
+between what the operator asserted and the evidence attached to it. For a
+project whose premise is evidence-class separation, a projection that cannot
+distinguish the operator's assertion from its attached evidence is a defect of
+the first order. An absent field renders its trusted label with an explicit
+trusted marker — `None recorded.` — rather than vanishing, so absence and
+emptiness are distinguishable.
+
+Injectivity is part of the contract: two materially different documents must
+not render to identical Markdown. Because every field carries its own label and
+its own fence, a change in any field changes the projection.
 
 The eight numbered sections and their order do not change.
 
