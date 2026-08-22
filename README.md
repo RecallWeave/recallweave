@@ -236,6 +236,7 @@ adapter. See [ARCHITECTURE.md](ARCHITECTURE.md).
 ## Development
 
 ```console
+pip install -e ".[test]"
 python -m compileall -q src
 python -m unittest discover -s tests -v
 cd viewer
@@ -244,9 +245,11 @@ npm run lint
 npm test
 ```
 
-The core uses only the Python standard library. Future embedding or model
-integrations should be optional providers, never a requirement for private
-local use.
+The core uses only the Python standard library and has no runtime dependencies.
+The test suite has one optional dependency — the CommonMark parser `mistletoe`,
+installed via `pip install -e ".[test]"` — used to prove the Markdown contract
+artifact is inert. Future embedding or model integrations should be optional
+providers, never a requirement for private local use.
 
 ## License
 

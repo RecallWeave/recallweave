@@ -55,6 +55,10 @@ indexing policy.
 ## Dependency posture
 
 - The Python package has no runtime dependencies.
+- The test suite has one optional dependency: `mistletoe`, a CommonMark parser
+  installed only via the `test` extra (`pip install -e ".[test]"`). It is used
+  to assert that the Markdown contract artifact is inert and never leaks into a
+  normal installation.
 - The viewer lockfile is audited in full and with development dependencies
   omitted. Release candidates require both audits to report zero known
   vulnerabilities.
