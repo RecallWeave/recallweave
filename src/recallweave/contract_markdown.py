@@ -175,8 +175,9 @@ def _citation_esc(value: Any) -> _Escaped:
 
 
 def _fenced_esc(value: Any) -> _Escaped:
-    """A block rendered raw inside a fence (already inert)."""
-    return _Escaped._make(_fenced(_as_str(value)))
+    """A block rendered raw inside a fence (already inert). Content is emitted
+    verbatim after normalizing CRLF and bare CR to LF, per the fence rule."""
+    return _Escaped._make(_fenced(_normalize_lines(_as_str(value))))
 
 
 def _quoted_esc(text: Any) -> _Escaped:
@@ -184,45 +185,40 @@ def _quoted_esc(text: Any) -> _Escaped:
     return _Escaped._make(_quote_line(_as_str(text)))
 
 
-def _title(document: dict[str, Any]) -> _Escaped:
-    task = document.get("task")
-    if isinstance(task, dict):
-        task_id = task.get("id")
-        if isinstance(task_id, str) and task_id:
-            return _inline_esc(task_id)
-        objective = task.get("objective")
-        if isinstance(objective, str) and objective:
-            return _inline_esc(objective.split("\n", 1)[0])
-    return _literal("")
-
-
-def _blockquote(document: dict[str, Any]) -> list[_Escaped]:
-    lines: list[_Escaped] = []
-    schema = document.get("schema_version")
-    if isinstance(schema, str):
-        lines.append(_join(_literal("> Schema: "), _inline_esc(schema)))
-    provenance = document.get("provenance")
-    if isinstance(provenance, dict):
-        generated = provenance.get("generated_at")
-        if isinstance(generated, str):
-            lines.append(_join(_literal("> Generated at: "), _inline_esc(generated)))
+def _render_handling(document: dict[str, Any]) -> list[_Escaped]:
+    """The handling statement and scope are operator-authored text; each is
+    rendered inertly inside its own fenced block (the handling blockquote is
+    removed under FROZEN INTERFACE v3)."""
     handling = document.get("handling")
+    lines: list[_Escaped] = []
     if isinstance(handling, dict):
         statement = handling.get("statement")
         if isinstance(statement, str) and statement:
-            lines.append(_quoted_esc(statement))
-    return lines or [_literal(f"> {NONE_RECORDED}")]
+            lines.append(_literal("Handling statement:"))
+            lines.append(_fenced_esc(statement))
+        scope = handling.get("scope")
+        if isinstance(scope, str) and scope:
+            lines.append(_literal("Handling scope:"))
+            lines.append(_fenced_esc(scope))
+    return lines
 
 
 def _render_objective(document: dict[str, Any]) -> list[_Escaped] | None:
+    """The task id (operator-controlled) and objective are untrusted; each is
+    rendered inertly inside its own fenced block under section 1. The title no
+    longer interpolates either value."""
     task = document.get("task")
+    lines: list[_Escaped] = []
     if isinstance(task, dict):
+        task_id = task.get("id")
+        if isinstance(task_id, str) and task_id:
+            lines.append(_literal("Task id:"))
+            lines.append(_fenced_esc(task_id))
         objective = task.get("objective")
         if isinstance(objective, str) and objective:
-            if "\n" in _normalize_lines(objective):
-                return [_fenced_esc(objective)]
-            return [_inline_esc(objective)]
-    return None
+            lines.append(_literal("Objective:"))
+            lines.append(_fenced_esc(objective))
+    return lines or None
 
 
 def _render_acceptance(document: dict[str, Any]) -> list[_Escaped] | None:
@@ -340,9 +336,8 @@ def _render_exclusions(document: dict[str, Any]) -> list[_Escaped] | None:
         values = exclusions.get(key)
         if isinstance(values, list):
             for value in values:
-                lines.append(
-                    _join(_literal(f"- {label}: "), _inline_esc(value))
-                )
+                lines.append(_literal(f"- {label}:"))
+                lines.append(_fenced_esc(value))
     suppressed = exclusions.get("suppressed")
     if isinstance(suppressed, dict):
         for key in ("retrieved_context", "connections", "notes"):
@@ -365,23 +360,25 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
     lines: list[_Escaped] = []
     provenance = document.get("provenance")
     if isinstance(provenance, dict):
+        generated = provenance.get("generated_at")
+        if isinstance(generated, str) and generated:
+            lines.append(_literal("- Generated at:"))
+            lines.append(_fenced_esc(generated))
         index = provenance.get("index")
         if isinstance(index, dict):
-            schema = _inline_esc(index.get("schema_version"))
-            indexed_at = _inline_esc(index.get("indexed_at"))
-            lines.append(
-                _join(
-                    _literal("- Index schema: "),
-                    schema,
-                    _literal(", indexed at: "),
-                    indexed_at,
-                )
-            )
+            schema = index.get("schema_version")
+            if isinstance(schema, str) and schema:
+                lines.append(_literal("- Index schema:"))
+                lines.append(_fenced_esc(schema))
+            indexed_at = index.get("indexed_at")
+            if isinstance(indexed_at, str) and indexed_at:
+                lines.append(_literal("- indexed at:"))
+                lines.append(_fenced_esc(indexed_at))
         citations = provenance.get("citations")
         if isinstance(citations, list) and citations:
             lines.append(_literal("- Citations:"))
             for citation in citations:
-                lines.append(_join(_literal("  - "), _inline_esc(citation)))
+                lines.append(_fenced_esc(citation))
     budget = document.get("budget")
     if isinstance(budget, dict):
         used = _inline_esc(budget.get("characters_used"))
@@ -413,11 +410,13 @@ def _section(heading: str, body: list[_Escaped] | None) -> list[_Escaped]:
 
 def render_contract_markdown(document: dict[str, Any]) -> str:
     lines: list[_Escaped] = [
-        _join(_literal("# Task contract — "), _title(document)),
+        _literal("# Task contract"),
         _literal(""),
     ]
-    lines.extend(_blockquote(document))
-    lines.append(_literal(""))
+    handling = _render_handling(document)
+    if handling:
+        lines.extend(handling)
+        lines.append(_literal(""))
     lines.extend(_section("1. Objective", _render_objective(document)))
     lines.append(_literal(""))
     lines.extend(_section("2. Acceptance criteria", _render_acceptance(document)))

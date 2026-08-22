@@ -75,8 +75,11 @@ class ContractMarkdownTests(unittest.TestCase):
 
     def test_handling_statement_appears_verbatim(self) -> None:
         rendered = render_contract_markdown(base_document())
+        # The handling statement is untrusted, so under the approved change it
+        # renders verbatim inside a fenced block, not a blockquote.
         self.assertIn(HANDLING_STATEMENT, rendered)
-        self.assertIn("> Schema: recallweave.contract.v1", rendered)
+        self.assertIn("```text\n" + HANDLING_STATEMENT + "\n```", rendered)
+        self.assertNotIn("> Schema: recallweave.contract.v1", rendered)
 
     def test_long_inner_fences_still_enclosed_and_structure_intact(self) -> None:
         document = base_document()
@@ -246,13 +249,24 @@ class ContractMarkdownTests(unittest.TestCase):
         self.assertIn("## 1. Objective", rendered)
         self.assertIn("## 8. Provenance", rendered)
 
-    def test_title_uses_task_id_then_first_objective_line(self) -> None:
+    def test_title_is_trusted_literal_and_task_id_objective_are_fenced(self) -> None:
+        # Under the approved change, the title is the trusted literal "# Task
+        # contract"; the untrusted task id and objective no longer interpolate
+        # into it and instead render inside fenced blocks under section 1.
         document = base_document()
-        self.assertIn("# Task contract — growth-atlas-refresh", render_contract_markdown(document))
+        rendered = render_contract_markdown(document)
+        self.assertIn("# Task contract\n", rendered)
+        self.assertNotIn("# Task contract — growth-atlas-refresh", rendered)
+        self.assertIn("Task id:\n```text\ngrowth-atlas-refresh\n```", rendered)
+        self.assertIn("Objective:\n```text\nRefresh growth atlas.\n```", rendered)
+        # With no task id, the objective still renders fenced under section 1
+        # and is not interpolated into the title.
         document["task"]["id"] = None
         document["task"]["objective"] = "First line of objective\nsecond line"
         rendered = render_contract_markdown(document)
-        self.assertIn("# Task contract — First line of objective", rendered)
+        self.assertIn("# Task contract\n", rendered)
+        self.assertNotIn("# Task contract — First line of objective", rendered)
+        self.assertIn("```text\nFirst line of objective\nsecond line\n```", rendered)
 
     def test_raw_html_escaped_outside_fences(self) -> None:
         document = base_document()
