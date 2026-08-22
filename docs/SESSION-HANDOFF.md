@@ -1,176 +1,197 @@
 # Session handoff — task contract capability
 
-Written at planner/session rotation. Resume from **durable repo state + Beads + this
-file**. Do not attempt to recover the previous transcript; everything needed is here
-or in `bd`.
+Written at session close. Resume from **durable repo state + Beads + this file**.
+Do not attempt to recover the previous transcript; everything needed is here or
+in `bd`.
 
 ## 1. Current objective
 
-Ship a **task contract / scoped work-packet export** for RecallWeave: given a task
-spec, emit a minimal, portable context bundle for another AI agent, exposing only the
-context that task requires. Canonical output is JSON (`recallweave.contract.v1`); a
-Markdown artifact is a **safe human-readable projection** of it.
+Ship a **task contract / scoped work-packet export** for RecallWeave: given a
+task spec, emit a minimal, portable context bundle for another AI agent,
+exposing only the context that task requires. Canonical output is JSON
+(`recallweave.contract.v1`); a Markdown artifact is a **safe human-readable
+projection** of it.
 
 This is a durable capability, not a demo.
 
 ## 2. Current checkpoint / phase
 
-**Phase: adversarial-review remediation.** Implementation is complete and integrated;
-the work is hardening the artifact against an independent reviewer.
+**Phase: adversarial-review remediation, still open.**
 
 - Integration branch: `foundry/task-contracts` — the durable remote checkpoint.
-- Suite: **369 tests green** with the CommonMark parser, `compileall` clean.
-- Adversarial review: **13 cycles run, all 13 returned FAIL.** Every cycle found at
-  least one genuine defect; every finding was reproduced before acting on it.
-- Cycle-13 findings are all fixed and integrated (`6j3`, `0kl`).
-- **Cycle 14 has NOT been run yet.** It is gated on `recallweave-4a6` landing.
+- Suite: **412 tests green** with the CommonMark parser, green again under
+  `-W error::ResourceWarning`, `compileall` clean, runtime dependencies still
+  empty (`mistletoe` remains test-only).
+- Adversarial review: **25 cycles run.** Cycles 16 and 19 returned PASS WITH
+  FIXES; every other cycle returned FAIL. Cycle 25 is the latest: FAIL.
+- **Two P0 beads block promotion** (see §4). Everything else found in cycles
+  14-25 is fixed and integrated.
 
 ## 3. Architecture decisions already approved — DO NOT REOPEN
 
-These were decided deliberately, several after a failure. Re-litigating them will
-repeat work already paid for.
+These were decided deliberately, several after a failure. Re-litigating them
+will repeat work already paid for.
 
 1. **Uniform inert Markdown rendering** (FROZEN INTERFACE v3, in `bd show
-   recallweave-9ew`). Every operator-controlled or vault-derived string is emitted
-   ONLY inside a fenced code block; only renderer-authored chrome is live Markdown.
-   This replaced context-specific escaping after **six consecutive** cycles each found
-   another escaping defect. Do not reintroduce escaping.
-2. **One fenced block PER FIELD**, each under its own trusted label. Never concatenate
-   two document fields into one fence — that destroys the evidence boundary.
-3. **mistletoe is a TEST-ONLY dependency.** Runtime stays third-party-dependency-free;
-   `pip install -e .` must pull nothing. AST assertions are the authoritative
-   inertness gate, not string heuristics.
-4. **Connection evidence is rendered AND documented** (Josh's decision on `ah5`). Do
-   not "fix" the disclosure surface by hiding evidence again: `budget.characters_used`
-   already charges for evidence passages and headings.
+   recallweave-9ew`). Every operator-controlled or vault-derived string is
+   emitted ONLY inside a fenced code block; only renderer-authored chrome is
+   live Markdown. Do not reintroduce escaping.
+2. **One fenced block PER FIELD**, each under its own trusted label. Never
+   concatenate two document fields into one fence.
+3. **mistletoe is a TEST-ONLY dependency.** Runtime stays third-party-free.
+   AST assertions are the authoritative inertness gate.
+4. **Connection evidence is rendered AND documented.** Do not "fix" the
+   disclosure surface by hiding evidence again.
 5. **Injectivity is scoped**, not absolute: over the projected field set, over
-   well-formed documents, up to line-ending normalization. CRLF/CR→LF normalization is
-   REQUIRED for fence safety and must not be removed.
-6. **The builder must NOT emit every projected key unconditionally.** A verified
-   (authored-wikilink) connection has no TF-IDF `shared_terms`; fabricating
-   `shared_terms: null` would blur the verified/supporting/candidate boundary that is
-   this project's core premise. Applicability is evidence-class-dependent, defined by
-   the table in `contract.py`.
-7. `spec.notes` is **REJECTED** as an unknown key (not ignored). `suppressed_total` was
+   well-formed documents, up to line-ending normalization.
+6. **The builder must NOT emit every projected key unconditionally.**
+   Applicability is evidence-class-dependent, defined by the tables in
+   `contract.py`.
+7. `spec.notes` is **REJECTED** as an unknown key. `suppressed_total` was
    **DROPPED** and must not be replaced by an overlapping aggregate.
-8. **Git cadence** (see `## Git Cadence` in CLAUDE.md/AGENTS.md): `main` is protected
-   and never pushed to or merged into locally; `foundry/task-contracts` auto-pushes as
-   a checkpoint whenever the suite is green and the tree is clean. PRs are
-   milestone-based and merging is Josh's call.
-9. **A failing review does NOT block the checkpoint push** (durability only). It DOES
-   block all promotion, merge, release, deploy and milestone-PR actions. Checkpoint
-   branches carry `CHECKPOINT_NOT_APPROVED.md` and must never be auto-mergeable.
-10. **Codex is the independent adversarial reviewer and must never be used as an
-    implementer.** Preserving its independence is the point.
+8. **Absence in the Markdown projection is STRUCTURAL**, never in-band. A
+   present field always renders a fenced block; an absent field renders its
+   trusted label followed by the marker as a bare chrome line with no fence.
+   Any in-band sentinel is forgeable — do not go back to one.
+9. **Malformed or unauthenticated persisted evidence FAILS THE EXPORT CLOSED**
+   (Josh's decision). Not suppressed, not normalized away. Diagnostics name the
+   edge by **database id** and never carry vault content — no note path, no
+   citation, no passage, no term.
+10. **Verification reads the INDEX, never the vault.** `network_calls` and
+    `vault_writes` stay 0, so evidence is attributed to the **indexed
+    snapshot**, not the vault's current bytes. Do not add export-time file
+    reads.
+11. **Candidate existence, ranking and `score` are deliberately NOT recomputed**
+    (Josh's decision). A candidate is checked to be *shaped and evidenced like*
+    one the indexer produces, not to *be* one it produced. The docs say so.
+12. **Git cadence** (see CLAUDE.md/AGENTS.md): `main` is protected;
+    `foundry/task-contracts` auto-pushes as a checkpoint whenever the suite is
+    green and the tree is clean. A failing review does NOT block the checkpoint
+    push; it DOES block promotion, merge, release, deploy and milestone PR.
+13. **Codex is the independent adversarial reviewer and must never be used as
+    an implementer.**
 
-## 4. Open blockers and unresolved human decisions
+## 4. Open blockers — BOTH BLOCK PROMOTION
 
-- **No active blockers.** GitHub push access was granted mid-session; the checkpoint
-  pushes cleanly.
-- **Unresolved, needs Josh eventually:** final merge of `foundry/task-contracts` into
-  `main` via milestone PR. Requires a Codex **PASS** plus explicit human approval.
-  Nothing has been promoted; no PR exists.
-- **Watch item (not yet a decision):** `recallweave-6j3` resolved the cycle-13 High by
-  REJECTING a partial evidence side as malformed rather than by projecting side-level
-  `truncated`. Both options were legitimate; the reject path was taken. Cycle 14 should
-  be allowed to judge whether that is honest or merely moves the hole. Do not
-  pre-emptively rewrite it.
+Two P0 beads. Both reproduced, both filed with a full diagnosis and options.
 
-## 5. Active beads and worker assignments
+- **`recallweave-nv0` — an operator-written gloss is labeled `cited_passage`.**
+  The most serious open item: it needs **no tampering**, only the documented
+  spec format. A note-backed constraint or prior decision may carry an operator
+  `statement`; the builder copies that gloss into `statement` and labels the
+  whole item `cited_passage`. Nothing checks the passage says anything like it.
+  Reproduced: vault says "We evaluated three vendors and picked none of them
+  yet", operator gloss says "This architecture decision was approved", and the
+  artifact emits the gloss under `cited_passage` with a real citation. The
+  Markdown does not project `passage` for these items, so the reader never sees
+  the contradiction. **Needs a decision on the evidence model** — three options
+  are written up in the bead's design field; option A (classify by who wrote
+  the statement, carry the citation as separate supporting evidence) is
+  recommended. Note the projected/omitted partition moves with it.
+- **`recallweave-kob` — heading-link re-derivation cannot bind the coordinate or
+  heading level.** Deferred by Josh, deliberately. `sections` records a body's
+  `line_start`/`line_end` but never a heading's own physical line or `#` count,
+  so a tampered index can pair an authentic indexed heading with a false `line`
+  or a changed level. The real fix is recording heading position and level in
+  the index — a core schema change, out of scope for the contract work. The gap
+  is **disclosed in `docs/task-contracts.md`** and pinned by a docs test.
 
-- `recallweave-4a6` — **P0, OPEN, not yet dispatched.** The only outstanding work.
-- Two stale parent epics remain open by design and are NOT dispatchable (`bd` filters
-  epics): `recallweave-9ew`, `recallweave-vzb`. `9ew`'s design field is FROZEN
-  INTERFACE v3 — keep it; it is the architecture record.
-- Swarm: 8 DSV4 workers, tmux session `recallweave`, panes 0-7 → `oc_1`..`oc_8`,
-  worktrees under `.ntm/worktrees/recallweave/`. All idle and in sync at handoff.
-- A launchd supervisor (`/Users/josh/particle-workers/supervisor/rw_supervisor.py`,
-  5-minute interval) integrates, gates, pushes and dispatches autonomously. It was
-  **left PAUSED** at handoff — see §7.
+Nothing has been promoted; no PR exists. Final merge needs a Codex **PASS** plus
+explicit human approval.
 
-## 6. What was completed most recently
+## 5. What was completed this session (cycles 14-25)
 
-In order, all integrated and green:
+All integrated, green, and each mutation-proven against the pre-fix tree:
 
-- `ah5` — corrected the projection boundary; the docs no longer falsely claim
-  connection evidence is omitted. Replaced a self-referential doc/test agreement check
-  with one anchored to actual renderer output.
-- `3jt` — missing-key vs explicit-null made consistent; injectivity restated over
-  well-formed documents.
-- `awa` — evidence-class applicability made explicit and well-formedness made
-  *rejectable* (it previously derived applicability from presence and could not reject
-  anything).
-- `0v1` — repaired disclosure sentinels that could never match, and restored the
-  docs↔`PROJECTED_FIELDS` drift check that had regressed.
-- `6j3` — well-formedness now reaches inside evidence sides (cycle-13 High).
-- `0kl` — disclosure test now proves omission by value-invariance rather than by
-  matching today's formatting (cycle-13 Medium).
-- `hl7` — projection order fidelity pinned for every projected collection.
+- `4a6` — absence made STRUCTURAL, not an in-band marker (41 of 44 projected
+  fields could forge absence).
+- `4su` — the builder now ENFORCES its own well-formedness predicate; it never
+  called it. Validation runs before the budget check.
+- `3xl` — projected and omitted field sets made an exhaustive partition; the
+  omitted list grew from 10 to 31.
+- `w3k` — the malformed-evidence diagnostic stopped disclosing vault note paths
+  (a defect introduced by `4su`). Also fixed a latent `ResourceWarning` test
+  isolation bug it exposed.
+- `e1y` — partition proved across five builder shapes; invariance probes now
+  vary cardinality and falsiness (a truthiness read had been undetectable).
+- `dm4` — connection-evidence citations resolved against the index and added to
+  `provenance.citations`; a passage now requires a citation.
+- `e5w` — attribution by CONTENT, not just coordinates: a fabricated passage
+  behind a valid citation had been accepted and rendered.
+- `zwj` — a present evidence side must carry the complete indexed leaf set;
+  omitting `truncated` was a false claim by silence.
+- `5vk` — a discovery candidate's own evidence authenticated: shared terms must
+  be two or more strings both notes carry, and `method`/`explanation` must be
+  the indexer's.
+- `o6r` — the persisted edge RECORD authenticated, not just its payload; a
+  hand-written row had exported as an authored, verified relationship.
+- `ze7` — authored links re-derived through the indexer's own parser and
+  resolver, binding line, kind, target and unique resolution.
+- `5sy` — whole-section parsing restored the parser's fenced-code state, and a
+  false rejection of genuine heading-line links was fixed alongside it.
 
-## 7. Exact next actions, in order
+## 6. Exact next actions, in order
 
-1. **Resume the supervisor** if autonomous progression is wanted:
-   `rm -f ~/.particle-supervisor/PAUSED`
-   It will then dispatch `4a6`, integrate, gate and push on its own. Leave the PAUSED
-   file in place to keep the swarm idle.
-2. **Land `recallweave-4a6`** (`bd show recallweave-4a6` has the full diagnosis and a
-   specified fix). It is the last known defect.
-3. **Run adversarial review cycle 14**, after `4a6` integrates and the suite is green:
-   - update the block between `<!-- CYCLE-CONTEXT-START -->` and
-     `<!-- CYCLE-CONTEXT-END -->` in `docs/CODEX-REVIEW-PROMPT.md` to state what
-     cycle-13 fixed and what to attack next;
-   - `./scripts/codex-review.sh`
-   - the verdict is the first line of the newest `.codex-reviews/review-*.md`.
-4. **Reproduce every finding before acting on it.** This has caught reviewer error and
-   has repeatedly caught architect error. Never file a bead from an unverified claim.
-5. **On PASS:** stop and ask Josh. Opening the milestone PR and merging to `main` are
-   his decisions, not the session's.
+1. **Decide `recallweave-nv0`** (the evidence model for an operator gloss). It
+   is the only open item reachable without a tampered index, and it touches the
+   project's central premise. `bd show recallweave-nv0` has the reproduction and
+   three written-up options.
+2. **Land `recallweave-nv0`**, then re-run the review.
+3. **Decide `recallweave-kob`**: whether the index schema change is worth doing
+   now or the disclosure stands for this release.
+4. **Run the next adversarial cycle**: update the block between
+   `<!-- CYCLE-CONTEXT-START -->` and `<!-- CYCLE-CONTEXT-END -->` in
+   `docs/CODEX-REVIEW-PROMPT.md`, then `./scripts/codex-review.sh`. The verdict
+   is the first line of the newest `.codex-reviews/review-*.md`.
+5. **Reproduce every finding before acting on it.** This has repeatedly caught
+   architect error, and twice this session it caught a defect the reviewer had
+   under-described. Never file a bead from an unverified claim.
+6. **On PASS:** stop and ask Josh. Opening the milestone PR and merging to
+   `main` are his decisions.
 
-## 8. Known failure modes and traps
+## 7. Known failure modes and traps
 
-- **A closed bead is NOT evidence of integrated work.** `3jt` was closed while its
-  commit sat unintegrated for hours. Always confirm the commit is an ancestor of the
-  integration branch.
-- **Workers must merge the integration branch FIRST.** `3jt` and a duplicate `9ew.17`
-  were both built on stale bases and conflicted. Stale base is the single most common
-  cause of failed integration here.
-- **Self-fulfilling tests are the recurring defect class.** Three consecutive cycles
-  found an invariant asserted at one level while the defect lived one level below it.
-  When adding a test, ask: *if the implementation violated this, would this test
-  actually fail?* Prove it by mutation rather than assuming.
-- **A mutation audit is cheap and worth repeating.** One run found two working
-  disclosure leaks, an unenforced ordering claim, and a P0 injectivity hole that
-  thirteen review cycles had missed.
-- **`/tmp` is a trap for workers.** Any path outside the worktree raises a blocking
-  OpenCode permission modal. Give workers worktree-local scratch:
-  `mkdir -p ./.gate-tmp/tmp && export TMPDIR=$PWD/.gate-tmp/tmp`. Reject such prompts;
-  never grant "always".
-- **Never use `ntm interrupt`** — it sends Ctrl+C to ALL panes and kills idle agents to
-  a bare shell. Use `ntm respawn <session> --panes=N --force --all`, which reports
-  "failed to restart cleanly" on a 15s timeout but usually succeeded. Respawn does NOT
-  clear a worker's context.
-- **`ntm assign` is unusable** (needs a `br` CLI that is not installed). Use
-  `ntm send --panes=0.N --file <prompt>`.
-- **`bd label add` takes `<issue> <label>`**, in that order. Reversed, it silently
-  creates a label named after the issue id.
-- **The beads pre-commit hook re-exports `issues.jsonl` on every commit**, and
-  `bd export` leaves `.~*` temp files. The clean-tree gate therefore deliberately
-  ignores `.beads/` churn and judges source cleanliness only. Do not "fix" this by
-  making the gate stricter; it will block every push.
-- **Codex's sandbox has no writable temp dir**, so `scripts/codex-review.sh` pre-runs
-  the suite in a venv and hands Codex the results. Do not remove that step.
-- Oversized beads fail silently: `9ew.2` and `9ew.10` each burned two workers and
-  produced zero edits. Keep beads narrow, with an explicit `OWNS:` file list.
+- **The recurring defect class is "the invariant is asserted one level above the
+  defect."** Eight consecutive cycles found the next level down. When adding a
+  rule, ask where it is ENFORCED, not just where it is stated — and prove it by
+  mutation. Cycle 19's complete-shape rule was real in the code and unenforced
+  by any test: removing it left all 397 tests green.
+- **A fix can introduce the next finding.** `4su` caused `w3k`; `dm4` caused
+  `e5w`; `o6r` caused `ze7`; `5sy` caused `kob`. Re-examine what a fix touches.
+- **Mutation audits need a clean bytecode cache.** `compileall` writes
+  `src/**/__pycache__`, and a `cp`-based restore can leave Python running stale
+  bytecode — it produced a deterministic phantom failure this session. Run
+  `find src -name __pycache__ -exec rm -rf {} +` between mutation steps.
+- **A closed bead is NOT evidence of integrated work.** Confirm the commit is an
+  ancestor of the integration branch.
+- **Leak assertions need DISTINCTIVE probes.** Asserting a one-character or
+  common-word probe is absent from a diagnostic gives false positives — "x" and
+  "shared" both occur in ordinary message text.
+- **Watch for tests that pass for the wrong reason.** A success fixture with an
+  invented passage passes only because coordinates resolve; a partition proved
+  over one corpus passes because that corpus has no empty collections.
+- **`/tmp` is a trap for swarm workers.** Give worktree-local scratch:
+  `mkdir -p ./.gate-tmp/tmp && export TMPDIR=$PWD/.gate-tmp/tmp`.
+- **Never use `ntm interrupt`** — it Ctrl+Cs ALL panes. Use `ntm respawn
+  <session> --panes=N --force --all`.
+- **`bd label add` takes `<issue> <label>`**, in that order.
+- **The beads pre-commit hook re-exports `issues.jsonl` on every commit.** The
+  clean-tree gate deliberately ignores `.beads/` churn.
+- **Codex's sandbox has no writable temp dir and cannot write to a database**,
+  so `scripts/codex-review.sh` pre-runs the suite (twice — the second pass with
+  `ResourceWarning` promoted to an error) and hands Codex the results. It also
+  means the reviewer cannot reproduce database-tampering findings itself:
+  reproduce those locally before acting.
+- Oversized beads fail silently. Keep them narrow, with an explicit `OWNS:` list.
 
-## 9. Do NOT replan or reconsider
+## 8. Do NOT replan or reconsider
 
-- The ten approved decisions in §3, especially uniform inert rendering, the test-only
-  parser, rendering connection evidence, and the evidence-class-conditional builder.
-- The Beads graph and its `OWNS:` boundaries. Beads are sized and sequenced to keep
-  workers off each other's files; re-splitting them will manufacture conflicts.
+- The thirteen approved decisions in §3.
+- The Beads graph and its `OWNS:` boundaries.
 - The git cadence and the checkpoint/promotion split.
 - Codex's role as independent reviewer.
-- The core `schema_version: "2"` and the `recallweave.contract.v1` JSON schema — the
-  JSON is canonical and does not change to accommodate rendering.
+- The core `schema_version: "2"` and the `recallweave.contract.v1` JSON schema —
+  except as `recallweave-kob` may require, which is exactly why it is deferred
+  rather than patched.
 
 Anything not listed here is open to the next planner's judgement.

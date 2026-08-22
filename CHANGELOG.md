@@ -23,8 +23,11 @@
   the indexed section, parsed with the indexer's own link extractor and
   resolved with its own resolver, uniqueness included; for a link on a heading
   line the text, kind, target and resolution are bound but the coordinate and
-  heading level are not, which the docs disclose — so a hand-written row can no longer export as an
-  authored, verified relationship. Candidate existence, ranking and `score` are
+  heading level are not, which the docs disclose — so a hand-written row can no
+  longer export as an authored, verified relationship on the strength of a
+  section-body link. A link on a heading line is bound by text, kind, target and
+  resolution but not by coordinate, so it can still be mis-coordinated; that gap
+  is tracked and disclosed. Candidate existence, ranking and `score` are
   deliberately not recomputed: a candidate's score is persisted and
   range-checked, not authenticated, and the docs say so;
 - `contract` authenticates a discovery candidate's own evidence, not only its
