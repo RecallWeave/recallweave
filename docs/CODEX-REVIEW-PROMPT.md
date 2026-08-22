@@ -95,64 +95,68 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 16 returned **PASS WITH FIXES** — the first non-FAIL in sixteen cycles —
-with one Low finding and four suggested tests. All are now addressed, and the
-Low was reproduced first.
+Both cycle-17 findings are fixed. The High was real, predates this work, and
+sixteen cycles had missed it — a good catch.
 
-- **Low — leaked sqlite connections.** Confirmed at all six sites you named
-  (seven in total). `with sqlite3.connect(...)` commits but never closes, so the
-  connection was finalized by the garbage collector and emitted a
-  `ResourceWarning` wherever collection happened to land. They now use
-  `closing(...) as connection, connection`: `closing` closes, the bare
-  connection context manager commits, and neither alone is sufficient. The suite
-  is warning-clean.
+- **High — connection-evidence citations were neither verified nor
+  inventoried** (`recallweave-dm4`). Reproduced exactly as you described: an
+  edge carrying `{"source_evidence": {"citation": "Nonexistent.md:999-1000",
+  "passage": "purported evidence"}}` was accepted, emitted and RENDERED into the
+  artifact, indistinguishable from a real citation, while `provenance.citations`
+  omitted it.
 
-- Your first suggested test is now part of the gate: `scripts/codex-review.sh`
-  runs a **second pass with `ResourceWarning` promoted to an error**, so a future
-  leak fails where it is caused rather than inside an unrelated test that
-  captures stderr — which is precisely how the previous leak hid.
+  Every connection-evidence citation is now resolved against the INDEX before
+  its connection is admitted — never the vault, because the exporter's own
+  provenance asserts `network_calls` and `vault_writes` are `0`. A citation
+  resolves iff some section matches its path and line bounds **exactly**, which
+  is the only form the builder mints (`_resolve_item` builds
+  `<relative_path>:<line_start>-<line_end>` from a chosen section); containment
+  would let a producer point at an arbitrary slice while looking minted, and
+  that choice is pinned by a test that widens a section and cites a sub-range.
+  An unresolvable citation fails the export closed with the same content-free
+  diagnostic — the edge is named by database id, never the citation or path.
+  Resolved connection citations now join `provenance.citations` in document
+  order (retrieved context before connections, source side before target),
+  deduplicated.
 
-- **Multi-digit edge id**: the content-free diagnostic claim no longer depends
-  on single-digit fixture ids; the edges are renumbered into a wide range and
-  the assertion requires six or more digits.
+  Verified against both test indexes before implementing: every persisted
+  evidence citation already matches a section exactly, so the rule rejects no
+  healthy index.
 
-- **The validation/budget boundary is now explicit in BOTH directions.** An edge
-  is validated before its own budget check, so it cannot escape by being
-  expensive; but an edge ordered AFTER the budget `break` is never examined, so
-  the export is **not** a whole-index validation and a reader must not infer
-  one. The test sweeps budgets, requires both sides to occur, and checks the
-  boundary is monotone.
+  Your third suggested test is also done: a side carrying a `passage` with no
+  `citation` is now **rejected**. Unattributed quoted evidence is precisely what
+  the evidence classes exist to rule out. This tightens the rule in the same
+  direction as the substantive-leaf requirement, so it does not reopen
+  `recallweave-6j3`.
 
-- **Scalar-collection coverage** is no longer left to luck. Every scalar
-  collection is asserted to appear both empty and populated across the builder
-  shapes, and two shapes were added to fill the gaps your point exposed
-  (`exclusions.globs[]` and `exclusions.directives[]` were never populated;
-  `provenance.citations[]` was never empty). The two collections the builder
-  can never emit empty are asserted as POSITIVE invariants, not waved through:
-  if one became emptiable, the always-non-empty assertion fails and the
-  exemption must be revisited.
+- **Medium — the CHANGELOG overstated the validation boundary.** Correct, and it
+  was this session's wording. It validates every connection the export RETURNS,
+  not the whole index. The CHANGELOG and `docs/task-contracts.md` now say so
+  explicitly, and a docs test pins the wording so the stronger claim cannot
+  drift back — your fourth suggested test.
 
-One self-inflicted slip is also fixed: an edit duplicated two test methods in
-one class, which Python silently resolves to the last definition. An AST scan
-now confirms no test class in the suite defines the same method twice.
+Five mutations were killed for the High: removing enforcement, loosening exact
+match to containment, dropping connections from the inventory, and allowing an
+uncited passage each fail now.
 
-Suite: 385 tests with the parser, green again under
-`-W error::ResourceWarning`; `compileall` clean. Runtime dependencies are still
-empty; `mistletoe` remains test-only.
+Suite: 390 tests with the parser, green under `-W error::ResourceWarning`;
+`compileall` clean. Runtime dependencies are still empty; `mistletoe` remains
+test-only.
 
-This cycle decides promotion. A clean PASS is required before a milestone PR to
-protected `main`, and the human owner approves the merge separately. So:
+This cycle decides promotion, as cycle 17 was meant to.
 
-1. **Try hardest to find anything that still blocks promotion**, at any
-   severity. State plainly whether the remaining state is safe to MERGE, not
-   merely safe to checkpoint.
-2. Re-examine the areas where a fix has previously caused a regression: the
-   fail-closed gate and its diagnostic (cycle 14's fix caused cycle 15's High),
-   the partition and invariance proofs (strengthened twice), and structural
-   absence.
-3. Check the DOCS against the CODE once more as a whole: `docs/task-contracts.md`,
-   `PRIVACY.md` and `CHANGELOG.md` all make positive claims this session added.
-   Any claim you cannot verify from the code is a finding.
-4. Reassess every Critical and High from all sixteen cycles, and say explicitly
-   which remain closed.
+1. **Say plainly whether this tree is safe to MERGE**, not merely to
+   checkpoint. If anything blocks promotion at any severity, name it.
+2. The citation contract is new surface — attack it. Can a citation that
+   resolves still misattribute a passage (the passage text is NOT compared
+   against the cited section)? Is the index-only resolution rule sound when the
+   index is stale relative to the vault? Does the inventory ordering claim hold
+   for every shape, including truncated exports?
+3. Re-examine everything a fix has previously regressed: cycle 14's fix caused
+   cycle 15's High, and cycle 17's Medium was this session's own wording.
+4. Check the docs against the code once more as a whole — `docs/task-contracts.md`,
+   `ARCHITECTURE.md`, `PRIVACY.md`, `CHANGELOG.md`. Any positive claim you
+   cannot verify from the code is a finding.
+5. Reassess every Critical and High from all seventeen cycles and say which
+   remain closed.
 <!-- CYCLE-CONTEXT-END -->
