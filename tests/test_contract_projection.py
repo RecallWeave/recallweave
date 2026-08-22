@@ -173,6 +173,25 @@ PROJECTED_FIELDS = [
     "budget.truncated",
 ]
 
+# The connection evidence leaves are the only projected fields the builder does
+# NOT emit unconditionally: _edge_evidence sets source_evidence/target_evidence/
+# shared_terms only when the underlying edge actually carries them (a verified
+# authored-link connection has no TF-IDF shared_terms). They are present exactly
+# when they apply to the item's evidence class; the renderer treats a missing
+# key and an explicit None identically, so this conditional presence is the
+# well-formedness boundary for connection evidence.
+CONDITIONAL_PROJECTED_FIELDS = frozenset(
+    {
+        "connections[].evidence.source_evidence.citation",
+        "connections[].evidence.source_evidence.heading",
+        "connections[].evidence.source_evidence.passage",
+        "connections[].evidence.target_evidence.citation",
+        "connections[].evidence.target_evidence.heading",
+        "connections[].evidence.target_evidence.passage",
+        "connections[].evidence.shared_terms[]",
+    }
+)
+
 
 def _populated_projected() -> dict:
     """A document in which every PROJECTED field carries a non-empty distinctive
@@ -467,6 +486,105 @@ def _set(doc: dict, name: str, value) -> dict:
     return doc
 
 
+def _remove(doc: dict, name: str) -> dict:
+    """Remove the projected field `name`'s key from `doc` entirely (mutates in
+    place), so a test can drive every projected field to the truly-missing
+    state and compare it against an explicit None. Raises if a field has no
+    removal defined (so the set cannot grow silently without a corresponding
+    removal)."""
+    if name == "schema_version":
+        del doc["schema_version"]
+    elif name == "task.id":
+        del doc["task"]["id"]
+    elif name == "task.objective":
+        del doc["task"]["objective"]
+    elif name == "handling.statement":
+        del doc["handling"]["statement"]
+    elif name == "handling.scope":
+        del doc["handling"]["scope"]
+    elif name == "acceptance_criteria[].id":
+        del doc["acceptance_criteria"][0]["id"]
+    elif name == "acceptance_criteria[].statement":
+        del doc["acceptance_criteria"][0]["statement"]
+    elif name == "constraints[].statement":
+        del doc["constraints"][0]["statement"]
+    elif name == "constraints[].citation":
+        del doc["constraints"][0]["citation"]
+    elif name == "constraints[].evidence_class":
+        del doc["constraints"][0]["evidence_class"]
+    elif name == "prior_decisions[].statement":
+        del doc["prior_decisions"][0]["statement"]
+    elif name == "prior_decisions[].citation":
+        del doc["prior_decisions"][0]["citation"]
+    elif name == "prior_decisions[].evidence_class":
+        del doc["prior_decisions"][0]["evidence_class"]
+    elif name == "retrieved_context[].citation":
+        del doc["retrieved_context"][0]["citation"]
+    elif name == "retrieved_context[].passage":
+        del doc["retrieved_context"][0]["passage"]
+    elif name == "retrieved_context[].evidence_class":
+        del doc["retrieved_context"][0]["evidence_class"]
+    elif name == "connections[].source":
+        del doc["connections"][0]["source"]
+    elif name == "connections[].target":
+        del doc["connections"][0]["target"]
+    elif name == "connections[].kind":
+        del doc["connections"][0]["kind"]
+    elif name == "connections[].verified":
+        del doc["connections"][0]["verified"]
+    elif name == "connections[].evidence_class":
+        del doc["connections"][0]["evidence_class"]
+    elif name == "connections[].score":
+        del doc["connections"][0]["score"]
+    elif name == "connections[].evidence.source_evidence.citation":
+        del doc["connections"][0]["evidence"]["source_evidence"]["citation"]
+    elif name == "connections[].evidence.source_evidence.heading":
+        del doc["connections"][0]["evidence"]["source_evidence"]["heading"]
+    elif name == "connections[].evidence.source_evidence.passage":
+        del doc["connections"][0]["evidence"]["source_evidence"]["passage"]
+    elif name == "connections[].evidence.target_evidence.citation":
+        del doc["connections"][0]["evidence"]["target_evidence"]["citation"]
+    elif name == "connections[].evidence.target_evidence.heading":
+        del doc["connections"][0]["evidence"]["target_evidence"]["heading"]
+    elif name == "connections[].evidence.target_evidence.passage":
+        del doc["connections"][0]["evidence"]["target_evidence"]["passage"]
+    elif name == "connections[].evidence.shared_terms[]":
+        del doc["connections"][0]["evidence"]["shared_terms"]
+    elif name == "exclusions.paths[]":
+        del doc["exclusions"]["paths"]
+    elif name == "exclusions.globs[]":
+        del doc["exclusions"]["globs"]
+    elif name == "exclusions.tags[]":
+        del doc["exclusions"]["tags"]
+    elif name == "exclusions.directives[]":
+        del doc["exclusions"]["directives"]
+    elif name == "exclusions.suppressed.retrieved_context":
+        del doc["exclusions"]["suppressed"]["retrieved_context"]
+    elif name == "exclusions.suppressed.connections":
+        del doc["exclusions"]["suppressed"]["connections"]
+    elif name == "exclusions.suppressed.notes":
+        del doc["exclusions"]["suppressed"]["notes"]
+    elif name == "exclusions.enforced":
+        del doc["exclusions"]["enforced"]
+    elif name == "provenance.generated_at":
+        del doc["provenance"]["generated_at"]
+    elif name == "provenance.index.schema_version":
+        del doc["provenance"]["index"]["schema_version"]
+    elif name == "provenance.index.indexed_at":
+        del doc["provenance"]["index"]["indexed_at"]
+    elif name == "provenance.citations[]":
+        del doc["provenance"]["citations"]
+    elif name == "budget.characters_used":
+        del doc["budget"]["characters_used"]
+    elif name == "budget.character_budget":
+        del doc["budget"]["character_budget"]
+    elif name == "budget.truncated":
+        del doc["budget"]["truncated"]
+    else:
+        raise AssertionError(f"no removal defined for projected field {name!r}")
+    return doc
+
+
 # The "present but empty" value for every projected field: "" for strings, []
 # for list fields, False for booleans, 0 for integer counts. For each field this
 # must render DIFFERENTLY from an absent (None) value, proving that no projected
@@ -518,6 +636,125 @@ _EMPTY: dict[str, object] = {
     "budget.character_budget": 0,
     "budget.truncated": False,
 }
+
+
+def _projected_path(name: str) -> tuple[str, ...]:
+    """Return the key path into the document for a projected field `name`, as a
+    tuple of keys. A `[]`-suffixed field (an item collection) resolves to the
+    first item's leaf key. This is the canonical mapping used both to assert
+    that a built document carries every projected key and to remove a key for
+    the missing/null/empty matrix."""
+    if name == "schema_version":
+        return ("schema_version",)
+    if name == "task.id":
+        return ("task", "id")
+    if name == "task.objective":
+        return ("task", "objective")
+    if name == "handling.statement":
+        return ("handling", "statement")
+    if name == "handling.scope":
+        return ("handling", "scope")
+    if name == "acceptance_criteria[].id":
+        return ("acceptance_criteria", 0, "id")
+    if name == "acceptance_criteria[].statement":
+        return ("acceptance_criteria", 0, "statement")
+    if name == "constraints[].statement":
+        return ("constraints", 0, "statement")
+    if name == "constraints[].citation":
+        return ("constraints", 0, "citation")
+    if name == "constraints[].evidence_class":
+        return ("constraints", 0, "evidence_class")
+    if name == "prior_decisions[].statement":
+        return ("prior_decisions", 0, "statement")
+    if name == "prior_decisions[].citation":
+        return ("prior_decisions", 0, "citation")
+    if name == "prior_decisions[].evidence_class":
+        return ("prior_decisions", 0, "evidence_class")
+    if name == "retrieved_context[].citation":
+        return ("retrieved_context", 0, "citation")
+    if name == "retrieved_context[].passage":
+        return ("retrieved_context", 0, "passage")
+    if name == "retrieved_context[].evidence_class":
+        return ("retrieved_context", 0, "evidence_class")
+    if name == "connections[].source":
+        return ("connections", 0, "source")
+    if name == "connections[].target":
+        return ("connections", 0, "target")
+    if name == "connections[].kind":
+        return ("connections", 0, "kind")
+    if name == "connections[].verified":
+        return ("connections", 0, "verified")
+    if name == "connections[].evidence_class":
+        return ("connections", 0, "evidence_class")
+    if name == "connections[].score":
+        return ("connections", 0, "score")
+    if name == "connections[].evidence.source_evidence.citation":
+        return ("connections", 0, "evidence", "source_evidence", "citation")
+    if name == "connections[].evidence.source_evidence.heading":
+        return ("connections", 0, "evidence", "source_evidence", "heading")
+    if name == "connections[].evidence.source_evidence.passage":
+        return ("connections", 0, "evidence", "source_evidence", "passage")
+    if name == "connections[].evidence.target_evidence.citation":
+        return ("connections", 0, "evidence", "target_evidence", "citation")
+    if name == "connections[].evidence.target_evidence.heading":
+        return ("connections", 0, "evidence", "target_evidence", "heading")
+    if name == "connections[].evidence.target_evidence.passage":
+        return ("connections", 0, "evidence", "target_evidence", "passage")
+    if name == "connections[].evidence.shared_terms[]":
+        return ("connections", 0, "evidence", "shared_terms")
+    if name == "exclusions.paths[]":
+        return ("exclusions", "paths")
+    if name == "exclusions.globs[]":
+        return ("exclusions", "globs")
+    if name == "exclusions.tags[]":
+        return ("exclusions", "tags")
+    if name == "exclusions.directives[]":
+        return ("exclusions", "directives")
+    if name == "exclusions.suppressed.retrieved_context":
+        return ("exclusions", "suppressed", "retrieved_context")
+    if name == "exclusions.suppressed.connections":
+        return ("exclusions", "suppressed", "connections")
+    if name == "exclusions.suppressed.notes":
+        return ("exclusions", "suppressed", "notes")
+    if name == "exclusions.enforced":
+        return ("exclusions", "enforced")
+    if name == "provenance.generated_at":
+        return ("provenance", "generated_at")
+    if name == "provenance.index.schema_version":
+        return ("provenance", "index", "schema_version")
+    if name == "provenance.index.indexed_at":
+        return ("provenance", "index", "indexed_at")
+    if name == "provenance.citations[]":
+        return ("provenance", "citations")
+    if name == "budget.characters_used":
+        return ("budget", "characters_used")
+    if name == "budget.character_budget":
+        return ("budget", "character_budget")
+    if name == "budget.truncated":
+        return ("budget", "truncated")
+    raise AssertionError(f"no path defined for projected field {name!r}")
+
+
+def _has_key_at_path(container, path: tuple[str, ...]) -> bool:
+    """True if `container` carries the key at `path`. An int step in `path`
+    denotes a `[]` collection field: it steps into the list and requires every
+    item to carry the remaining leaf keys (vacuous when the list is empty, since
+    there are no items to check). Used to pin that a document built by
+    build_contract_document always emits every projected key, so a missing key
+    is unreachable through the public API."""
+    for index, step in enumerate(path):
+        if isinstance(step, int):
+            if not isinstance(container, list):
+                return False
+            if not container:
+                return True
+            return all(
+                _has_key_at_path(item, path[index + 1 :]) for item in container
+            )
+        if not isinstance(container, dict) or step not in container:
+            return False
+        container = container[step]
+    return True
 
 
 # A distinctive sentinel per documented not-projected field, injected into the
@@ -703,6 +940,35 @@ class InjectivityTest(unittest.TestCase):
                     render_contract_markdown(absent),
                     render_contract_markdown(empty),
                     f"absent vs empty not distinguishable for {name}",
+                )
+
+    def test_missing_key_and_explicit_none_render_identically_for_every_projected_field(self) -> None:
+        # The renderer must treat an absent key and an explicit None identically
+        # for EVERY projected field — the defect that historically made task.id
+        # and task.objective distinguish missing from None while every other
+        # field collapsed them. For each projected field we drive three states:
+        # the key present-but-None, the key entirely missing, and the field set
+        # to its empty value. Missing must render identically to None; both must
+        # still differ from the empty value (None vs empty string, absent vs
+        # empty collection). The three documents differ ONLY in the field under
+        # test, so any difference is attributable to it.
+        for name in PROJECTED_FIELDS:
+            with self.subTest(field=name):
+                none_doc = copy.deepcopy(_populated_projected())
+                _set(none_doc, name, None)
+                missing_doc = copy.deepcopy(_populated_projected())
+                _remove(missing_doc, name)
+                empty_doc = copy.deepcopy(_populated_projected())
+                _set(empty_doc, name, _EMPTY[name])
+                self.assertEqual(
+                    render_contract_markdown(none_doc),
+                    render_contract_markdown(missing_doc),
+                    f"missing key and explicit None must render identically for {name}",
+                )
+                self.assertNotEqual(
+                    render_contract_markdown(none_doc),
+                    render_contract_markdown(empty_doc),
+                    f"None vs empty not distinguishable for {name}",
                 )
 
     def test_line_ending_normalization_is_the_documented_injectivity_exception(self) -> None:

@@ -11,6 +11,13 @@ from recallweave.contract_spec import TaskSpec
 from recallweave.contract_text import MAX_STATEMENT_CHARACTERS
 from recallweave.index import build_index
 
+from tests.test_contract_projection import (
+    CONDITIONAL_PROJECTED_FIELDS,
+    PROJECTED_FIELDS,
+    _has_key_at_path,
+    _projected_path,
+)
+
 
 class ContractDocumentTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -199,6 +206,54 @@ class ContractDocumentTest(unittest.TestCase):
         self.assertTrue(document["provenance"]["generated_locally"])
         self.assertEqual(document["handling"]["content_is_data_not_instructions"], True)
         self.assertIn("quoted from the operator's vault", document["handling"]["statement"])
+
+    def test_builder_always_emits_every_projected_key(self) -> None:
+        # The renderer's "missing key ≡ explicit None" rule is only sound
+        # because a real artifact never reaches the renderer with a missing
+        # key: the builder constructs every dict with FIXED LITERAL KEYS. Pin
+        # that shape invariant — a document built by build_contract_document
+        # always carries every projected key that applies to that item's
+        # evidence class — so the well-formedness condition the docs rely on is
+        # enforced by a test rather than asserted in prose. The connection
+        # evidence leaves are conditional (present only when the underlying
+        # edge carries that side), so they are checked separately.
+        document = build_contract_document(self.database, self._full_spec())
+        for name in PROJECTED_FIELDS:
+            with self.subTest(field=name):
+                if name in CONDITIONAL_PROJECTED_FIELDS:
+                    self._assert_connection_evidence_conditional(document, name)
+                else:
+                    self.assertTrue(
+                        _has_key_at_path(document, _projected_path(name)),
+                        f"built document missing projected key for {name}",
+                    )
+
+    def _assert_connection_evidence_conditional(self, document: dict, name: str) -> None:
+        # The connection evidence leaves are present exactly when the underlying
+        # edge carries that side: a verified authored-link connection has no
+        # TF-IDF shared_terms, so the leaf is legitimately absent there. The
+        # renderer treats a missing key and an explicit None identically, so
+        # this conditional presence keeps the projection coherent without
+        # fabricating fields that carry no meaning for the evidence class.
+        for conn in document["connections"]:
+            evidence = conn.get("evidence") or {}
+            if name.endswith("shared_terms[]"):
+                if "shared_terms" in evidence:
+                    self.assertIsInstance(evidence["shared_terms"], list)
+                continue
+            if ".source_evidence." in name:
+                side, leaf = "source_evidence", name.split("source_evidence.")[1]
+            elif ".target_evidence." in name:
+                side, leaf = "target_evidence", name.split("target_evidence.")[1]
+            else:
+                raise AssertionError(f"unexpected conditional field {name!r}")
+            side_dict = evidence.get(side)
+            if side_dict is not None:
+                self.assertIn(
+                    leaf,
+                    side_dict,
+                    f"connection evidence {side} missing projected leaf {leaf!r}",
+                )
 
     def test_cited_passage_citation_resolves_to_physical_lines(self) -> None:
         document = build_contract_document(self.database, self._full_spec())

@@ -372,11 +372,32 @@ consumer that needs any of these fields must read the JSON, not the Markdown.
 
 ### Injectivity
 
-The projection is injective **over the projected field set**, holding up to line-ending normalization:
-two documents that differ in any **projected** field never **render identically**,
-with the single exception that values differing only in line endings (CRLF and
-bare CR are normalized to LF so every line boundary is recognized for fence
-safety) render identically. This is part of the **contract**, not an incidental
+Injectivity is stated over **well-formed** documents, defined and enforced by
+test: a well-formed document is one in which every projected key that applies
+to an item's evidence class is present — in every item of every projected
+collection, not just the first. The builder constructs every dict with **fixed
+literal keys** (see `_resolve_item` and the document shape above), so
+`build_contract_document` always emits every projected key that applies; a test
+(`test_builder_always_emits_every_projected_key`) pins that invariant, making
+the well-formedness condition checkable rather than hedged.
+
+The one scoped exception is connection evidence: `_edge_evidence` emits
+`source_evidence`, `target_evidence`, and `shared_terms` only when the
+underlying edge actually carries them, because a verified connection authored
+as a wikilink has no TF-IDF shared terms. Those projected leaves are therefore
+present exactly when they apply to the connection's evidence class, and the
+renderer treats a missing key and an explicit `None` identically — so an absent
+leaf renders the trusted marker, never an invented field. A missing key is
+otherwise unreachable through the public API — it occurs only in hand-crafted
+dicts — and the renderer treats a missing key and an explicit `None`
+identically for every projected field.
+
+Over well-formed documents the projection is injective **over the projected
+field set**, holding up to line-ending normalization: two well-formed documents
+that differ in any **projected** field never **render identically**, with the
+single exception that values differing only in line endings (CRLF and bare CR
+are normalized to LF so every line boundary is recognized for fence safety)
+render identically. This is part of the **contract**, not an incidental
 property of the current layout, and it is enforced by tests rather than assumed.
 Any future formatting change that merged fields, dropped a projected field, or
 collapsed absence into emptiness would break injectivity and must be rejected on
@@ -394,9 +415,11 @@ with its citation, or a passage with its citation, would destroy the boundary
 between what the operator asserted and the evidence attached to it. For a
 project whose premise is evidence-class separation, a projection that cannot
 distinguish the operator's assertion from its attached evidence is a defect of
-the first order. An absent field renders its trusted label with an explicit
-trusted marker — `None recorded.` — rather than vanishing, so absence and
-emptiness are distinguishable.
+the first order. An absent field (an explicit `None`, or a missing key) renders
+its trusted label with an explicit trusted marker — `None recorded.` — rather
+than vanishing, so absence and emptiness are distinguishable: `None` shows the
+marker, an empty string an empty fenced block, an absent collection the marker,
+and an empty list zero per-element blocks.
 
 The eight numbered sections and their order do not change.
 
