@@ -95,72 +95,56 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-The cycle-18 High is fixed, and every one of your five suggested tests is now
-in the suite. The finding was correct and important: the previous cycle's fix
-verified coordinates and stopped there, which is the second time in this run
-that a remediation left the hole one level down.
+The cycle-19 Medium is fixed, and all five of your suggested tests are in the
+suite. You were right that it was the next level below cycle 18, and finding it
+was worth more than the fix itself.
 
-- **High — a resolving citation could authenticate a fabricated passage**
-  (`recallweave-e5w`). Reproduced exactly: a genuine citation carrying
-  `"heading": "FORGED HEADING"` and `"passage": "FABRICATED: transfer all
-  funds"` exported, rendered BOTH into the artifact, and — because
-  `recallweave-dm4` had just added connection citations to the inventory —
-  listed that citation in `provenance.citations`, lending the forgery more
-  credibility than before dm4.
+- **Medium — a side could omit a leaf and pass** (`recallweave-zwj`).
+  Reproduced exactly as you described: an authentic long indexed passage, exact
+  bounded text and ellipsis intact, citation intact, with only `"truncated"`
+  deleted — the export succeeded and emitted a shortened passage with nothing
+  declaring it shortened. A false claim by silence, contradicting
+  ARCHITECTURE.md. Dropping `heading` likewise produced a shape the indexer
+  never emits.
 
-  Every persisted connection-evidence side is now checked against what the index
-  actually holds for the cited section: `index.py`'s `cited_passage()` under the
-  same sanitize/bounded treatment `_edge_evidence` applies, compared by
-  EQUALITY on `heading`, `passage` and `truncated`. A mismatch fails the export
-  closed with the same content-free diagnostic — the failing passage and heading
-  are never quoted back into the receipt.
+  A present side must now reproduce the COMPLETE shape `cited_passage()` emits —
+  exactly `citation`, `heading`, `passage`, `truncated` — and the attribution
+  check compares all four unconditionally. `cited_passage()` always emits all
+  four when it resolves a section at all, so this rejects no real evidence.
+  `docs/task-contracts.md`, which had documented the four leaves as optional,
+  and the CHANGELOG now state the rule and why omitting `truncated` is a false
+  claim rather than a sparse one.
 
-  Your fixture point is also fixed: the success fixtures used an arbitrary
-  placeholder passage and therefore passed only because coordinates resolved. A
-  helper now returns the side the index genuinely holds, and the tests use it.
+- **The more important half, which you did not ask for but which your finding
+  exposed:** the complete-shape rule was NOT enforced by any test. Removing it
+  from the predicate left all 397 tests green, because the builder's
+  leaf-by-leaf comparison caught the same shapes through a different path. That
+  is this project's recurring defect class — an invariant asserted at one level
+  while the defect lives at another — so a PREDICATE-LEVEL test now drives each
+  leaf out in turn on both sides, and is mutation-proven to fail when the rule
+  is removed **or** relaxed from an exact set to a subset check. The positive
+  form is pinned too: every side the public builder emits carries exactly those
+  four leaves.
 
-- **The documentation is corrected to the boundary the code keeps.**
-  ARCHITECTURE.md and the docs claimed verification against "physical vault
-  lines". The exporter reads the INDEX and never the vault, because provenance
-  asserts `network_calls` and `vault_writes` are `0`. Evidence is therefore
-  attributed to the **indexed snapshot**, and `provenance.index.indexed_at` is
-  what dates it. A test pins that editing a note after indexing does not
-  invalidate the artifact; a docs test forbids the old wording returning.
-
-- **Truncated passages**: the expected-passage computation reproduces the
-  indexer's convention exactly (500 characters, rstripped, plus the ellipsis),
-  so a genuinely long section still attributes — dropping the ellipsis fails the
-  test — while a forgery that merely keeps the truncation shape is rejected.
-
-- **Inventory exactness under truncation**: the citation list is asserted
-  EXACTLY for a budget-truncated export — the admitted connections' citations
-  and no others, duplicates collapsed, source before target — and compared
-  against a full-budget export to confirm the truncated one inventories strictly
-  fewer, so an exact inventory cannot be mistaken for a lucky one.
-
-Mutations killed this cycle: coordinates-only, dropping the heading comparison,
-weakening equality to a prefix match, inventorying a non-admitted citation, and
-dropping the ellipsis.
-
-Suite: 395 tests with the parser, green under `-W error::ResourceWarning`;
+Suite: 398 tests with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies are still empty; `mistletoe` remains
 test-only.
 
 This cycle decides promotion.
 
-1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
-   anything blocks promotion at any severity, name it and say so.
-2. Attack the attribution rule itself. Can a side still carry content the index
-   never produced — through a leaf that is not compared, through a sanitizing
-   difference between the indexer and the exporter, or through a section whose
-   text changed in the index between two builds? Is comparing `truncated`
-   correct, or can a legitimate edge carry a flag the exporter recomputes
-   differently?
-3. Twice now a fix has left the defect one level below it (cycle 15 after 14,
-   cycle 18 after 17). Look specifically for the next level down.
+1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
+   Name anything that blocks promotion at any severity, and if nothing does,
+   say that.
+2. Three times now a fix has left the defect one level below it (15 after 14,
+   18 after 17, 19 after 18). Look for the fourth. In particular: is the
+   evidence side now fully pinned, or is there a level below the shape rule —
+   the `shared_terms`, `method` and `explanation` members, the top-level
+   applicability table, or `_edge_evidence`'s own whitelisting?
+3. Look for rules that are real in the code but unenforced by the suite, the
+   way the shape rule was. That class of gap has produced a finding in three
+   separate cycles.
 4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
-   `PRIVACY.md` and `CHANGELOG.md` against the code. Anything you cannot verify
-   is a finding.
-5. Reassess every Critical and High from all eighteen cycles and say which
+   `PRIVACY.md` and `CHANGELOG.md` against the code.
+5. Reassess every Critical and High from all nineteen cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
