@@ -101,10 +101,31 @@ def _field(label: str, value: Any) -> list[_Escaped]:
     chrome label. Never concatenate two document fields into one fence: merging
     fields destroys the evidence boundary (an operator statement carrying the
     citation's bytes renders byte-identically to a cited statement carrying
-    them). An absent (None) field renders the explicit trusted marker so that
-    absence is distinguishable from an empty string."""
-    content = _as_str(value) if value is not None else NONE_RECORDED
-    return [_literal(label), _fenced_esc(content)]
+    them).
+
+    Absence is STRUCTURAL, not a magic string. A field that is present ALWAYS
+    renders its label followed by a fenced block; a field that is absent (None,
+    which is also how a missing key arrives here) renders its label followed by
+    the trusted marker as a bare chrome line, with no fenced block at all. The
+    two states therefore differ in document STRUCTURE — code block versus
+    paragraph — and not merely in the bytes a fence happens to carry.
+
+    This is what makes absence unforgeable. Rendering the marker INSIDE the
+    fence put it in the same value space as untrusted content, so a value that
+    was exactly "None recorded." imitated absence perfectly (recallweave-4a6);
+    operator objectives and vault passages both reach this function, so no
+    hostile intent was required. Do not "fix" a future collision here by
+    escaping or by choosing a more exotic marker string: any in-band sentinel
+    is forgeable, and that class of fix has already failed repeatedly here.
+
+    The inertness invariant is unchanged: the marker is renderer-authored
+    chrome (the same literal the empty-section and `enforced:` chrome already
+    emit), and every document-derived value is still fenced. An empty string is
+    still present, so it renders an empty fence and remains distinguishable
+    from both absence and a marker-valued field."""
+    if value is None:
+        return [_literal(label), _literal(NONE_RECORDED)]
+    return [_literal(label), _fenced_esc(_as_str(value))]
 
 
 def _render_schema(document: dict[str, Any]) -> list[_Escaped]:
@@ -264,9 +285,10 @@ def _render_connections(document: dict[str, Any]) -> list[_Escaped] | None:
         lines.extend(_field(f"{base} target:", item.get("target")))
         lines.extend(_field(f"{base} kind:", item.get("kind")))
         verified = item.get("verified")
-        verified_str = "true" if verified else "false"
-        if verified is None:
-            verified_str = NONE_RECORDED
+        # Absence goes to _field as None so it takes the structural absence
+        # path; substituting the marker string here would push the signal back
+        # into the untrusted channel that recallweave-4a6 closed.
+        verified_str = None if verified is None else ("true" if verified else "false")
         lines.extend(_field(f"{base} verified:", verified_str))
         lines.extend(_field(f"{base} evidence class:", item.get("evidence_class")))
         lines.extend(_field(f"{base} score:", item.get("score")))

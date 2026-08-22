@@ -280,13 +280,30 @@ This shape is deliberate and differs from a prettier layout:
 The renderer emits **one fenced block per field**, never two document fields in a
 single block, and every fenced block is preceded by its own renderer-authored
 label. No projected field is ever conditionally omitted: a field that is present
-**always** renders its trusted label. A field that is absent renders its label
-with the trusted marker `None recorded`, so **absence** is distinguishable from
-**emptiness**: an absent citation and an empty-string citation do not produce the
-same output — the absent one shows `None recorded.`, the empty-string one shows
-an empty fenced block. (A collection field with no elements, such as an empty
-list, renders no per-element blocks, which is likewise distinct from an absent
-collection that renders the marker.)
+**always** renders its trusted label followed by a fenced block. A field that is
+absent renders its label followed by the trusted marker `None recorded.` as a
+bare chrome line, with **no fenced block at all**.
+
+Absence is therefore **structural**, not a magic string. The two states differ in
+document structure — a code block versus a paragraph — and not merely in the
+bytes some fence happens to carry, so no value can imitate absence: a citation
+whose text is literally `None recorded.` is present, so it renders inside a
+fence, and reads differently from an absent citation. Rendering the marker
+*inside* the fence put it in the same value space as untrusted content, and
+because operator objectives and vault passages both reach the renderer, any
+document containing those words forged absence with no hostile intent required.
+Do not replace this with escaping or with a more exotic marker string: every
+in-band sentinel is forgeable.
+
+**Absence** also remains distinguishable from **emptiness**: an absent citation
+and an empty-string citation do not produce the same output — the absent one
+shows the bare marker, the empty-string one an empty fenced block. (A collection
+field with no elements, such as an empty list, renders no per-element blocks,
+which is likewise distinct from an absent collection that renders the marker.)
+
+The marker is renderer-authored chrome, the same literal the empty-section and
+`enforced:` lines already emit, so the inertness invariant is unchanged: every
+document-derived value is still fenced.
 
 This exists because the earlier shape merged a statement with its citation into
 one block, and that destroyed the **evidence boundary**. A constraint whose
@@ -454,10 +471,12 @@ between what the operator asserted and the evidence attached to it. For a
 project whose premise is evidence-class separation, a projection that cannot
 distinguish the operator's assertion from its attached evidence is a defect of
 the first order. An absent field (an explicit `None`, or a missing key) renders
-its trusted label with an explicit trusted marker — `None recorded.` — rather
-than vanishing, so absence and emptiness are distinguishable: `None` shows the
-marker, an empty string an empty fenced block, an absent collection the marker,
-and an empty list zero per-element blocks.
+its trusted label followed by the trusted marker — `None recorded.` — as a bare
+chrome line with no fenced block, rather than vanishing. Because a present value
+*always* produces a fence and absence *never* does, absence cannot be forged by
+content: `None` shows the bare marker, a value that is itself the marker text
+shows a fence containing it, an empty string an empty fenced block, an absent
+collection the bare marker, and an empty list zero per-element blocks.
 
 The eight numbered sections and their order do not change.
 

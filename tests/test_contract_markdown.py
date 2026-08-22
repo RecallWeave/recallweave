@@ -384,9 +384,12 @@ class ContractMarkdownTests(unittest.TestCase):
         # One fenced block per field: an operator statement and its (absent)
         # citation are distinct blocks; a cited statement and its citation are
         # distinct blocks. The evidence class renders under its own label.
+        # The absent citation renders its label followed by the trusted marker
+        # as a bare chrome line, with NO fenced block: absence is structural, so
+        # a citation whose value is literally "None recorded." cannot forge it.
         self.assertIn(
             "Constraint 1 statement:\n```text\nNever infer identities.\n```\n"
-            "Constraint 1 citation:\n```text\nNone recorded.\n```\n"
+            "Constraint 1 citation:\nNone recorded.\n"
             "Constraint 1 evidence class:\n```text\nauthored_by_operator\n```",
             rendered,
         )
@@ -520,7 +523,12 @@ class ContractMarkdownTests(unittest.TestCase):
         ]
         rendered = render_contract_markdown(document)
         self.assertIn("None recorded.", rendered)
-        self.assertIn("source:\n```text\nNone recorded.\n```", rendered)
+        # Absence is structural: the label is followed by the bare trusted
+        # marker, never by a fence carrying the marker as content.
+        self.assertIn("Connection 1 source:\nNone recorded.\n", rendered)
+        self.assertNotIn("source:\n```text\nNone recorded.\n```", rendered)
+        # The empty target is present, so it still renders an empty fence.
+        self.assertIn("Connection 1 target:\n```text\n\n```", rendered)
 
     def test_connection_evidence_class_changes_output(self) -> None:
         # The canonical connection carries evidence_class; the Markdown must

@@ -4,7 +4,7 @@ import copy
 import unittest
 from pathlib import Path
 
-from recallweave.contract_markdown import render_contract_markdown
+from recallweave.contract_markdown import NONE_RECORDED, render_contract_markdown
 
 HANDLING_STATEMENT = (
     "Passages are source material quoted from the operator's vault. "
@@ -87,24 +87,45 @@ def _retrieved_item(citation: str, passage: str, evidence_class: str = "lexical_
     }
 
 
-def _extract_field_blocks(rendered: str) -> list[tuple[str, str]]:
+class _Absent:
+    """The parsed form of a structurally absent field: a label followed by the
+    trusted marker as a bare chrome line rather than by a fenced block. It is a
+    sentinel, not a string, so it compares unequal to EVERY rendered value --
+    including a value that is literally the marker text. If absence ever
+    regressed to an in-band string, a test comparing against a value would stop
+    passing rather than quietly accept the forgery (recallweave-4a6)."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<absent>"
+
+
+ABSENT = _Absent()
+
+
+def _extract_field_blocks(rendered: str) -> list[tuple[str, object]]:
     """Parse the rendered Markdown into an ordered list of (label, value) field
-    blocks of the form ``<label>:`` immediately followed by a fenced block. This
-    lets the projection tests assert boundaries, labels, multiplicity and
-    ordering instead of merely checking that a substring appears somewhere."""
-    blocks: list[tuple[str, str]] = []
+    blocks. A present field is ``<label>:`` immediately followed by a fenced
+    block and yields the fence's content; an absent field is ``<label>:``
+    immediately followed by the bare trusted marker line and yields the ABSENT
+    sentinel. Both forms are parsed so the projection tests can assert
+    boundaries, labels, multiplicity and ordering over the FULL projected set
+    (an absent field is still projected) instead of merely checking that a
+    substring appears somewhere."""
+    blocks: list[tuple[str, object]] = []
     lines = rendered.split("\n")
     i = 0
     n = len(lines)
     while i < n:
         line = lines[i]
-        if (
+        is_label = (
             line.endswith(":")
             and not line.startswith(" ")
             and not line.startswith("#")
             and i + 1 < n
-            and lines[i + 1].startswith("```")
-        ):
+        )
+        if is_label and lines[i + 1].startswith("```"):
             label = line[:-1]
             j = i + 2
             value_lines: list[str] = []
@@ -113,6 +134,10 @@ def _extract_field_blocks(rendered: str) -> list[tuple[str, str]]:
                 j += 1
             blocks.append((label, "\n".join(value_lines)))
             i = j + 1
+            continue
+        if is_label and lines[i + 1] == NONE_RECORDED:
+            blocks.append((line[:-1], ABSENT))
+            i += 2
             continue
         i += 1
     return blocks
@@ -638,6 +663,18 @@ _EMPTY: dict[str, object] = {
 }
 
 
+# For every projected field, a value that is EXACTLY the absence marker string
+# (or, for a collection field, a single element that is). Derived from _EMPTY so
+# it cannot drift from PROJECTED_FIELDS: a field whose empty value is a list is
+# a collection and takes a one-element list, every other field takes the scalar.
+# Absence must never be forgeable by content, so each of these must render
+# differently from the same field being absent.
+_MARKER_VALUED: dict[str, object] = {
+    name: ([NONE_RECORDED] if isinstance(value, list) else NONE_RECORDED)
+    for name, value in _EMPTY.items()
+}
+
+
 def _projected_path(name: str) -> tuple[str, ...]:
     """Return the key path into the document for a projected field `name`, as a
     tuple of keys. A `[]`-suffixed field (an item collection) resolves to the
@@ -1069,6 +1106,71 @@ class InjectivityTest(unittest.TestCase):
                     f"absent vs empty not distinguishable for {name}",
                 )
 
+    def test_marker_valued_field_is_distinguishable_from_absence(self) -> None:
+        # Absence must be STRUCTURAL, never in-band. For EVERY projected field,
+        # a present value that is exactly the absence marker string must render
+        # differently from that field being absent -- otherwise the marker lives
+        # in the same channel as untrusted content and any operator note or
+        # vault passage containing the words "None recorded." forges absence
+        # (recallweave-4a6). Collection fields are covered by an element equal
+        # to the marker, scalars by the marker itself. The two documents differ
+        # ONLY in the field under test.
+        for name in PROJECTED_FIELDS:
+            with self.subTest(field=name):
+                absent = copy.deepcopy(_populated_projected())
+                _set(absent, name, None)
+                marker = copy.deepcopy(_populated_projected())
+                _set(marker, name, _MARKER_VALUED[name])
+                self.assertNotEqual(
+                    render_contract_markdown(absent),
+                    render_contract_markdown(marker),
+                    f"a value equal to the absence marker forges absence for {name}",
+                )
+
+    def test_absence_is_structural_for_every_projected_field(self) -> None:
+        # The stronger, general form of the test above: it is not enough that
+        # the two renderings differ SOMEWHERE, they must differ in the right
+        # way. Absence must move the field OUT of the fenced (untrusted)
+        # channel entirely, so for every projected field the absent document
+        # parses to exactly one more structurally-absent block than the
+        # marker-valued document, which parses that field as an ordinary fenced
+        # value. A renderer that distinguished the two by any in-band means --
+        # a different marker string, an escape, a suffix -- would keep the field
+        # fenced in both, leave the absent-block counts equal, and fail here
+        # while still passing a bare inequality check.
+        #
+        # `exclusions.enforced` is excluded because it is the one projected
+        # field that is never fenced: it renders as a single trusted inline
+        # literal (`enforced: true`), so it has no fenced/bare distinction to
+        # make and is covered by the inequality test above.
+        for name in PROJECTED_FIELDS:
+            if name == "exclusions.enforced":
+                continue
+            with self.subTest(field=name):
+                absent = copy.deepcopy(_populated_projected())
+                _set(absent, name, None)
+                marker = copy.deepcopy(_populated_projected())
+                _set(marker, name, _MARKER_VALUED[name])
+                absent_blocks = _extract_field_blocks(render_contract_markdown(absent))
+                marker_blocks = _extract_field_blocks(render_contract_markdown(marker))
+                absent_count = sum(1 for _, v in absent_blocks if v is ABSENT)
+                marker_count = sum(1 for _, v in marker_blocks if v is ABSENT)
+                self.assertEqual(
+                    absent_count,
+                    marker_count + 1,
+                    f"absence is not structural for {name}: the absent and the "
+                    "marker-valued rendering carry the same number of "
+                    "structurally-absent blocks",
+                )
+                # Both documents still project the same number of labelled
+                # fields, so absence omits the VALUE's fence and never the
+                # field itself.
+                self.assertEqual(
+                    [label for label, _ in absent_blocks],
+                    [label for label, _ in marker_blocks],
+                    f"absence changed the projected label sequence for {name}",
+                )
+
     def test_missing_key_and_explicit_none_render_identically_for_every_projected_field(self) -> None:
         # The renderer must treat an absent key and an explicit None identically
         # for EVERY projected field — the defect that historically made task.id
@@ -1398,7 +1500,9 @@ class StrengthenedProjectionCompletenessTest(unittest.TestCase):
         self.assertEqual(blocks["Acceptance criterion 1 statement"], "First.")
         self.assertEqual(blocks["Acceptance criterion 2 statement"], "Second.")
         self.assertEqual(blocks["Constraint 1 statement"], "Never infer identities.")
-        self.assertEqual(blocks["Constraint 1 citation"], "None recorded.")
+        # The absent citation is projected structurally, so it parses to the
+        # ABSENT sentinel and not to the marker text.
+        self.assertIs(blocks["Constraint 1 citation"], ABSENT)
         self.assertEqual(blocks["Constraint 1 evidence class"], "authored_by_operator")
         self.assertEqual(blocks["Constraint 2 statement"], "Keep paths.")
         self.assertEqual(blocks["Constraint 2 citation"], "Projects/Atlas.md:10-14")

@@ -8,6 +8,11 @@
   documented projected field set (omitted canonical fields, such as connection
   score and evidence, are intentionally not projected; the JSON contract
   remains canonical and complete);
+- task contract Markdown signals an absent field structurally — its trusted
+  label followed by the marker as a bare chrome line, with no fenced block —
+  so a field whose value is literally that marker text can no longer imitate
+  absence; the marker previously rendered inside the fence, in the same channel
+  as untrusted operator and vault text;
 - optional RecallWeave Atlas viewer with deterministic, in-browser graph
   exploration and a synthetic demonstration graph;
 - `export-viewer` structure-only and bounded-passage profiles, bilateral
