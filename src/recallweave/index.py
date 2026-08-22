@@ -18,6 +18,12 @@ from .model import LinkEvidence, Note
 from .parser import normalize_name, parse_note, tokenize
 from .policy import IndexPolicy, RESERVED_DIRECTORY_NAMES
 
+# This is the PUBLIC receipt schema version, shared by every command's JSON
+# output (see query.py and docs/json-output.md), not a private index revision.
+# Do not bump it to record a new index column: adding `heading_line` and
+# `heading_level` to `sections` for recallweave-kob changed what an index
+# stores, not what a receipt promises. The contract builder detects that
+# capability directly and refuses an index that predates it.
 SCHEMA_VERSION = "2"
 APPLICATION_ID = "recallweave"
 DISCOVERY_POSTING_WINDOW = 12
@@ -54,7 +60,9 @@ CREATE TABLE sections (
     heading TEXT NOT NULL,
     line_start INTEGER NOT NULL,
     line_end INTEGER NOT NULL,
-    text TEXT NOT NULL
+    text TEXT NOT NULL,
+    heading_line INTEGER,
+    heading_level INTEGER
 );
 CREATE INDEX idx_sections_note ON sections(note_id);
 CREATE TABLE terms (
@@ -242,10 +250,21 @@ def _insert_notes(connection: sqlite3.Connection, notes: list[Note]) -> dict[str
         for section in note.sections:
             section_cursor = connection.execute(
                 """
-                INSERT INTO sections(note_id, heading, line_start, line_end, text)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO sections(
+                    note_id, heading, line_start, line_end, text,
+                    heading_line, heading_level
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (note_id, section.heading, section.line_start, section.line_end, section.text),
+                (
+                    note_id,
+                    section.heading,
+                    section.line_start,
+                    section.line_end,
+                    section.text,
+                    section.heading_line,
+                    section.heading_level,
+                ),
             )
             section_id = int(section_cursor.lastrowid)
             counts = Counter(tokenize(f"{section.heading} {section.text}"))

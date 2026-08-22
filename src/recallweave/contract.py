@@ -383,27 +383,58 @@ def _matching_links_in_section_body(connection, row, persisted):
     ]
 
 
+def _index_records_heading_coordinates(connection) -> bool:
+    """True iff this index records each heading's own line and level.
+
+    Added for recallweave-kob. An index written before that cannot bind a
+    heading link's coordinate, and silently treating its heading links as
+    unauthentic would reject genuine edges with a diagnostic pointing at the
+    wrong thing. The builder checks the capability DIRECTLY rather than reading
+    a version number, because `SCHEMA_VERSION` is the public receipt version
+    shared by every command's output and does not move when an index column is
+    added."""
+    columns = {
+        str(column["name"])
+        for column in connection.execute("PRAGMA table_info(sections)")
+    }
+    return {"heading_line", "heading_level"} <= columns
+
+
 def _matching_links_in_heading(connection, row, persisted):
     """Links re-derived from an indexed section HEADING.
 
     The indexer finds links on heading lines too, and those lines are not in any
-    section's text -- the heading is stored separately. The quoted source text
-    is bound to that stored heading (its leading `#` markers removed), so the
-    text still comes from the index rather than from the edge, and a heading
-    that reached `sections.heading` was by construction not inside fenced code."""
-    source_text = persisted["source_text"]
-    stripped = source_text.lstrip("#").strip()
-    if stripped == source_text:
-        return []
-    match = connection.execute(
-        "SELECT 1 FROM sections WHERE note_id = ? AND heading = ? LIMIT 1",
-        (int(row["source_note_id"]), stripped),
+    section's text -- the heading is stored separately. A heading that reached
+    `sections.heading` was by construction not inside fenced code, so the
+    parser's fence state is not at issue on this route.
+
+    The heading is matched on its COORDINATE, its LEVEL and its text together.
+    Binding the text alone was not enough (recallweave-kob): the index used to
+    record a body's line range and never the heading's own line or `#` count, so
+    an authentic indexed heading authenticated a false `line`, a different
+    marker count, or -- worst -- the coordinate of a DIFFERENT section carrying
+    the same heading text. `sections.heading_line` and `sections.heading_level`
+    exist for exactly this, and the whole heading line is reconstructed from
+    indexed data before it is compared, so the quoted text is not merely
+    *consistent with* the index but equal to what the index says that line is."""
+    heading_row = connection.execute(
+        """
+        SELECT heading, heading_level FROM sections
+        WHERE note_id = ? AND heading_line = ?
+        LIMIT 1
+        """,
+        (int(row["source_note_id"]), persisted["line"]),
     ).fetchone()
-    if match is None:
+    if heading_row is None or heading_row["heading_level"] is None:
+        return []
+    indexed_line = (
+        "#" * int(heading_row["heading_level"]) + " " + str(heading_row["heading"])
+    )
+    if persisted["source_text"] != indexed_line:
         return []
     return [
         link
-        for link in _links([source_text], 0)
+        for link in _links([indexed_line], 0)
         if link.kind == row["kind"] and link.target == persisted["target_text"]
     ]
 
@@ -862,6 +893,17 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
 
         connections: list[dict[str, Any]] = []
         resolved_citations: dict[str, dict[str, Any] | None] = {}
+        if seed_ids and not _index_records_heading_coordinates(connection):
+            # Fail closed, and say what to do. An index that cannot supply a
+            # heading's own line cannot have a heading link's coordinate bound,
+            # and exporting connections from it would either reject genuine
+            # edges or accept mis-coordinated ones (recallweave-kob).
+            raise ValueError(
+                "this index predates heading-coordinate recording, so an "
+                "authored link on a heading line cannot be authenticated. "
+                "Re-index the vault with `recallweave index` before exporting "
+                "a contract."
+            )
         if seed_ids:
             edge_rows = _edge_rows(
                 connection, seed_ids, include_candidates=spec.include_candidates

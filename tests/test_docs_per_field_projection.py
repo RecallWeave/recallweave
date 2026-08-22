@@ -100,15 +100,16 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         self.assertIn("fenced-code state across lines", text)
         self.assertIn("never one isolated line", text)
 
-    def test_docs_disclose_the_heading_link_binding_gap(self) -> None:
-        # A heading link's coordinate and heading level cannot be bound: the
-        # index records a body's line range but never the heading's own line or
-        # its marker count. The docs must disclose that rather than claim the
-        # exact-physical-line property for all authored links (cycle 24).
+    def test_docs_no_longer_disclose_a_heading_binding_gap(self) -> None:
+        # recallweave-kob closed the gap: the index now records each heading's
+        # own line and level, so a heading link is bound like a body link. The
+        # disclosure paragraph must be GONE -- leaving it would understate the
+        # guarantee, which is its own kind of untrue documentation -- and the
+        # docs must describe the coordinate binding instead.
         text = _norm(_text("docs/task-contracts.md"))
-        self.assertIn("only partly bound, and this is a known gap", text)
-        self.assertIn("never the heading", text)
-        self.assertIn("cannot be invented", text)
+        self.assertNotIn("only partly bound, and this is a known gap", text)
+        self.assertIn("A link on a heading line is fully bound too", text)
+        self.assertIn("reconstructs the whole heading line from indexed data", text)
 
     def test_changelog_documents_per_field_projection(self) -> None:
         text = _norm(_text("CHANGELOG.md"))

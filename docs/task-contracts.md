@@ -606,27 +606,26 @@ to be at the claimed line matters for the same reason: a section can hold both
 a fenced link and a real one, and a claim quoting the fenced line must not
 borrow the real link's authenticity.
 
-**A link on a heading line is only partly bound, and this is a known gap.** The
-indexer also finds links on heading lines, which are in no section's text — the
-index keeps them in `sections.heading`. Those are re-derived by binding the
-quoted source text to that stored heading before parsing it, so the link TEXT
-still comes from the index rather than from the edge, and a heading inside a
+**A link on a heading line is fully bound too.** The indexer also finds links on
+heading lines, which are in no section's text. The index records each heading's
+own physical line and `#` level (`sections.heading_line`,
+`sections.heading_level`) alongside its text, so the exporter **reconstructs the
+whole heading line from indexed data** — the markers and the heading — and
+requires the quoted source text to equal it, at the claimed coordinate, before
+parsing it for the link.
+
+Binding the heading TEXT alone was not enough. Without the coordinate an
+authentic indexed heading authenticated a false `line`; without the level, `##`
+could be swapped for `######`; and where two sections carry the same heading
+text, either one's evidence authenticated the other's coordinate — every string
+genuine, and the artifact still pointing at the wrong place. A heading inside a
 fence never becomes a section, so a stored heading is by construction outside
-fenced code.
+fenced code and the parser's fence state is not at issue on this route.
 
-What is **not** bound for a heading link is its **coordinate** and its heading
-**level**: the `sections` table records a body's `line_start` and `line_end` but
-never the heading's own physical line or its `#` count. A tampered index can
-therefore pair an authentic indexed heading with a false `line`, or change `##`
-to `######`, and the export accepts it. The heading text, the link kind, the
-link target and the target's unique resolution are all still bound, so a
-heading link cannot be invented — only mis-coordinated.
-
-Closing this needs the index to record the heading's physical line, which is a
-core index schema change and is deliberately out of scope here. It is tracked
-as follow-up work, and this paragraph exists so the gap is disclosed rather
-than implied away. Until then, an authored heading link's `line` should be read
-as "somewhere in this note", not as a verified coordinate.
+An index written before heading coordinates were recorded cannot supply this,
+so `recallweave contract` **refuses** such an index and asks for a re-index,
+rather than rejecting its genuine heading links with a diagnostic that points
+at the wrong thing.
 
 Every one of those steps is load-bearing. An earlier version checked the parts
 independently — that the quoted text appeared somewhere in the covering

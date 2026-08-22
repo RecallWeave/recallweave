@@ -11,6 +11,14 @@ class Section:
     line_start: int
     line_end: int
     text: str
+    # The heading's OWN physical line and `#` count, distinct from the body's
+    # line_start/line_end. Both are None for the synthetic "Overview" section a
+    # note gets when its body starts before any heading: there is no heading
+    # line, so nothing can be attributed to one. Recorded because a link can sit
+    # ON a heading line, and without these an authored edge citing such a link
+    # could not have its coordinate bound (recallweave-kob).
+    heading_line: int | None = None
+    heading_level: int | None = None
 
 
 @dataclass(slots=True)

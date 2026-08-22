@@ -2575,6 +2575,132 @@ class ContractDocumentTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_contract_document(database, self._authored_spec())
 
+    def test_heading_link_binds_its_coordinate_and_level(self) -> None:
+        # FAIL-FIRST (recallweave-kob). A heading link's TEXT was bound to
+        # sections.heading, but nothing bound the COORDINATE or the heading
+        # LEVEL, because the index recorded a body's line range and never the
+        # heading's own line or its '#' count. An authentic indexed heading
+        # could therefore carry a false line, or a different marker count, and
+        # still authenticate a verified relationship.
+        _vault, database = self._vault_with(
+            "---\ntitle: Src\n---\n# Src\n\n## A [[Target]]\n\nzephyr body a\n"
+        )
+        # The genuine edge exports.
+        document = build_contract_document(database, self._authored_spec())
+        self.assertIn(
+            "authored_link",
+            {item["evidence_class"] for item in document["connections"]},
+        )
+        authentic = {
+            "line": 6,
+            "source_text": "## A [[Target]]",
+            "target_text": "Target",
+        }
+        forgeries = {
+            "line 1": {**authentic, "line": 1},
+            "line 999999": {**authentic, "line": 999999},
+            "a real body line": {**authentic, "line": 8},
+            "deeper heading level": {
+                **authentic,
+                "source_text": "###### A [[Target]]",
+            },
+            "shallower heading level": {
+                **authentic,
+                "source_text": "# A [[Target]]",
+            },
+        }
+        for label, forged in forgeries.items():
+            with self.subTest(forgery=label):
+                self._forge_authored_edge(database, dict(forged))
+                with self.assertRaises(ValueError) as raised:
+                    build_contract_document(database, self._authored_spec())
+                self.assertRegex(str(raised.exception), r"edge \d+")
+        # Restoring the authentic evidence exports again, so the rejections
+        # above are about the forgeries and not about the fixture.
+        self._forge_authored_edge(database, dict(authentic))
+        self.assertTrue(
+            build_contract_document(database, self._authored_spec())["connections"]
+        )
+
+    def test_an_index_without_heading_coordinates_is_refused(self) -> None:
+        # An index written before heading coordinates were recorded cannot have
+        # a heading link's coordinate bound. Silently treating its heading links
+        # as unauthentic would reject genuine edges and point the diagnostic at
+        # the wrong thing, so the builder refuses the index and says what to do.
+        import sqlite3
+
+        _vault, database = self._vault_with(
+            "---\ntitle: Src\n---\n# Src\n\n## A [[Target]]\n\nzephyr body a\n"
+        )
+        # Sanity: it exports before the columns are removed.
+        self.assertTrue(
+            build_contract_document(database, self._authored_spec())["connections"]
+        )
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute("ALTER TABLE sections DROP COLUMN heading_line")
+            connection.execute("ALTER TABLE sections DROP COLUMN heading_level")
+        with self.assertRaises(ValueError) as raised:
+            build_contract_document(database, self._authored_spec())
+        message = str(raised.exception)
+        self.assertIn("predates heading-coordinate recording", message)
+        self.assertIn("Re-index", message)
+        # The diagnostic is about the index, not about any note in it.
+        for name in ("Src.md", "Target.md"):
+            self.assertNotIn(name, message)
+
+    def test_identical_headings_at_different_coordinates_do_not_authenticate_each_other(self) -> None:
+        # FAIL-FIRST (recallweave-kob). Two sections may carry the SAME heading
+        # text at different physical lines. Binding only the text let either
+        # one's evidence authenticate the other's coordinate, which is the
+        # sharpest form of the defect: every string in the evidence is genuine
+        # and the artifact still points at the wrong place.
+        _vault, database = self._vault_with(
+            "---\ntitle: Src\n---\n# Src\n\n"
+            "## A [[Target]]\n\nzephyr first body\n\n"
+            "## A [[Target]]\n\nzephyr second body\n"
+        )
+        import sqlite3
+
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            headings = connection.execute(
+                "SELECT COUNT(*) AS n FROM sections WHERE heading = 'A [[Target]]'"
+            ).fetchone()["n"]
+        self.assertEqual(
+            headings, 2, "the fixture must repeat the same heading text"
+        )
+        # Line 6 is the first heading, line 10 the second. The indexer created
+        # its edge from one of them; the OTHER coordinate must not authenticate.
+        for line in (6, 10):
+            self._forge_authored_edge(
+                database,
+                {
+                    "line": line,
+                    "source_text": "## A [[Target]]",
+                    "target_text": "Target",
+                },
+            )
+            try:
+                build_contract_document(database, self._authored_spec())
+                accepted = True
+            except ValueError:
+                accepted = False
+            self.assertTrue(
+                accepted or line != 6,
+                "the genuine first-heading coordinate must authenticate",
+            )
+        # A coordinate that is neither heading line must always be rejected.
+        self._forge_authored_edge(
+            database,
+            {
+                "line": 7,
+                "source_text": "## A [[Target]]",
+                "target_text": "Target",
+            },
+        )
+        with self.assertRaises(ValueError):
+            build_contract_document(database, self._authored_spec())
+
     def test_authored_link_rejects_an_ambiguous_target_name(self) -> None:
         # FAIL-FIRST (recallweave-ze7). The indexer refuses a link whose target
         # name resolves to more than one note; the exporter accepted any

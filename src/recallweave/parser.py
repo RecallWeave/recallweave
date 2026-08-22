@@ -328,7 +328,8 @@ def _sections(lines: list[str], body_start: int) -> list[Section]:
     result: list[Section] = []
     for position, (start, heading) in enumerate(starts):
         end = starts[position + 1][0] - 1 if position + 1 < len(starts) else len(lines) - 1
-        text_start = start + 1 if HEADING_RE.match(lines[start]) else start
+        heading_match = HEADING_RE.match(lines[start])
+        text_start = start + 1 if heading_match else start
         while text_start <= end and not lines[text_start].strip():
             text_start += 1
         while end >= text_start and not lines[end].strip():
@@ -341,6 +342,12 @@ def _sections(lines: list[str], body_start: int) -> list[Section]:
                     line_start=text_start + 1,
                     line_end=end + 1,
                     text=text,
+                    # A synthetic "Overview" section has no heading line, so it
+                    # records none rather than pointing at its first body line.
+                    heading_line=start + 1 if heading_match else None,
+                    heading_level=(
+                        len(heading_match.group(1)) if heading_match else None
+                    ),
                 )
             )
     return result
