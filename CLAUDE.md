@@ -67,10 +67,35 @@ integration branch -> PR to protected main -> required review
 Open or update a PR only at a meaningful review checkpoint, release gate, or
 integration milestone — never as part of the routine cycle.
 
+**Review verdicts: what they gate**
+
+A failing or absent adversarial review does **not** block a checkpoint push. The
+checkpoint exists purely for durability and recovery, and stranding validated
+commits on one machine is the risk it removes.
+
+A failing or absent review **does** block every one of: promotion, merge,
+release, deploy, and milestone PR. Those need a PASS verdict *and* human
+approval.
+
+**Checkpoint branches are marked non-approved**
+
+The integration branch carries `CHECKPOINT_NOT_APPROVED.md` at its root, naming
+the branch and the latest review verdict. The supervisor refreshes it before
+every push and refuses to push an unmarked branch, so the marker cannot drift or
+go missing. Delete it as part of the promotion commit — its presence is the
+machine-checkable signal that the branch is not approved.
+
+Checkpoint branches must never be auto-mergeable: no auto-merge, no non-draft PR
+opened by automation, no `gh pr merge`. The supervisor refuses `gh pr
+merge|create|ready`, `gh release`, and any `--auto` flag outright; read-only `gh`
+(list, view) still works.
+
 **Never**
 - push or merge to protected `main`/`master`
-- auto-merge a PR
+- auto-merge a PR, or let a checkpoint branch become auto-mergeable
+- promote, release, or deploy on a non-PASS review
 - push broken or dirty integration state
+- push an integration branch missing its non-approved marker
 - force-push without explicit approval
 - push worker branches individually, except for recovery, debugging, or a
   specific review workflow
