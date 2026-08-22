@@ -95,64 +95,71 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your cycle-13 findings are fixed, and one further defect was found here after
-they were.
+Both of your cycle-14 findings are fixed. Each was REPRODUCED end to end
+through the public API before anything was changed, and one turned out to be
+substantially larger than reported.
 
-- **High — well-formedness stopped at the evidence side.** Confirmed and fixed
-  (`recallweave-6j3`). The evidence-class table was applied to the presence of
-  `source_evidence` / `target_evidence` but not to their contents, so a side
-  carrying only some of `citation` / `heading` / `passage` satisfied the table
-  while rendering ambiguously. Well-formedness now reaches inside each side.
-  **Judge this fix, do not assume it.** A partial side is now REJECTED as
-  malformed rather than projected with a side-level `truncated` flag. Both
-  options were legitimate; the reject path was taken deliberately. Decide
-  whether that is honest or whether it merely relocates the hole — for example
-  whether a shape that is rejectable in the test is actually unreachable
-  through the public builder, or whether rejection now discards evidence a
-  reader would have been entitled to see.
+- **High — the builder emitted evidence its own validator rejected.** Confirmed
+  exactly as you described (`recallweave-4su`). `build_contract_document()`
+  never called `connection_evidence_is_well_formed()`, so a persisted edge whose
+  `evidence_json` held a citation-only, heading-only or truncated-only side was
+  exported and rendered. Reproduced by mutating `edges.evidence_json` and
+  calling the public builder: the returned connection failed the predicate.
 
-- **Medium — the disclosure test pinned today's formatting.** Confirmed and
-  fixed (`recallweave-0kl`). It asserted omission by matching the expected
-  rendered form of each omitted field, so a field whose rendered form differed
-  from that serialization escaped detection. Omission is now proven by
-  value-invariance: the omitted field is driven to two different values and the
-  rendering must be identical.
+  The builder now validates every connection it is about to admit and raises
+  `ValueError` naming it; the CLI exits 2 with the structured error on stderr,
+  nothing on stdout, and no artifact written. Validation runs BEFORE the budget
+  check, so an edge too expensive to admit cannot escape it — you asked for
+  exactly that case and it is pinned by test. One malformed edge among several
+  aborts the whole export; that choice is documented, not inferred.
 
-- **Projection order fidelity** was pinned for every projected collection
-  (`recallweave-hl7`): each collection's rendered element sequence must equal
-  its document sequence, and multiplicity must be preserved.
+  Fail-closed was chosen deliberately over the alternatives you listed.
+  Suppressing the edge hands the reader a quietly smaller graph; normalizing the
+  partial side away inside `_edge_evidence` discards a citation the reader may
+  be entitled to see. `SUBSTANTIVE_SIDE_LEAVES` was deliberately NOT relaxed —
+  that would reopen `recallweave-6j3`, which you did not ask for.
 
-- **High, found here by a mutation audit and NOT reported by you in thirteen
-  cycles — absence was signalled in-band** (`recallweave-4a6`). `_field()`
-  rendered the absence marker `None recorded.` INSIDE the field's fence, i.e.
-  in the same value space as untrusted content, so a field whose value was
-  exactly that string rendered byte-identically to that field being absent.
-  Reachable with no hostile intent: operator objectives, acceptance statements
-  and vault passages all reach the renderer. This was a true injectivity
-  violation over well-formed documents with none of the documented
-  qualifications available. Absence is now STRUCTURAL: a present field always
-  renders its label followed by a fenced block, an absent field renders its
-  label followed by the marker as a bare chrome line and emits no fence at all.
+- **Medium — the omitted-field inventory was incomplete, and by more than you
+  found** (`recallweave-3xl`). You named four connection-evidence fields. The
+  real count was twenty-one unclassified canonical leaves out of thirty-one
+  omitted: also `constraints[]` and `prior_decisions[]`
+  relative_path/passage/truncated, `handling.content_is_data_not_instructions`,
+  all five `disclosure` fields, and five `provenance` fields.
 
-Suite: 372 tests with the parser, `compileall` clean. Runtime dependencies are
+  The projected and omitted sets are now an EXHAUSTIVE PARTITION, enforced
+  against a document the public builder produced over a corpus carrying both
+  connection evidence classes: disjoint, covering every canonical leaf, and
+  naming no leaf the document lacks. `_not_projected_path()` is generic over the
+  whole document instead of hard-asserting a `retrieved_context[].` prefix, and
+  `_not_projected_pair()` derives probe values from the type the populated
+  document actually carries, raising rather than falling back to an untyped
+  probe that would make the invariance proof vacuous.
+
+Also landed since cycle 14 was briefed: absence in the Markdown projection is
+now STRUCTURAL (`recallweave-4a6`) — a present field always renders a fenced
+block, an absent field renders its trusted label followed by the marker as a
+bare chrome line with no fence — which you assessed positively.
+
+Suite: 379 tests with the parser, `compileall` clean. Runtime dependencies are
 still empty; `mistletoe` remains test-only.
 
 Attack hardest this cycle:
 
-1. **The new absence rule.** Is absence genuinely unforgeable now, or only
-   harder to forge? Look for any path where a document-derived value can reach
-   the output outside a fence, or where a label line can be produced by content
-   rather than by the renderer, which would let content synthesize the
-   label+bare-marker pair. Check `exclusions.enforced`, which is the one
-   projected field rendered as an inline trusted literal and therefore has no
-   fenced/bare distinction, and the empty-section marker, which emits the same
-   literal as section chrome. Check that the new tests would actually fail on a
-   regression rather than merely on a byte change.
-2. **The cycle-13 reject path**, per the High above.
-3. Whether the evidence-class table is the single source of truth or a second
-   place that can drift from `_edge_evidence`.
-4. Whether the value-invariance disclosure proof can still be defeated by a
-   field that influences the rendering only indirectly, e.g. through
-   `budget.characters_used`.
-5. Reassess every Critical and High from all thirteen cycles.
+1. **The fail-closed gate itself.** Is there any public path that reaches the
+   renderer with a connection the predicate would reject — a code path that
+   builds a document without going through `build_contract_document`, or a
+   connection admitted before the check? Is the error itself a disclosure
+   surface: does the message leak vault content or an excluded path? Note it
+   names `source_path` and `target_path`, which are note paths.
+2. **Whether the partition is real or merely asserted.** The canonical leaf set
+   is derived from ONE builder corpus. Find a document shape the public API can
+   produce whose leaves are not in that corpus, so a field could be omitted
+   without ever being classified.
+3. **Whether `_not_projected_pair()`'s type-derived probes are strong enough.**
+   A probe that both values render identically for the wrong reason would make
+   the invariance proof pass vacuously.
+4. **The structural-absence rule**, again and harder: any path where a
+   document-derived value reaches the output outside a fence, or where content
+   can synthesize a label line and thereby forge the label+bare-marker pair.
+5. Reassess every Critical and High from all fourteen cycles.
 <!-- CYCLE-CONTEXT-END -->
