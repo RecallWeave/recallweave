@@ -50,6 +50,14 @@ print "running test suite for the reviewer -> $suite"
   "$venv/bin/pip" install --quiet -e ".[test]" >/dev/null 2>&1
   print "# PYTHONPATH=src .codex-reviews/.venv/bin/python -m unittest discover -s tests"
   PYTHONPATH=src "$venv/bin/python" -m unittest discover -s tests 2>&1
+  # Second pass with ResourceWarning promoted to an error. A leaked sqlite
+  # connection or temp directory is finalized by the garbage collector at an
+  # arbitrary later moment, and because the CLI tests capture stderr to parse
+  # the JSON receipt, that warning can land in an unrelated test's captured
+  # stream and break it. Promoting the warning makes the leak fail where it is
+  # caused instead of somewhere else, hours later.
+  print "\n# PYTHONPATH=src .codex-reviews/.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests"
+  PYTHONPATH=src "$venv/bin/python" -W error::ResourceWarning -m unittest discover -s tests 2>&1
   print "\n# python3 -m compileall -q src"
   python3 -m compileall -q src 2>&1 && print "compileall: OK"
 } > "$suite" 2>&1

@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unicodedata
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from recallweave.contract import build_contract_document
@@ -118,7 +119,7 @@ class ContractEvidenceBoundsTest(unittest.TestCase):
         )
 
     def test_unknown_evidence_key_is_dropped_not_forwarded(self) -> None:
-        with sqlite3.connect(str(self.database)) as connection:
+        with closing(sqlite3.connect(str(self.database))) as connection, connection:
             rows = connection.execute(
                 "SELECT id, evidence_json FROM edges"
             ).fetchall()

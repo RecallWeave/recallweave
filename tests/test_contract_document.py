@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from contextlib import closing
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -342,8 +343,68 @@ class ContractDocumentTest(unittest.TestCase):
             self._full_spec(
                 exclusions={"paths": [], "globs": [], "tags": [], "directives": []}
             ),
+            # Populates the exclusion collections the other shapes leave empty,
+            # so every scalar collection is observed in BOTH forms rather than
+            # whichever form this corpus happens to produce.
+            self._full_spec(
+                exclusions={
+                    "paths": [],
+                    "globs": ["Restricted/**"],
+                    "tags": ["private"],
+                    "directives": ["no-export"],
+                }
+            ),
+            # Nothing retrieved and no cited selectors, so provenance.citations
+            # is genuinely empty.
+            self._full_spec(
+                retrieval={
+                    "query": "zzzz-no-such-term-anywhere",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 5000,
+                },
+                constraints=[],
+                prior_decisions=[],
+            ),
         ]
         return [build_contract_document(self.database, spec) for spec in shapes]
+
+    # Every projected or omitted SCALAR collection, with a reader for pulling
+    # each occurrence out of a built document. A scalar collection is one whose
+    # own `X[]` name is the field, so the partition classifies the container
+    # itself and the invariance/projection proofs must see it both empty and
+    # populated.
+    _SCALAR_COLLECTIONS = {
+        "exclusions.paths[]": lambda d: [d["exclusions"]["paths"]],
+        "exclusions.globs[]": lambda d: [d["exclusions"]["globs"]],
+        "exclusions.tags[]": lambda d: [d["exclusions"]["tags"]],
+        "exclusions.directives[]": lambda d: [d["exclusions"]["directives"]],
+        "provenance.citations[]": lambda d: [d["provenance"]["citations"]],
+        "retrieved_context[].matched_terms[]": lambda d: [
+            item["matched_terms"] for item in d["retrieved_context"]
+        ],
+        "connections[].evidence.shared_terms[]": lambda d: [
+            connection["evidence"]["shared_terms"]
+            for connection in d["connections"]
+            if "shared_terms" in connection["evidence"]
+        ],
+    }
+
+    # Scalar collections the public builder can never emit EMPTY, with the
+    # invariant that makes that true. These are asserted as positive claims
+    # below, not waved through: if one ever became emptiable, the assertion
+    # that it is always non-empty fails and this list must be revisited.
+    _NEVER_EMPTY_SCALAR_COLLECTIONS = {
+        "retrieved_context[].matched_terms[]": (
+            "a retrieved passage is selected BY its matched terms, so a "
+            "projected item always has at least one"
+        ),
+        "connections[].evidence.shared_terms[]": (
+            "shared_terms is required for discovery_candidate evidence and "
+            "forbidden for authored_link, so when the key is present at all "
+            "it carries the terms the candidate was found by"
+        ),
+    }
 
     def test_projected_and_omitted_sets_partition_the_canonical_document(self) -> None:
         # FAIL-FIRST (recallweave-3xl, strengthened for recallweave-e1y). The
@@ -412,6 +473,44 @@ class ContractDocumentTest(unittest.TestCase):
             set(),
             f"documented as omitted but not a canonical leaf: {sorted(phantom)}",
         )
+
+    def test_builder_shapes_cover_every_scalar_collection_in_both_forms(self) -> None:
+        # The partition and the invariance proofs classify scalar collections by
+        # their container name, so the corpus must actually EXERCISE each one in
+        # both forms rather than happening to produce whichever form the fixture
+        # falls into. Cycle 16 asked for this: relying on the aggregate corpus
+        # to "happen to populate them" is not a proof.
+        #
+        # Two of them can never be empty, and that is asserted as a positive
+        # claim rather than excused: if one became emptiable, the always-
+        # non-empty assertion fails and the exemption must be revisited.
+        documents = self._builder_shapes()
+        for name, read in self._SCALAR_COLLECTIONS.items():
+            with self.subTest(collection=name):
+                observed = [
+                    value
+                    for document in documents
+                    for value in read(document)
+                    if value is not None
+                ]
+                self.assertTrue(observed, f"{name} never appeared in any shape")
+                populated = [value for value in observed if value]
+                self.assertTrue(
+                    populated, f"{name} was never observed populated"
+                )
+                empty = [value for value in observed if not value]
+                if name in self._NEVER_EMPTY_SCALAR_COLLECTIONS:
+                    self.assertEqual(
+                        empty,
+                        [],
+                        f"{name} was observed EMPTY, which contradicts the "
+                        "documented invariant: "
+                        f"{self._NEVER_EMPTY_SCALAR_COLLECTIONS[name]}",
+                    )
+                else:
+                    self.assertTrue(
+                        empty, f"{name} was never observed empty"
+                    )
 
     def test_connection_evidence_applicability_table_is_decisive(self) -> None:
         # The table must state the applicability of EVERY evidence member for
@@ -939,7 +1038,7 @@ class ContractDocumentTest(unittest.TestCase):
         assume the shapes its own current code path would produce."""
         import sqlite3
 
-        with sqlite3.connect(str(database)) as connection:
+        with closing(sqlite3.connect(str(database))) as connection, connection:
             connection.execute(
                 "UPDATE edges SET evidence_json = ?", (json.dumps(evidence),)
             )
@@ -1039,7 +1138,7 @@ class ContractDocumentTest(unittest.TestCase):
         _vault, database = self._build_vault_index()
         import sqlite3
 
-        with sqlite3.connect(str(database)) as connection:
+        with closing(sqlite3.connect(str(database))) as connection, connection:
             rows = connection.execute("SELECT id FROM edges").fetchall()
             self.assertGreater(
                 len(rows), 1, "this corpus must produce several edges"
@@ -1095,7 +1194,7 @@ class ContractDocumentTest(unittest.TestCase):
         import sqlite3
 
         _vault, database = self._build_vault_index()
-        with sqlite3.connect(str(database)) as connection:
+        with closing(sqlite3.connect(str(database))) as connection, connection:
             corrupted = connection.execute(
                 """
                 UPDATE edges SET evidence_json = ?
@@ -1163,6 +1262,92 @@ class ContractDocumentTest(unittest.TestCase):
         for name in ("Alpha.md", "Beta.md", "Gamma.md"):
             self.assertNotIn(name, message)
 
+    def test_malformed_diagnostic_is_content_free_for_a_multi_digit_edge_id(self) -> None:
+        # The content-free claim must not quietly depend on the fixture's edge
+        # ids being single digits: a real index has thousands. Renumber the
+        # edges into a wide range and assert the diagnostic still names the edge
+        # and still carries no note path.
+        import sqlite3
+
+        _vault, database = self._build_vault_index()
+        self._rewrite_edge_evidence(
+            database,
+            {"source_evidence": {"citation": "x"}, "shared_terms": ["zephyr"]},
+        )
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute("UPDATE edges SET id = id + 104729")
+        with self.assertRaises(ValueError) as raised:
+            build_contract_document(database, self._evidence_spec())
+        message = str(raised.exception)
+        self.assertRegex(message, r"edge \d{6,}")
+        for name in ("Alpha.md", "Beta.md", "Gamma.md"):
+            self.assertNotIn(name, message)
+
+    def test_validation_reaches_only_edges_admitted_before_budget_truncation(self) -> None:
+        # Make the boundary EXPLICIT rather than incidental. Validation runs per
+        # edge BEFORE that edge's budget check, so an edge cannot escape it by
+        # being too expensive; but the loop `break`s once the budget is
+        # exhausted, so an edge ORDERED AFTER the break is never examined at
+        # all. That is sound -- an edge never examined is never in the document,
+        # so "every connection in the output is well-formed" still holds -- but
+        # it means the export is NOT a whole-index validation and a reader must
+        # not infer one. Pin both sides so the boundary cannot drift silently.
+        import sqlite3
+
+        _vault, database = self._build_vault_index()
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            ordered = connection.execute(
+                "SELECT id FROM edges ORDER BY is_verified DESC, score DESC, id"
+            ).fetchall()
+            self.assertGreater(len(ordered), 1)
+            # Corrupt the edge that sorts LAST, and demote it so it stays last,
+            # so a tight budget breaks before ever reaching it.
+            connection.execute(
+                "UPDATE edges SET score = 0.0, is_verified = 0, "
+                "evidence_json = ? WHERE id = ?",
+                (
+                    json.dumps(
+                        {
+                            "source_evidence": {"citation": "x"},
+                            "shared_terms": ["zephyr"],
+                        }
+                    ),
+                    ordered[-1][0],
+                ),
+            )
+        raised_at = []
+        truncated_at = []
+        for max_characters in (60, 150, 300, 400, 1000, 5000):
+            try:
+                document = build_contract_document(
+                    database, self._evidence_spec(max_characters=max_characters)
+                )
+            except ValueError:
+                raised_at.append(max_characters)
+                continue
+            # Whenever the build SUCCEEDS, every connection it returns is
+            # well-formed -- that is the invariant the gate guarantees.
+            for item in document["connections"]:
+                self.assertTrue(
+                    connection_evidence_is_well_formed(item),
+                    f"malformed connection survived at budget {max_characters}",
+                )
+            if document["budget"]["truncated"]:
+                truncated_at.append(max_characters)
+        self.assertTrue(
+            raised_at,
+            "no budget reached the malformed edge, so the reachable side of "
+            "the boundary was never exercised",
+        )
+        self.assertTrue(
+            truncated_at,
+            "no budget truncated before the malformed edge, so the "
+            "unreachable side of the boundary was never exercised",
+        )
+        # The boundary is monotone: once a budget is large enough to reach the
+        # malformed edge, every larger budget reaches it too.
+        self.assertGreater(min(raised_at), max(truncated_at))
+
     def test_well_formed_persisted_evidence_still_exports(self) -> None:
         # The fail-closed gate must not reject a healthy index. A freshly built
         # index exports connections, and each one passes the predicate.
@@ -1176,7 +1361,7 @@ class ContractDocumentTest(unittest.TestCase):
         import sqlite3
 
         _vault, database = self._build_vault_index()
-        with sqlite3.connect(str(database)) as connection:
+        with closing(sqlite3.connect(str(database))) as connection, connection:
             rows = connection.execute(
                 "SELECT id, evidence_json FROM edges"
             ).fetchall()

@@ -4,7 +4,7 @@ import json
 import tempfile
 import unittest
 import warnings
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
@@ -161,7 +161,7 @@ class ContractCliTest(unittest.TestCase):
         # project's own validator rejects.
         import sqlite3
 
-        with sqlite3.connect(str(self.database)) as connection:
+        with closing(sqlite3.connect(str(self.database))) as connection, connection:
             connection.execute(
                 "UPDATE edges SET evidence_json = ?",
                 (
@@ -221,7 +221,7 @@ class ContractCliTest(unittest.TestCase):
         # trips the gate is provably one whose endpoints carry the sentinels.
         # Corrupting every edge would let an unrelated edge fail first and make
         # this leak test vacuous.
-        with sqlite3.connect(str(database)) as connection:
+        with closing(sqlite3.connect(str(database))) as connection, connection:
             corrupted = connection.execute(
                 """
                 UPDATE edges SET evidence_json = ?
