@@ -96,6 +96,17 @@ def _fenced_esc(value: Any) -> _Escaped:
     return _Escaped._make(_fenced(_normalize_lines(_as_str(value))))
 
 
+def _field(label: str, value: Any) -> list[_Escaped]:
+    """One fenced block per document field, each preceded by its own trusted
+    chrome label. Never concatenate two document fields into one fence: merging
+    fields destroys the evidence boundary (an operator statement carrying the
+    citation's bytes renders byte-identically to a cited statement carrying
+    them). An absent (None) field renders the explicit trusted marker so that
+    absence is distinguishable from an empty string."""
+    content = _as_str(value) if value is not None else NONE_RECORDED
+    return [_literal(label), _fenced_esc(content)]
+
+
 def _render_schema(document: dict[str, Any]) -> list[_Escaped] | None:
     """The top-level document schema_version is material contract content that
     the base renderer emitted and the Cycle-7 restructuring dropped. It is
@@ -154,14 +165,13 @@ def _render_acceptance(document: dict[str, Any]) -> list[_Escaped] | None:
         statement = _as_str(item.get("statement"))
         if not statement:
             continue
-        # The AC id is read from the document and is therefore untrusted; a
-        # trusted literal label precedes a fenced block carrying the id and
-        # the statement (no - [ ] checklist, no inline id).
-        lines.append(_literal(f"Acceptance criterion {index}:"))
-        content = _as_str(item.get("id"))
-        if statement:
-            content = (content + "\n" if content else "") + statement
-        lines.append(_fenced_esc(content))
+        # The AC id and statement are read from the document and are therefore
+        # untrusted; each gets its own trusted label and its own fenced block,
+        # so an id carrying the statement's content cannot collide with a
+        # statement carrying the id's content.
+        base = f"Acceptance criterion {index}"
+        lines.extend(_field(f"{base} id:", item.get("id")))
+        lines.extend(_field(f"{base} statement:", item.get("statement")))
     return lines or None
 
 
@@ -176,15 +186,17 @@ def _render_cited_items(
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
-        statement = _as_str(item.get("statement"))
-        citation = item.get("citation")
-        # A trusted label line followed by one fenced block carrying the
-        # statement and, on its own line, the citation. No inline code span.
-        lines.append(_literal(f"{label} {index}:"))
-        content = statement
-        if citation:
-            content = (content + "\n" if content else "") + _as_str(citation)
-        lines.append(_fenced_esc(content))
+        # One fenced block PER field, each preceded by its own trusted label:
+        # statement, citation, and evidence_class never share a fence, so an
+        # operator-authored statement carrying the citation's bytes cannot
+        # render byte-identically to a cited statement carrying them. No inline
+        # code span. An absent field renders the explicit trusted marker.
+        base = f"{label} {index}"
+        lines.extend(_field(f"{base} statement:", item.get("statement")))
+        lines.extend(_field(f"{base} citation:", item.get("citation")))
+        lines.extend(
+            _field(f"{base} evidence class:", item.get("evidence_class"))
+        )
     return lines or None
 
 
@@ -196,15 +208,18 @@ def _render_retrieved(document: dict[str, Any]) -> list[_Escaped] | None:
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
-        # Trusted '### Passage N' heading; citation and passage render inside
-        # the fenced block, so the citation can never become a live heading.
+        # Trusted '### Passage N' heading; the citation, passage and evidence
+        # class each get their own trusted label and their own fenced block, so
+        # the citation can never become a live heading and a citation carrying
+        # the passage's content cannot collide with a passage carrying the
+        # citation's content.
         parts.append(_literal(f"### Passage {index}"))
-        citation = _as_str(item.get("citation"))
-        passage = _as_str(item.get("passage"))
-        content = citation
-        if passage:
-            content = (content + "\n" if content else "") + passage
-        parts.append(_fenced_esc(content))
+        base = f"Passage {index}"
+        parts.extend(_field(f"{base} citation:", item.get("citation")))
+        parts.extend(_field(f"{base} passage:", item.get("passage")))
+        parts.extend(
+            _field(f"{base} evidence class:", item.get("evidence_class"))
+        )
     return parts or None
 
 

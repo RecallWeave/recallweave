@@ -373,10 +373,97 @@ class ContractMarkdownTests(unittest.TestCase):
             },
         ]
         rendered = render_contract_markdown(document)
-        self.assertIn("Constraint 1:\n```text\nNever infer identities.\n```", rendered)
+        # One fenced block per field: an operator statement and its (absent)
+        # citation are distinct blocks; a cited statement and its citation are
+        # distinct blocks. The evidence class renders under its own label.
         self.assertIn(
-            "Constraint 2:\n```text\nKeep paths.\nProjects/Atlas.md:10-14\n```",
+            "Constraint 1 statement:\n```text\nNever infer identities.\n```\n"
+            "Constraint 1 citation:\n```text\nNone recorded.\n```\n"
+            "Constraint 1 evidence class:\n```text\nauthored_by_operator\n```",
             rendered,
+        )
+        self.assertIn(
+            "Constraint 2 statement:\n```text\nKeep paths.\n```\n"
+            "Constraint 2 citation:\n```text\nProjects/Atlas.md:10-14\n```\n"
+            "Constraint 2 evidence class:\n```text\ncited_passage\n```",
+            rendered,
+        )
+        # Absence and presence of a citation are distinguishable.
+        self.assertIn("Constraint 1 citation:", rendered)
+        self.assertIn("Constraint 2 citation:", rendered)
+        self.assertNotEqual(
+            rendered.count("None recorded."),
+            rendered.count("Projects/Atlas.md:10-14"),
+        )
+
+    def test_operator_and_cited_constraints_do_not_collide(self) -> None:
+        # Evidence-boundary collision (FROZEN INTERFACE v3 addendum): an
+        # operator-authored constraint whose statement embeds the citation bytes
+        # must render DIFFERENTLY from a cited constraint carrying the same
+        # bytes in the citation field. Merging both fields into one fence made
+        # them byte-identical.
+        operator = base_document()
+        operator["constraints"] = [
+            {
+                "statement": "Author asserted.\nVault.md:7-8",
+                "evidence_class": "authored_by_operator",
+                "citation": None,
+                "relative_path": None,
+                "passage": None,
+                "truncated": False,
+            }
+        ]
+        cited = base_document()
+        cited["constraints"] = [
+            {
+                "statement": "Author asserted.",
+                "evidence_class": "cited_passage",
+                "citation": "Vault.md:7-8",
+                "relative_path": "Vault.md",
+                "passage": "passage one",
+                "truncated": False,
+            }
+        ]
+        self.assertNotEqual(
+            render_contract_markdown(operator),
+            render_contract_markdown(cited),
+        )
+
+    def test_retrieved_citation_and_passage_do_not_collide(self) -> None:
+        # The citation field carrying the passage's content must not render
+        # byte-identically to the passage field carrying the citation's content.
+        a = base_document()
+        a["retrieved_context"] = [
+            {
+                "citation": "A\nB",
+                "passage": "",
+                "evidence_class": "lexical_match",
+            }
+        ]
+        b = base_document()
+        b["retrieved_context"] = [
+            {
+                "citation": "A",
+                "passage": "B",
+                "evidence_class": "lexical_match",
+            }
+        ]
+        self.assertNotEqual(
+            render_contract_markdown(a),
+            render_contract_markdown(b),
+        )
+
+    def test_acceptance_id_and_statement_do_not_collide(self) -> None:
+        # The acceptance id field carrying the statement's content must not
+        # render byte-identically to the statement field carrying the id's
+        # content.
+        a = base_document()
+        a["acceptance_criteria"] = [{"id": "A", "statement": "B\nC"}]
+        b = base_document()
+        b["acceptance_criteria"] = [{"id": "A\nB", "statement": "C"}]
+        self.assertNotEqual(
+            render_contract_markdown(a),
+            render_contract_markdown(b),
         )
 
     def test_rendering_is_deterministic(self) -> None:
@@ -598,10 +685,11 @@ class ContractMarkdownTests(unittest.TestCase):
             }
         ]
         rendered = render_contract_markdown(document)
-        # The citation is fenced with the statement, so backticks and newlines
-        # are inert and cannot close a code span or escape to a new node.
-        self.assertIn("Keep paths.\nPath`injected`\nmore.md:1-2", rendered)
+        # The citation is fenced in its own block, so backticks and newlines are
+        # inert and cannot close a code span or escape to a new node.
+        self.assertIn("Path`injected`\nmore.md:1-2", rendered)
         self.assertNotIn("(`Path injected  more.md:1-2`)", rendered)
+        self.assertIn("Constraint 1 statement:\n```text\nKeep paths.\n```", rendered)
         self._assert_structure_invariant(rendered)
 
     def test_statement_with_long_fence_is_still_enclosed(self) -> None:

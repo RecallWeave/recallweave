@@ -647,7 +647,7 @@ class CitedCitationPolicyTest(unittest.TestCase):
             }
         ]
         single_rendered = render_contract_markdown(single)
-        self.assertIn("Single line.\nImage: ", single_rendered)
+        self.assertIn("Single line.\n```\nConstraint 1 citation:\n```text\nImage: ", single_rendered)
         assert_structure_invariant(self, single_rendered)
 
         multi = self._multiline_doc("constraints", hostile)
@@ -709,27 +709,48 @@ class CitedCitationPolicyTest(unittest.TestCase):
             "\n"
             "## 2. Acceptance criteria\n"
             "\n"
-            "Acceptance criterion 1:\n"
+            "Acceptance criterion 1 id:\n"
             "```text\n"
             "AC1\n"
+            "```\n"
+            "Acceptance criterion 1 statement:\n"
+            "```text\n"
             "First.\n"
             "```\n"
-            "Acceptance criterion 2:\n"
+            "Acceptance criterion 2 id:\n"
             "```text\n"
             "AC2\n"
+            "```\n"
+            "Acceptance criterion 2 statement:\n"
+            "```text\n"
             "Second.\n"
             "```\n"
             "\n"
             "## 3. Constraints\n"
             "\n"
-            "Constraint 1:\n"
+            "Constraint 1 statement:\n"
             "```text\n"
             "Keep it simple.\n"
             "```\n"
-            "Constraint 2:\n"
+            "Constraint 1 citation:\n"
+            "```text\n"
+            "None recorded.\n"
+            "```\n"
+            "Constraint 1 evidence class:\n"
+            "```text\n"
+            "authored_by_operator\n"
+            "```\n"
+            "Constraint 2 statement:\n"
             "```text\n"
             "Cited line.\n"
+            "```\n"
+            "Constraint 2 citation:\n"
+            "```text\n"
             "Projects/Atlas.md:10-14\n"
+            "```\n"
+            "Constraint 2 evidence class:\n"
+            "```text\n"
+            "cited_passage\n"
             "```\n"
             "\n"
             "## 4. Prior decisions\n"
@@ -896,7 +917,7 @@ class GoldenCompatibilityTest(unittest.TestCase):
         ]
         rendered = render_contract_markdown(document)
         self._assert_new_shape_stable(document)
-        self.assertIn("```text\nSingle line.\nProjects/Atlas.md:10-14\n```", rendered)
+        self.assertIn("Constraint 1 citation:\n```text\nProjects/Atlas.md:10-14\n```", rendered)
         self.assertNotIn("  (`Projects/Atlas.md:10-14`)", rendered)
 
     def test_falsy_citation_is_omitted(self) -> None:
