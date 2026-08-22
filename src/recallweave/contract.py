@@ -35,6 +35,54 @@ _MAX_RETRIEVAL_FETCH = 200
 
 _EVIDENCE_SIDE_KEYS = ("citation", "heading", "passage")
 
+# Applicability of each connection-evidence member per connection evidence
+# class: 'required', 'optional', or 'forbidden'. This is the SINGLE source of
+# truth for connection-evidence well-formedness — docs/task-contracts.md
+# describes it and tests/test_contract_document.py drives it, so document
+# validity is decidable from this table alone without reading _edge_evidence.
+# An authored (verified) link is a wikilink whose evidence is the link text
+# only, so it never carries passage evidence or TF-IDF shared terms; a
+# discovery candidate is lexical-overlap evidence, so it always carries
+# shared_terms and may carry either side's cited passage (a side with no
+# matching section is legitimately absent).
+CONNECTION_EVIDENCE_APPLICABILITY: dict[str, dict[str, str]] = {
+    "authored_link": {
+        "source_evidence": "forbidden",
+        "target_evidence": "forbidden",
+        "shared_terms": "forbidden",
+    },
+    "discovery_candidate": {
+        "source_evidence": "optional",
+        "target_evidence": "optional",
+        "shared_terms": "required",
+    },
+}
+
+# The members whose applicability is governed by CONNECTION_EVIDENCE_APPLICABILITY.
+_EVIDENCE_MEMBERS = ("source_evidence", "target_evidence", "shared_terms")
+
+
+def connection_evidence_is_well_formed(connection: dict[str, Any]) -> bool:
+    """Return True iff a connection's evidence obeys
+    CONNECTION_EVIDENCE_APPLICABILITY for its evidence_class: every 'required'
+    member is present, every 'forbidden' member is absent, and 'optional'
+    members may be present or absent. Validity is decidable from the table
+    alone — no knowledge of _edge_evidence is needed."""
+    evidence_class = connection.get("evidence_class")
+    applicability = CONNECTION_EVIDENCE_APPLICABILITY.get(evidence_class)
+    if applicability is None:
+        return False
+    evidence = connection.get("evidence")
+    if not isinstance(evidence, dict):
+        return False
+    for member, status in applicability.items():
+        present = member in evidence
+        if status == "required" and not present:
+            return False
+        if status == "forbidden" and present:
+            return False
+    return True
+
 
 def _edge_evidence(raw: str) -> dict[str, Any]:
     """Build a bounded, whitelisted, sanitized contract-specific evidence shape."""
