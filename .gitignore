@@ -58,3 +58,6 @@ Thumbs.db
 # NTM creates per-agent git worktrees and OpenCode lane state under .ntm/ inside
 # the project directory. Those are local orchestration artifacts, not source.
 .ntm/
+
+# Local Codex review output. Generated, not source.
+.codex-reviews/
