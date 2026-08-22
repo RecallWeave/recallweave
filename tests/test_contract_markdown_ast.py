@@ -15,6 +15,7 @@ from __future__ import annotations
 # byte-identical between a benign and every hostile document.
 
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -41,6 +42,16 @@ try:
 
     _MISTLETOE_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only without the test extra
+    # A plain stdlib developer run (extra not requested) skips loudly below. But
+    # when the environment declares the test extra is expected, a missing
+    # mistletoe must be a HARD failure: the authoritative security tests can
+    # never report green while skipped. CI sets RECALLWEAVE_TEST_EXTRA_REQUIRED.
+    if os.environ.get("RECALLWEAVE_TEST_EXTRA_REQUIRED"):
+        raise RuntimeError(
+            "mistletoe (the test extra) is required by "
+            "RECALLWEAVE_TEST_EXTRA_REQUIRED but is not installed; "
+            "install with: pip install -e '.[test]'"
+        )
     _MISTLETOE_AVAILABLE = False
 
 HANDLING_STATEMENT = (
@@ -170,6 +181,10 @@ def _benign_document() -> dict:
 # Each entry maps a field name to a setter that places a hostile string into
 # that exact field of a fresh base document. Boolean-only fields (verified,
 # enforced, truncated) are excluded because they cannot carry arbitrary text.
+
+def _set_schema_version(doc, value):
+    doc["schema_version"] = value
+
 
 def _set_task_id(doc, value):
     doc["task"]["id"] = value
@@ -352,6 +367,7 @@ def _set_handling_scope(doc, value):
 
 
 UNTRUSTED_FIELDS = [
+    ("schema_version", _set_schema_version),
     ("task.id", _set_task_id),
     ("task.objective", _set_objective),
     ("acceptance_criteria[].id", _set_ac_id),
@@ -688,11 +704,41 @@ class BenignDocumentIsInertTest(unittest.TestCase):
         )
 
 
+class SchemaVersionInertnessTest(unittest.TestCase):
+    """The top-level schema_version is restored to the projection and is
+    document-derived, so a hostile value must render inert: its sentinel lands
+    only inside a CodeFence and never changes the trusted heading sequence."""
+
+    @unittest.skipUnless(_MISTLETOE_AVAILABLE, "requires the test extra (mistletoe)")
+    def test_hostile_schema_version_is_inert(self) -> None:
+        sentinel = "__SENT:schema_version:hostile__"
+        document = _benign_document()
+        document["schema_version"] = (
+            f"{sentinel}\n# Forged H1\n- forged list\n> forged quote"
+        )
+        rendered = render_contract_markdown(document)
+        assert_parser_inertness(self, rendered)
+        assert_sentinel_inert(self, rendered, sentinel)
+        assert_heading_sequence_identical(
+            self,
+            render_contract_markdown(_benign_document()),
+            rendered,
+        )
+
+    @unittest.skipUnless(_MISTLETOE_AVAILABLE, "requires the test extra (mistletoe)")
+    def test_changing_schema_value_preserves_trusted_structure(self) -> None:
+        base = render_contract_markdown(_benign_document())
+        variant = _benign_document()
+        variant["schema_version"] = "recallweave.contract.v2"
+        variant_rendered = render_contract_markdown(variant)
+        assert_parser_inertness(self, variant_rendered)
+        assert_heading_sequence_identical(self, base, variant_rendered)
+
+
 class EndToEndHostileVaultFilenameTest(unittest.TestCase):
     """One case runs end to end through argv: a contract built over an indexed
     vault whose note FILENAME carries link and image syntax must render the
     citation inert."""
-
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(
             dir=Path(tempfile.gettempdir()).resolve()

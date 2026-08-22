@@ -11,6 +11,7 @@ from __future__ import annotations
 # an accepted, documented deviation, not an oversight.
 
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -43,6 +44,16 @@ try:
 
     _MISTLETOE_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only without the test extra
+    # A plain stdlib developer run (extra not requested) skips loudly below. But
+    # when the environment declares the test extra is expected, a missing
+    # mistletoe must be a HARD failure: the authoritative security tests can
+    # never report green while skipped. CI sets RECALLWEAVE_TEST_EXTRA_REQUIRED.
+    if os.environ.get("RECALLWEAVE_TEST_EXTRA_REQUIRED"):
+        raise RuntimeError(
+            "mistletoe (the test extra) is required by "
+            "RECALLWEAVE_TEST_EXTRA_REQUIRED but is not installed; "
+            "install with: pip install -e '.[test]'"
+        )
     _MISTLETOE_AVAILABLE = False
 
 HANDLING_STATEMENT = (
@@ -674,6 +685,11 @@ class CitedCitationPolicyTest(unittest.TestCase):
         rendered = render_contract_markdown(document)
         expected = (
             "# Task contract\n"
+            "\n"
+            "Schema:\n"
+            "```text\n"
+            "recallweave.contract.v1\n"
+            "```\n"
             "\n"
             "Handling statement:\n"
             "```text\n"

@@ -96,6 +96,17 @@ def _fenced_esc(value: Any) -> _Escaped:
     return _Escaped._make(_fenced(_normalize_lines(_as_str(value))))
 
 
+def _render_schema(document: dict[str, Any]) -> list[_Escaped] | None:
+    """The top-level document schema_version is material contract content that
+    the base renderer emitted and the Cycle-7 restructuring dropped. It is
+    document-derived and therefore untrusted: a trusted label precedes a fenced
+    block (never a blockquote or inline value)."""
+    schema = document.get("schema_version")
+    if not isinstance(schema, str) or not schema:
+        return None
+    return [_literal("Schema:"), _fenced_esc(schema)]
+
+
 def _render_handling(document: dict[str, Any]) -> list[_Escaped]:
     """The handling statement and scope are operator-authored text; each is
     rendered inertly inside its own fenced block (the handling blockquote is
@@ -307,6 +318,10 @@ def render_contract_markdown(document: dict[str, Any]) -> str:
         _literal("# Task contract"),
         _literal(""),
     ]
+    schema = _render_schema(document)
+    if schema:
+        lines.extend(schema)
+        lines.append(_literal(""))
     handling = _render_handling(document)
     if handling:
         lines.extend(handling)

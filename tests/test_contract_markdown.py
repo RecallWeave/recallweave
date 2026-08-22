@@ -52,6 +52,128 @@ def base_document() -> dict:
     }
 
 
+def _complete_document() -> dict:
+    """A document carrying a distinctive value in every semantic field the base
+    da58ccd renderer emitted, used by the projection-completeness guard so a
+    future formatting change cannot silently delete content again."""
+    document = base_document()
+    document["schema_version"] = "recallweave.contract.v9"
+    document["task"]["id"] = "complete-task"
+    document["task"]["objective"] = "Complete objective text."
+    document["acceptance_criteria"] = [
+        {"id": "AC-COMPLETE", "statement": "Acceptance statement text."}
+    ]
+    document["constraints"] = [
+        {
+            "statement": "Constraint statement text.",
+            "evidence_class": "cited_passage",
+            "citation": "ConstraintCitation.md:1-2",
+            "relative_path": "ConstraintCitation.md",
+            "passage": "cp",
+            "truncated": False,
+        }
+    ]
+    document["prior_decisions"] = [
+        {
+            "statement": "Prior decision statement text.",
+            "evidence_class": "cited_passage",
+            "citation": "PriorCitation.md:3-4",
+            "relative_path": "PriorCitation.md",
+            "passage": "pp",
+            "truncated": False,
+        }
+    ]
+    document["retrieved_context"] = [
+        {
+            "relative_path": "RetrievedPath.md",
+            "title": "Retrieved",
+            "heading": "Body",
+            "line_start": 5,
+            "line_end": 9,
+            "citation": "RetrievedCitation.md:5-9",
+            "passage": "Retrieved passage text.",
+            "truncated": False,
+            "matched_terms": [],
+            "status": "active",
+            "domain": "growth",
+            "evidence_class": "lexical_match",
+            "verified": False,
+        }
+    ]
+    document["connections"] = [
+        {
+            "source": "ConnectionSource",
+            "target": "ConnectionTarget",
+            "kind": "ConnectionKind",
+            "verified": True,
+        }
+    ]
+    document["exclusions"] = {
+        "paths": ["ExclusionPath.md"],
+        "globs": ["*.bak"],
+        "tags": ["ExclusionTag"],
+        "directives": ["ExclusionDirective"],
+        "enforced": True,
+        "suppressed": {"retrieved_context": 111, "connections": 222, "notes": 333},
+    }
+    document["provenance"] = {
+        "index": {
+            "schema_version": "index-schema-9",
+            "indexed_at": "2026-01-01T00:00:00+00:00",
+            "notes": 3,
+            "sections": 5,
+        },
+        "generated_at": "2026-01-01T12:00:00+00:00",
+        "generated_locally": True,
+        "network_calls": 0,
+        "vault_writes": 0,
+        "citations": ["ProvenanceCitation.md:1-1"],
+    }
+    document["budget"] = {
+        "character_budget": 9000,
+        "characters_used": 1234,
+        "truncated": False,
+    }
+    document["handling"]["statement"] = "Handling complete statement."
+    document["handling"]["scope"] = "Handling complete scope."
+    return document
+
+
+# Every semantic field the base da58ccd renderer emitted, keyed to a distinctive
+# value used to prove it still appears in the current output.
+_PROJECTION_FIELDS = [
+    ("schema_version", "recallweave.contract.v9"),
+    ("task.id", "complete-task"),
+    ("task.objective", "Complete objective text."),
+    ("acceptance_criteria[].id", "AC-COMPLETE"),
+    ("acceptance_criteria[].statement", "Acceptance statement text."),
+    ("constraints[].statement", "Constraint statement text."),
+    ("constraints[].citation", "ConstraintCitation.md:1-2"),
+    ("prior_decisions[].statement", "Prior decision statement text."),
+    ("prior_decisions[].citation", "PriorCitation.md:3-4"),
+    ("retrieved_context[].citation", "RetrievedCitation.md:5-9"),
+    ("retrieved_context[].passage", "Retrieved passage text."),
+    ("connections[].source", "ConnectionSource"),
+    ("connections[].target", "ConnectionTarget"),
+    ("connections[].kind", "ConnectionKind"),
+    ("exclusions.paths[]", "ExclusionPath.md"),
+    ("exclusions.globs[]", "*.bak"),
+    ("exclusions.tags[]", "ExclusionTag"),
+    ("exclusions.directives[]", "ExclusionDirective"),
+    ("exclusions.suppressed.retrieved_context", "111"),
+    ("exclusions.suppressed.connections", "222"),
+    ("exclusions.suppressed.notes", "333"),
+    ("provenance.index.schema_version", "index-schema-9"),
+    ("provenance.index.indexed_at", "2026-01-01T00:00:00+00:00"),
+    ("provenance.generated_at", "2026-01-01T12:00:00+00:00"),
+    ("provenance.citations[]", "ProvenanceCitation.md:1-1"),
+    ("budget.characters_used", "1234"),
+    ("budget.character_budget", "9000"),
+    ("handling.statement", "Handling complete statement."),
+    ("handling.scope", "Handling complete scope."),
+]
+
+
 class ContractMarkdownTests(unittest.TestCase):
     def test_empty_document_renders_all_eight_headings(self) -> None:
         rendered = render_contract_markdown({})
@@ -79,7 +201,40 @@ class ContractMarkdownTests(unittest.TestCase):
         # renders verbatim inside a fenced block, not a blockquote.
         self.assertIn(HANDLING_STATEMENT, rendered)
         self.assertIn("```text\n" + HANDLING_STATEMENT + "\n```", rendered)
-        self.assertNotIn("> Schema: recallweave.contract.v1", rendered)
+        # The top-level schema_version is material contract content and must be
+        # present, rendered inertly inside a fenced block under a trusted label
+        # (never as the removed blockquote line).
+        self.assertIn("Schema:\n```text\nrecallweave.contract.v1\n```", rendered)
+
+    def test_schema_version_renders_fenced_and_tracks_document(self) -> None:
+        document = base_document()
+        rendered = render_contract_markdown(document)
+        self.assertIn("Schema:\n```text\nrecallweave.contract.v1\n```", rendered)
+        # Changing the document value changes the fenced content.
+        document["schema_version"] = "recallweave.contract.v2"
+        rendered2 = render_contract_markdown(document)
+        self.assertIn("Schema:\n```text\nrecallweave.contract.v2\n```", rendered2)
+        self.assertNotIn("recallweave.contract.v1", rendered2)
+        # The trusted AST structure is unchanged.
+        self._assert_structure_invariant(rendered2)
+
+    def test_projection_is_complete(self) -> None:
+        # Every semantic field the base da58ccd renderer emitted must still
+        # appear in the current output, so a future formatting change cannot
+        # silently delete content again.
+        rendered = render_contract_markdown(_complete_document())
+        for label, value in _PROJECTION_FIELDS:
+            with self.subTest(field=label):
+                self.assertIn(value, rendered)
+        # Boolean-derived literals the base renderer also emitted, asserted by
+        # their labeled form so the check is unambiguous.
+        for labeled in (
+            "verified: true",
+            "enforced: true",
+            "truncated: false",
+        ):
+            with self.subTest(field=labeled):
+                self.assertIn(labeled, rendered)
 
     def test_long_inner_fences_still_enclosed_and_structure_intact(self) -> None:
         document = base_document()
