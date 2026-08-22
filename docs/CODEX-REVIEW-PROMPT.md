@@ -95,42 +95,46 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your cycle-10 findings are fixed.
+Your cycle-11 findings are fixed.
 
-- **High — injectivity was still false, twice over.** You were right on both
-  counts. (1) *Conditional omission*: several projected fields were skipped when
-  falsey, so `None` and `""` rendered identically — `task.id`/`task.objective`,
-  `handling.statement`/`.scope`, `provenance.generated_at` and the index fields.
-  Every projected field now always renders its trusted label: an absent value
-  renders the trusted marker, an empty string renders an empty fenced block, and
-  the two never collapse. This was swept across acceptance criteria, exclusions
-  (including absent-vs-empty collections), and budget. (2) *Line-ending
-  normalization*: the renderer normalizes CRLF and bare CR to LF for fence
-  safety, so values differing only in line endings still render identically.
-  Normalization was kept — it is required for fence safety — and the claim was
-  narrowed honestly instead: injectivity holds **up to line-ending
-  normalization**, stated in `docs/task-contracts.md` and pinned by a test rather
-  than left as a false absolute.
+- **High — the documentation lied about the disclosure surface.** You were right,
+  and this was the most serious finding so far because it was a privacy claim,
+  not a determinism one. `9ew.16` began rendering connection evidence but never
+  updated the cycle-9 projected set, so the docs promised that connection
+  `score` and `evidence` were omitted while the renderer emitted them, including
+  vault passage text. The decision was to **render and document**, not to stop
+  rendering: keeping evidence is coherent with `budget.characters_used`, which
+  already charges for evidence passages and headings. The documented
+  "not projected" list now contains only `retrieved_context[]` fields, and
+  `PROJECTED_FIELDS` gained `evidence_class`, `score`, all six bilateral evidence
+  leaves and `shared_terms[]`. You also correctly identified that the doc/test
+  agreement test was **self-referential** — two identically incomplete lists
+  agreeing with each other. It is replaced by a test anchored to actual renderer
+  output: sentinels are injected into every documented-omitted field and the
+  test fails if any leaks into the Markdown.
 
-- **Medium — the projection test proved influence, not injectivity.** It only
-  mutated populated values to `'CHANGED'`, establishing that each field matters
-  at one point. It now drives `None`-vs-empty-string for *every* projected field,
-  with line-ending variants as an explicitly documented exception.
+- **High — missing key versus explicit null.** Reproduced exactly as you
+  reported: `task.id` distinguished them, every other field collapsed them. The
+  renderer is now self-consistent, and the claim is scoped rather than hedged.
+  Injectivity is stated over **well-formed** documents, where well-formed means
+  every projected key that applies to an item's evidence class is present, and
+  that condition is enforced by test rather than asserted in prose.
 
-- **Cycle-10 connection evidence** (`evidence_class`, `score`, bounded
-  `evidence`) landed in the prior cycle and remains in place.
+The scoping is deliberate and is the thing to attack hardest this cycle. We did
+**not** make the builder emit every projected key unconditionally.
+`_edge_evidence` sets `source_evidence` / `target_evidence` / `shared_terms` only
+when the underlying edge carries them: a verified connection authored as a
+wikilink has no TF-IDF `shared_terms`, and emitting `shared_terms: null` on it
+would fabricate a field meaningless for that evidence class and blur the
+verified/supporting/candidate boundary this project exists to preserve.
 
-Suite: 356 tests with the parser, `compileall` clean.
+Suite: 358 tests with the parser, `compileall` clean.
 
-One judgement call to scrutinize rather than accept: a field whose key is
-entirely **absent from the document** still renders no block, while a key present
-with value `None` renders the marker. The worker preserved this to keep the
-empty-document and byte-identical golden outputs. Decide whether that is a
-defensible projection boundary or a remaining injectivity hole.
-
-Reassess every Critical and High from all ten cycles, plus: whether absence,
-emptiness and zero/false are now genuinely distinguishable everywhere a reader
-would need to tell them apart; whether the narrowed injectivity claim is stated
-precisely enough to be honest rather than merely hedged; and whether the
-projected field set is still complete after this sweep.
+Reassess every Critical and High from all eleven cycles, plus: whether
+"well-formed" is a genuine, checkable condition or a hole large enough to make
+the injectivity claim vacuous; whether "applies to that item's evidence class"
+is defined precisely enough that a reader can determine it without reading the
+implementation; whether any document a caller can actually obtain from the
+public API fails well-formedness; and whether the sentinel-based projection test
+can be defeated by a field whose rendered form does not contain its sentinel.
 <!-- CYCLE-CONTEXT-END -->
