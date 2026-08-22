@@ -95,46 +95,38 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your cycle-11 findings are fixed.
+Your cycle-12 findings are fixed.
 
-- **High — the documentation lied about the disclosure surface.** You were right,
-  and this was the most serious finding so far because it was a privacy claim,
-  not a determinism one. `9ew.16` began rendering connection evidence but never
-  updated the cycle-9 projected set, so the docs promised that connection
-  `score` and `evidence` were omitted while the renderer emitted them, including
-  vault passage text. The decision was to **render and document**, not to stop
-  rendering: keeping evidence is coherent with `budget.characters_used`, which
-  already charges for evidence passages and headings. The documented
-  "not projected" list now contains only `retrieved_context[]` fields, and
-  `PROJECTED_FIELDS` gained `evidence_class`, `score`, all six bilateral evidence
-  leaves and `shared_terms[]`. You also correctly identified that the doc/test
-  agreement test was **self-referential** — two identically incomplete lists
-  agreeing with each other. It is replaced by a test anchored to actual renderer
-  output: sentinels are injected into every documented-omitted field and the
-  test fails if any leaks into the Markdown.
+- **High — "well-formed" was vacuous.** You were right, and this one was an
+  architect error: the injectivity claim was scoped to "well-formed" documents
+  and then enforced by a test that derived applicability *from presence*
+  (`if "shared_terms" in evidence`, `if side_dict is not None`), never branched
+  on `evidence_class`, and exercised one document shape. A connection with
+  `evidence == {}` passed under either class, so the condition could not reject
+  anything. Applicability is now defined as data: an explicit
+  evidence_class -> required/optional/forbidden mapping shared by the docs and
+  the test. The test branches on `evidence_class` and demonstrably REJECTS a
+  `discovery_candidate` missing its required `shared_terms`, and covers the
+  publicly obtainable connection shapes rather than a single `_full_spec()`.
 
-- **High — missing key versus explicit null.** Reproduced exactly as you
-  reported: `task.id` distinguished them, every other field collapsed them. The
-  renderer is now self-consistent, and the claim is scoped rather than hedged.
-  Injectivity is stated over **well-formed** documents, where well-formed means
-  every projected key that applies to an item's evidence class is present, and
-  that condition is enforced by test rather than asserted in prose.
+- **Medium — sentinels that could never match.** Confirmed exactly as reported:
+  `line_start` injected `1111` while the test searched `NPS_LINESTART`, same for
+  `line_end` and `truncated`, leaving four of ten omitted fields unchecked. The
+  disclosure test no longer uses string needles for non-string fields.
 
-The scoping is deliberate and is the thing to attack hardest this cycle. We did
-**not** make the builder emit every projected key unconditionally.
-`_edge_evidence` sets `source_evidence` / `target_evidence` / `shared_terms` only
-when the underlying edge carries them: a verified connection authored as a
-wikilink has no TF-IDF `shared_terms`, and emitting `shared_terms: null` on it
-would fabricate a field meaningless for that evidence class and blur the
-verified/supporting/candidate boundary this project exists to preserve.
+- **Medium — a regression of the cycle-11 fix.** Also confirmed:
+  `_documented_projected_fields()` had been removed, so the documented projected
+  list and `PROJECTED_FIELDS` could drift silently while the docs still claimed
+  they were compared. The direct equality check is restored.
 
-Suite: 358 tests with the parser, `compileall` clean.
+Suite: 363 tests with the parser, `compileall` clean.
 
-Reassess every Critical and High from all eleven cycles, plus: whether
-"well-formed" is a genuine, checkable condition or a hole large enough to make
-the injectivity claim vacuous; whether "applies to that item's evidence class"
-is defined precisely enough that a reader can determine it without reading the
-implementation; whether any document a caller can actually obtain from the
-public API fails well-formedness; and whether the sentinel-based projection test
-can be defeated by a field whose rendered form does not contain its sentinel.
+Attack hardest this cycle: whether the evidence-class mapping is now the single
+source of truth or merely a second place that can drift from `_edge_evidence`;
+whether "required/optional/forbidden" is complete enough that some obtainable
+connection satisfies the table while still being unrenderable or ambiguous;
+whether the restored drift check actually fails on a real drift in either
+direction; and whether the new disclosure detection can still be defeated by a
+field whose rendered form differs from the expected serialization. Reassess every
+Critical and High from all twelve cycles.
 <!-- CYCLE-CONTEXT-END -->
