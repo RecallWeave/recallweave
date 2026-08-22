@@ -95,54 +95,44 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-A remediation cycle just completed. You previously returned FAIL on the task
-contract capability. Re-review every original finding for closure AND look for
-regressions the remediation itself introduced.
+A third cycle just completed. You have reviewed this capability twice and
+returned FAIL both times. Cycle-1 findings (Markdown block-structure injection,
+unsanitized/unbudgeted connection evidence, false authorization language,
+safe_write regression, five mediums) were verified closed in cycle 2. Your
+cycle-2 findings were:
 
-Base for diffs: `00d8fe7` is the last pre-feature release-candidate commit;
-`218fe3f` is the tree you reviewed and failed. Current HEAD is the remediated tree.
+- **High — inline Markdown still active.** Now claimed fixed in
+  `src/recallweave/contract_markdown.py`: inline metacharacters are escaped in
+  every unfenced field. Reproduction now renders
+  `Review \!\[tracking\]\(https://attacker.example/pixel\)` with zero live
+  image or link constructs. Regression tests in
+  `tests/test_contract_markdown_injection.py`.
+- **High — cited passages bypassed the character budget.** Now claimed fixed in
+  `src/recallweave/contract.py`, which fails closed: the same reproduction
+  (8-character cited section, `max_characters` 10) is rejected with "Cited
+  passages plus operator text exceed the character budget (10)". Regression
+  tests in `tests/test_contract_document.py`.
+- **Low — tautological determinism assertion** at the old
+  `tests/test_contract_document.py:335`. Addressed in the same bead.
 
-Your original findings and what was claimed in response:
+Both fixes were independently reproduced as failing before the change and
+passing after. Diff base for this cycle: `4a16bdb`.
 
-- **Critical 1 — Markdown structure injection outside passage fences.** Claimed
-  fixed by position-aware escaping in `src/recallweave/contract_markdown.py`:
-  multi-line block fields are fenced, inline fields collapse newlines and escape
-  block syntax, table cells escape pipes, citations neutralize backticks.
-  Regression suite: `tests/test_contract_markdown_injection.py`.
-- **Critical 2 — connection evidence unsanitized and unbudgeted.** Claimed fixed
-  in `src/recallweave/contract.py` with a bounded whitelist evidence shape, full
-  sanitization, and inclusion in the character budget; connections are now
-  admitted last and stop when the budget is exhausted. Regression suite:
-  `tests/test_contract_evidence_bounds.py`.
-- **High 1 — false authorization language.** `handling.scope` rewritten; the
-  claim that a bundle is "the complete authorized context" is gone from output
-  and documentation.
-- **High 2 — safe_write behavior regression.** Viewer exception messages restored
-  byte-for-byte via an explicit `protected_target_message`; `safe_write` no
-  longer imports `viewer`. Regression suite: `tests/test_baseline_parity.py`.
-- **Mediums** — `spec.notes` is now rejected as an unsupported key (operator
-  decision: a validated field with no semantics is misleading); `suppressed_total`
-  was dropped from the receipt with no replacement aggregate, keeping the
-  per-category counts; statement truncation is reported; retrieval fetches
-  enough ranked hits to satisfy the post-exclusion limit;
-  `includes_operator_statements` accounts for the objective.
+Probe hardest at:
 
-Points to probe hardest, stated honestly rather than hidden:
+1. Whether escaping is now applied to every unfenced field WITHOUT being applied
+   to fenced content, and whether double-escaping or escaped-backslash sequences
+   introduce a new way to break out.
+2. Whether failing closed on the budget is the right call, or whether it makes
+   legitimate small-budget specs unusable in a way the documentation does not
+   warn about. The alternative considered was truncation with truthful flags.
+3. Whether the budget check now covers the cumulative case (several cited items
+   that individually fit but together do not) and the interaction with
+   connection admission.
+4. Any regression introduced by these two changes into behavior you previously
+   marked as a positive finding.
 
-1. The renderer's safety now depends on correct fence selection and on every
-   field being routed to the right escaper. Look for a field that reaches the
-   output through a path that skips both.
-2. The budget now gates connection admission. Check the interaction between
-   budget exhaustion, `budget.truncated`, and the disclosure flags — including
-   whether a document can report `includes_candidate_edges` inconsistently with
-   what survived the budget.
-3. `safe_write` still emits a generic message including an absolute path for
-   NON-viewer callers (the contract route: "Contract output cannot replace the
-   protected file: <path>"). This is a deliberate decision, not an oversight: the
-   viewer route was restored exactly, and the contract receipt already reports
-   its absolute output path on success. Say so if you disagree.
-4. `spec.notes` rejection required deleting the key from four existing test
-   fixtures. Confirm nothing else in those files changed.
-5. Reproducibility is still `generated_at`-dependent by design. Judge whether
-   that is acceptable for the stated contract or should be addressed.
+Note on your previous run: 165 of 268 tests errored in your sandbox for lack of a
+writable temp directory. The harness now runs the suite before invoking you and
+gives you the real results; read that file rather than re-running the suite.
 <!-- CYCLE-CONTEXT-END -->
