@@ -95,55 +95,57 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-The cycle-23 High is fixed, and all five of your suggested tests are in the
-suite. Your reproduction was exact and the diagnosis — lost parser state — was
-the whole of it.
+Your cycle-24 finding is confirmed and reproduced exactly as you described:
+claimed line 1, claimed line 999999, and `######` in place of `##` all
+authenticate against an authentic indexed heading, while a claimed real body
+line is correctly rejected. Good catch on the route this project had just added.
 
-- **High — isolated-line re-derivation lost the fenced-code state**
-  (`recallweave-5sy`). The WHOLE covering section is now parsed, so `_links`
-  sees the fence the indexer saw. The quoted source text must be the exact
-  physical line at the claimed coordinate, and the extracted link must be **at
-  that line** — a section can hold both a fenced link and a real one, so a claim
-  quoting the fenced line must not borrow the real link's authenticity.
+**The Medium is fixed; the High is deliberately deferred, and this cycle should
+judge that decision.**
 
-  Every fence test first asserts the real indexer produces ZERO authored edges
-  for that vault, so the tests cannot pass by exercising something the indexer
-  would have accepted anyway. Fenced wikilinks, fenced Markdown links,
-  tilde-fenced links and a heading-looking line inside a fence are all covered.
+- **Medium — the documentation over-claimed.** Fixed. `docs/task-contracts.md`
+  now separates the two cases plainly: a link in a section BODY is fully bound
+  (exact physical line, whole-section parse, link at that line, resolver with
+  uniqueness); a link on a HEADING line is **only partly bound**, and the
+  paragraph says exactly what is not bound — the coordinate and the heading
+  level — and why: `sections` records a body's `line_start` and `line_end` and
+  never the heading's own physical line or its `#` count. It also says what IS
+  still bound (heading text, link kind, link target, unique resolution), so a
+  heading link cannot be invented, only mis-coordinated. The CHANGELOG's blanket
+  "exact physical line" claim is corrected the same way, and a docs test pins
+  the disclosure so it cannot quietly disappear before the property is real.
 
-- **A false rejection found while fixing it, which you did not report.** Parsing
-  only section BODIES rejected a GENUINE edge: the indexer also finds links on
-  HEADING lines, and a heading line is in no section's text — the index keeps it
-  in `sections.heading`. A vault whose only link is on a heading failed to
-  export at all. Those are now re-derived by binding the quoted source text to
-  the stored heading before parsing it, so the text still comes from the index
-  rather than from the edge; a heading inside a fence never becomes a section,
-  so a stored heading is by construction outside fenced code. Both directions
-  are pinned: the genuine heading link exports, an invented heading is rejected.
+- **High — deferred as tracked follow-up (`recallweave-kob`, P0).** The
+  exporter cannot close this from the index as it stands. Three options were
+  weighed: bind only the derivable window (narrows, does not close); reject
+  heading-line authored edges outright (fully honest, but refuses the whole
+  export for a legitimate vault whose link sits on a heading — the false
+  rejection cycle 23 exposed, reinstated deliberately); or record the heading's
+  physical line and level in the index, which closes it properly but is a core
+  index schema change and a re-index for existing users. Josh chose to disclose
+  now and bind later, with the schema change tracked as its own P0. **Promotion
+  to `main` stays blocked until it lands** — that is not being waved through.
 
-Four mutations killed: restoring isolated-line parsing, unbinding the claimed
-line within its section, unbinding the heading from the index, and removing the
-heading route (which reintroduces the false rejection).
-
-Suite: 411 tests with the parser, green under `-W error::ResourceWarning`;
+Suite: 412 tests with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies are still empty.
 
-This cycle decides promotion.
+This is the last cycle of this session, so please make it a summary judgement
+rather than only a defect hunt:
 
-1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
-   nothing blocks promotion, say so explicitly.
-2. Seven cycles have found the next level down, and this one produced a false
-   rejection as well as a bypass — the risk now runs in BOTH directions.
-   Scrutinise the heading route specifically: it is the one place where the
-   quoted text is bound to indexed data by a transformation (stripping `#`
-   markers) rather than by direct equality with a stored line.
-3. If you believe the sequence has converged, say so and say why. If there is an
-   eighth level, weigh whether it is worth fixing before promotion or whether it
-   is better filed as follow-up work — and say which you would choose. Six of
-   the last seven findings have been about a tampered local index, which is a
-   narrower threat than the ones the earlier cycles closed.
-4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
-   `PRIVACY.md` and `CHANGELOG.md` against the code.
-5. Reassess every Critical and High from all twenty-three cycles and say which
+1. **Is deferring the heading-coordinate binding defensible**, given that it is
+   disclosed in the docs, tracked as a P0, and blocks promotion? If you think
+   one of the other two options should have been taken instead, say which and
+   why — that is directly actionable for the next session.
+2. **Is the documentation now TRUE?** That matters more than usual here, because
+   the disclosure paragraph is the thing standing in for the missing property.
+   Check `docs/task-contracts.md`, `ARCHITECTURE.md`, `PRIVACY.md` and
+   `CHANGELOG.md` against the code and name anything still over-claimed.
+3. **Is there a ninth level anywhere OTHER than the deferred one?** The last
+   several findings have all been in the connections path; retrieved context and
+   the operator-supplied constraint and decision citations have had far less
+   scrutiny this run.
+4. Reassess every Critical and High from all twenty-four cycles and say which
    remain closed.
+5. State the push/promotion position plainly for the handoff: what this tree is
+   safe for, and what it is not.
 <!-- CYCLE-CONTEXT-END -->
