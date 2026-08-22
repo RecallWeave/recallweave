@@ -1,7 +1,7 @@
 {
   "spec_version": "recallweave.contract.spec.v1",
   "task_id": "growth-atlas-refresh",
-  "objective": "Refresh the growth operating system: name the current binding constraint, confirm the weekly review cadence, and record the decision rules that gate reversible experiments.",
+  "objective": "Refresh the growth operating system: name the current binding constraint and confirm the weekly review cadence that gates reversible experiments.",
   "retrieval": {
     "query": "binding constraint reversible experiment weekly review decision owner",
     "limit": 6,
@@ -13,25 +13,26 @@
       "text": "Prefer reversible experiments with a named decision owner before adding activity."
     },
     {
-      "note": "Projects/Decision Memory.md",
-      "heading": "Purpose",
-      "statement": "A decision without a review trigger becomes institutional fog."
+      "note": "Projects/Growth Atlas.md",
+      "heading": "Working method",
+      "statement": "Find the binding constraint before adding activity."
     }
   ],
   "prior_decisions": [
     {
-      "note": "Projects/Decision Memory.md",
-      "heading": "Purpose"
+      "note": "Operations/Review Cadence.md",
+      "heading": "Weekly review",
+      "statement": "The weekly review compares the active constraint with new evidence."
     },
     {
-      "note": "Operations/Review Cadence.md",
-      "heading": "Weekly review"
+      "note": "Projects/Growth Atlas.md",
+      "heading": "Working method"
     }
   ],
   "acceptance_criteria": [
     "The current binding constraint is named from Growth Atlas.",
     "The weekly review cadence and its steps are stated from Review Cadence.",
-    "The decision rules recorded in Decision Memory are reproduced with citations."
+    "The reversible-experiment rule recorded in Growth Atlas is reproduced with citations."
   ],
   "exclusions": {
     "paths": [],
@@ -45,5 +46,5 @@
       "Do not infer client identity."
     ]
   },
-  "notes": "Worked example: build against examples/synthetic-vault as shipped. Restricted/** is excluded to demonstrate fail-closed enforcement; any note item that resolves there is a hard error, not a silent drop."
+  "notes": "Worked example: build against examples/synthetic-vault with examples/policy.example.json, which allowlists only Projects/Growth Atlas.md and Operations/Review Cadence.md. Restricted/** is excluded to demonstrate fail-closed enforcement; any note item that resolves there is a hard error, not a silent drop."
 }

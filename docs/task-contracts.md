@@ -346,11 +346,13 @@ Ordering and selection are reproducible from the spec and the index.
 ## Worked example
 
 `examples/task-contract.example.json` is a spec that runs against
-`examples/synthetic-vault` as shipped, using the same discipline
-`examples/policy.example.json` applies to `include_paths`. It cites
-`Projects/Growth Atlas.md`, `Projects/Decision Memory.md`, and
-`Operations/Review Cadence.md`, and excludes `Restricted/**` to demonstrate
-fail-closed enforcement.
+`examples/synthetic-vault` as shipped. It is paired with
+`examples/policy.example.json`, whose `include_paths` allowlists exactly two
+notes: `Projects/Growth Atlas.md` and `Operations/Review Cadence.md`. The
+example spec cites only those two notes and excludes `Restricted/**` to
+demonstrate fail-closed enforcement. A `note` selector that resolves to a note
+outside the index policy's allowlist is a hard error, not a silent drop — the
+allowlist is the first and stronger boundary.
 
 Build the index and export the packet:
 
