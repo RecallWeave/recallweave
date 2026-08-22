@@ -457,14 +457,27 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                 # Validation happens BEFORE the budget check below, so a
                 # malformed edge cannot escape it by being too expensive to
                 # admit.
+                #
+                # The diagnostic names the edge by its DATABASE ID, never by its
+                # endpoint paths. Vault-relative paths are vault-derived
+                # metadata that can disclose people, health information, legal
+                # matters and organizational structure (see PRIVACY.md), and
+                # this message is serialized verbatim into the CLI's structured
+                # stderr receipt. Leaking them here would be worse than on the
+                # success path: the export fails, so no bundle is produced and
+                # the operator consented to no disclosure at all. The id is
+                # resolvable against the operator's own local index, so the
+                # message stays actionable without carrying vault content.
                 if not connection_evidence_is_well_formed(candidate):
                     raise ValueError(
-                        "malformed connection evidence in the index for "
-                        f"{row['source_path']} -> {row['target_path']} "
-                        f"({candidate['evidence_class']}): the persisted "
-                        "evidence does not satisfy the connection-evidence "
-                        "applicability rules for its evidence class. Re-index "
-                        "the vault, or exclude the offending note."
+                        f"malformed connection evidence in the index for edge "
+                        f"{row['id']} ({candidate['evidence_class']}): the "
+                        "persisted evidence does not satisfy the "
+                        "connection-evidence applicability rules for its "
+                        "evidence class. Re-index the vault, or exclude the "
+                        "offending note. The edge is identified by its database "
+                        "id rather than by note path so this diagnostic carries "
+                        "no vault content."
                     )
                 evidence_cost = _evidence_cost(evidence)
                 # Connections are admitted last. When the budget is exhausted,

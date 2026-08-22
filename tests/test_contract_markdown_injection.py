@@ -1266,6 +1266,15 @@ class ContractVaultInjectionTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+        # The per-test vaults built by the hostile-filename tests must be
+        # cleaned DETERMINISTICALLY. Left to the garbage collector they emit a
+        # ResourceWarning at an arbitrary later moment, and because the CLI
+        # tests capture stderr to parse the JSON receipt, that warning lands
+        # inside another test's captured stream and breaks the parse. The
+        # failure then surfaces in a CLI test that has nothing to do with the
+        # leak, which is exactly how it hid until now.
+        for kept in getattr(self, "_kept_tmp", []):
+            kept.cleanup()
 
     def write(self, relative_path: str, text: str) -> Path:
         path = self.vault / relative_path

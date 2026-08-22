@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import warnings
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -73,8 +74,16 @@ class ContractCliTest(unittest.TestCase):
     def run_cli(self, *args: str) -> tuple[int, str, str]:
         stdout = StringIO()
         stderr = StringIO()
-        with redirect_stdout(stdout), redirect_stderr(stderr):
-            exit_code = cli_main(list(args))
+        # The CLI's error contract is that stderr carries the JSON receipt and
+        # nothing else, so these tests parse the whole stream. A ResourceWarning
+        # emitted by an unrelated object being finalized mid-call would land in
+        # the captured stream and break that parse, turning someone else's
+        # resource leak into a failure here. Suppress warnings for the capture
+        # window only: everything the CLI itself writes is still asserted.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ResourceWarning)
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = cli_main(list(args))
         return exit_code, stdout.getvalue(), stderr.getvalue()
 
     def test_cli_no_output_emits_document(self) -> None:
@@ -180,6 +189,107 @@ class ContractCliTest(unittest.TestCase):
         self.assertEqual(error["error"], "ValueError")
         self.assertIn("malformed connection evidence", error["message"])
         self.assertFalse(output.exists(), "no artifact may be written on failure")
+
+    def test_cli_malformed_evidence_diagnostic_leaks_no_vault_paths(self) -> None:
+        # FAIL-FIRST (recallweave-w3k). The fail-closed diagnostic added for
+        # recallweave-4su named the offending connection by its vault-relative
+        # endpoint PATHS, and the CLI serializes the message verbatim into the
+        # structured stderr receipt. Vault-relative paths are vault-derived
+        # metadata that can disclose people, health information, legal matters
+        # and organizational structure — PRIVACY.md already treats them as
+        # sensitive bundle content. Leaking them on the FAILURE path is worse
+        # than on the success path: no bundle is produced at all, so the
+        # operator consented to no disclosure whatsoever.
+        #
+        # The edge must still be identifiable, so the message carries the
+        # edges table's primary key, which is not content-bearing.
+        import sqlite3
+
+        sentinel_source = "ZZSENSITIVESOURCE"
+        sentinel_target = "ZZSENSITIVETARGET"
+        self.write(
+            f"People/{sentinel_source}.md",
+            "# S\n\n## Background\n\nZephyr quadrata shared topic one.\n",
+        )
+        self.write(
+            f"Legal/{sentinel_target}.md",
+            "# T\n\n## Background\n\nZephyr quadrata shared topic two.\n",
+        )
+        database = self.root / "sentinel.sqlite"
+        build_index(self.vault, database, minimum_candidate_score=0.0)
+        # Corrupt ONLY the edges touching the sentinel notes, so the edge that
+        # trips the gate is provably one whose endpoints carry the sentinels.
+        # Corrupting every edge would let an unrelated edge fail first and make
+        # this leak test vacuous.
+        with sqlite3.connect(str(database)) as connection:
+            corrupted = connection.execute(
+                """
+                UPDATE edges SET evidence_json = ?
+                WHERE source_note_id IN (
+                        SELECT id FROM notes WHERE relative_path LIKE ?
+                      )
+                   OR target_note_id IN (
+                        SELECT id FROM notes WHERE relative_path LIKE ?
+                      )
+                """,
+                (
+                    json.dumps(
+                        {
+                            "source_evidence": {"citation": "x"},
+                            "shared_terms": ["zephyr"],
+                        }
+                    ),
+                    f"%{sentinel_source}%",
+                    f"%{sentinel_target}%",
+                ),
+            ).rowcount
+            self.assertGreater(
+                corrupted, 0, "no edge touches the sentinel notes"
+            )
+        # The sentinel edges are candidates, so the spec must include them or
+        # they never reach the validator and this test proves nothing.
+        spec_path = self.root / "sentinel-spec.json"
+        spec_path.write_text(
+            json.dumps(
+                {
+                    "task_id": "sentinel",
+                    "objective": "Explain the shared topic.",
+                    "retrieval": {
+                        "query": "zephyr quadrata",
+                        "limit": 8,
+                        "include_candidates": True,
+                        "max_characters": 5000,
+                    },
+                    "constraints": [],
+                    "prior_decisions": [],
+                    "acceptance_criteria": ["Citations resolve."],
+                    "exclusions": {"paths": []},
+                }
+            ),
+            encoding="utf-8",
+        )
+        output = self.root / "sentinel-contract.json"
+        exit_code, out, err = self.run_cli(
+            "contract",
+            str(spec_path),
+            "--database",
+            str(database),
+            "--output",
+            str(output),
+        )
+        self.assertEqual(exit_code, 2)
+        self.assertFalse(output.exists())
+        for stream_name, stream in (("stdout", out), ("stderr", err)):
+            for sentinel in (sentinel_source, sentinel_target):
+                self.assertNotIn(
+                    sentinel,
+                    stream,
+                    f"vault note path leaked into {stream_name}",
+                )
+        error = json.loads(err)
+        self.assertIn("malformed connection evidence", error["message"])
+        # Still actionable: the message names the edge by its database id.
+        self.assertRegex(error["message"], r"edge \d+")
 
     def test_cli_force_two_phase_replacement_retains_backup(self) -> None:
         output = self.root / "contract.json"

@@ -990,6 +990,87 @@ class ContractDocumentTest(unittest.TestCase):
                         database, self._evidence_spec(max_characters=max_characters)
                     )
 
+    def test_excluded_endpoint_never_reaches_the_malformed_diagnostic(self) -> None:
+        # An excluded edge is `continue`d BEFORE validation, so a malformed edge
+        # whose endpoint the operator excluded must not be able to surface that
+        # endpoint through the failure path. Otherwise exclusion would hold on
+        # the success path and leak on the error path, which is the worse of the
+        # two: the operator asked for that note to stay out of the bundle.
+        #
+        # Only the edges touching the excluded note are corrupted, so if
+        # suppression did NOT precede validation the export would raise and name
+        # that edge. It must instead succeed, carrying the untouched edges.
+        import sqlite3
+
+        _vault, database = self._build_vault_index()
+        with sqlite3.connect(str(database)) as connection:
+            corrupted = connection.execute(
+                """
+                UPDATE edges SET evidence_json = ?
+                WHERE source_note_id IN (
+                        SELECT id FROM notes WHERE relative_path = 'Gamma.md'
+                      )
+                   OR target_note_id IN (
+                        SELECT id FROM notes WHERE relative_path = 'Gamma.md'
+                      )
+                """,
+                (
+                    json.dumps(
+                        {
+                            "source_evidence": {"citation": "x"},
+                            "shared_terms": ["zephyr"],
+                        }
+                    ),
+                ),
+            ).rowcount
+            self.assertGreater(corrupted, 0, "no edge touches Gamma.md")
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "test objective",
+                "retrieval": {
+                    "query": "zephyr",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 5000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": ["Gamma.md"],
+                    "globs": [],
+                    "tags": [],
+                    "directives": [],
+                },
+            }
+        )
+        document = build_contract_document(database, spec)
+        self.assertGreater(
+            document["exclusions"]["suppressed"]["connections"],
+            0,
+            "the corrupted edges must have been suppressed, not admitted",
+        )
+        self.assertNotIn("Gamma", json.dumps(document["connections"]))
+
+    def test_malformed_diagnostic_names_the_edge_without_vault_content(self) -> None:
+        # The diagnostic must stay ACTIONABLE while carrying no vault content:
+        # it names the edge by its database primary key, which an operator can
+        # resolve against their own local index.
+        _vault, database = self._build_vault_index()
+        self._rewrite_edge_evidence(
+            database,
+            {
+                "source_evidence": {"citation": "x"},
+                "shared_terms": ["zephyr"],
+            },
+        )
+        with self.assertRaises(ValueError) as raised:
+            build_contract_document(database, self._evidence_spec())
+        message = str(raised.exception)
+        self.assertRegex(message, r"edge \d+")
+        for name in ("Alpha.md", "Beta.md", "Gamma.md"):
+            self.assertNotIn(name, message)
+
     def test_well_formed_persisted_evidence_still_exports(self) -> None:
         # The fail-closed gate must not reject a healthy index. A freshly built
         # index exports connections, and each one passes the predicate.
