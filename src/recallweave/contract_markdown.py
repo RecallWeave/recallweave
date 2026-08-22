@@ -107,48 +107,43 @@ def _field(label: str, value: Any) -> list[_Escaped]:
     return [_literal(label), _fenced_esc(content)]
 
 
-def _render_schema(document: dict[str, Any]) -> list[_Escaped] | None:
+def _render_schema(document: dict[str, Any]) -> list[_Escaped]:
     """The top-level document schema_version is material contract content that
     the base renderer emitted and the Cycle-7 restructuring dropped. It is
     document-derived and therefore untrusted: a trusted label precedes a fenced
-    block (never a blockquote or inline value). When the field is present it
-    ALWAYS renders its label — an absent (None) value shows the trusted marker
-    and an empty string an empty fence, so the two differ. A document that does
-    not carry the field at all renders no schema block."""
-    if "schema_version" not in document:
-        return None
-    return _field("Schema:", document["schema_version"])
+    block (never a blockquote or inline value). The label ALWAYS renders — a
+    missing key and an explicit None both show the trusted marker, and an empty
+    string an empty fence, so absence and emptiness differ."""
+    return _field("Schema:", document.get("schema_version"))
 
 
 def _render_handling(document: dict[str, Any]) -> list[_Escaped]:
     """The handling statement and scope are operator-authored text; each is
     rendered inertly inside its own fenced block (the handling blockquote is
-    removed under FROZEN INTERFACE v3). Each field that is present ALWAYS
-    renders its label: an absent (None) value shows the trusted marker and an
-    empty string an empty fence, so absence and emptiness never collapse."""
+    removed under FROZEN INTERFACE v3). Each field ALWAYS renders its label: a
+    missing key and an explicit None both show the trusted marker and an empty
+    string an empty fence, so absence and emptiness never collapse. The block is
+    emitted only when the parent `handling` object is present."""
     handling = document.get("handling")
     lines: list[_Escaped] = []
     if isinstance(handling, dict):
-        if "statement" in handling:
-            lines.extend(_field("Handling statement:", handling["statement"]))
-        if "scope" in handling:
-            lines.extend(_field("Handling scope:", handling["scope"]))
+        lines.extend(_field("Handling statement:", handling.get("statement")))
+        lines.extend(_field("Handling scope:", handling.get("scope")))
     return lines
 
 
 def _render_objective(document: dict[str, Any]) -> list[_Escaped] | None:
     """The task id (operator-controlled) and objective are untrusted; each is
     rendered inertly inside its own fenced block under section 1. The title no
-    longer interpolates either value. When a field is present it ALWAYS renders
-    its label: an absent (None) value shows the trusted marker and an empty
-    string an empty fence, so absence and emptiness never collapse."""
+    longer interpolates either value. Each field ALWAYS renders its label: a
+    missing key and an explicit None both show the trusted marker and an empty
+    string an empty fence, so absence and emptiness never collapse. The block is
+    emitted only when the parent `task` object is present."""
     task = document.get("task")
     lines: list[_Escaped] = []
     if isinstance(task, dict):
-        if "id" in task:
-            lines.extend(_field("Task id:", task["id"]))
-        if "objective" in task:
-            lines.extend(_field("Objective:", task["objective"]))
+        lines.extend(_field("Task id:", task.get("id")))
+        lines.extend(_field("Objective:", task.get("objective")))
     return lines or None
 
 
@@ -290,9 +285,10 @@ def _render_exclusions(document: dict[str, Any]) -> list[_Escaped] | None:
         ("tags", "tag"),
         ("directives", "directive"),
     ):
-        if key not in exclusions:
-            continue
-        values = exclusions[key]
+        # A missing key and an explicit None both render the trusted marker (an
+        # absent collection); an empty list renders zero per-element blocks, so
+        # absence and emptiness never collapse.
+        values = exclusions.get(key)
         if values is None:
             lines.extend(_field(f"{label}:", None))
         elif isinstance(values, list):
@@ -302,23 +298,18 @@ def _render_exclusions(document: dict[str, Any]) -> list[_Escaped] | None:
     suppressed = exclusions.get("suppressed")
     suppressed_dict = suppressed if isinstance(suppressed, dict) else {}
     for key in ("retrieved_context", "connections", "notes"):
-        if key not in suppressed_dict:
-            continue
         # The suppressed count is document-derived and therefore untrusted; a
-        # trusted literal label precedes a fenced block, and an absent (None)
-        # count renders the trusted marker so absence is distinguishable from
-        # a count of zero.
-        lines.extend(_field(f"suppressed.{key}:", suppressed_dict[key]))
-    if "enforced" in exclusions:
-        enforced = exclusions["enforced"]
-        if enforced is None:
-            lines.append(
-                _join(_literal("enforced: "), _literal(NONE_RECORDED))
-            )
-        else:
-            lines.append(
-                _join(_literal("enforced: "), _literal(str(bool(enforced)).lower()))
-            )
+        # trusted literal label precedes a fenced block, and a missing key or an
+        # explicit None renders the trusted marker so absence is distinguishable
+        # from a count of zero.
+        lines.extend(_field(f"suppressed.{key}:", suppressed_dict.get(key)))
+    enforced = exclusions.get("enforced")
+    if enforced is None:
+        lines.append(_join(_literal("enforced: "), _literal(NONE_RECORDED)))
+    else:
+        lines.append(
+            _join(_literal("enforced: "), _literal(str(bool(enforced)).lower()))
+        )
     return lines or None
 
 
@@ -326,17 +317,14 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
     lines: list[_Escaped] = []
     provenance = document.get("provenance")
     if isinstance(provenance, dict):
-        # Each field that is present ALWAYS renders its label: an absent (None)
-        # value shows the trusted marker and an empty string an empty fence, so
-        # absence and emptiness never collapse.
-        if "generated_at" in provenance:
-            lines.extend(_field("Generated at:", provenance["generated_at"]))
+        # Each field ALWAYS renders its label: a missing key and an explicit
+        # None both show the trusted marker and an empty string an empty fence,
+        # so absence and emptiness never collapse.
+        lines.extend(_field("Generated at:", provenance.get("generated_at")))
         index = provenance.get("index")
         if isinstance(index, dict):
-            if "schema_version" in index:
-                lines.extend(_field("Index schema:", index["schema_version"]))
-            if "indexed_at" in index:
-                lines.extend(_field("indexed at:", index["indexed_at"]))
+            lines.extend(_field("Index schema:", index.get("schema_version")))
+            lines.extend(_field("indexed at:", index.get("indexed_at")))
         citations = provenance.get("citations")
         if citations is None:
             lines.extend(_field("Citations:", None))
@@ -350,20 +338,18 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
         # gets its own trusted label and its own fenced block, so one numeric
         # field carrying another's label+value cannot render byte-identically to
         # that field carrying the value (same one-fence-per-field rule as the
-        # evidence sections). Each field that is present always renders its
-        # label; a None value shows the trusted marker, a zero renders "0".
+        # evidence sections). Each field always renders its label; a missing key
+        # or a None value shows the trusted marker, a zero renders "0".
         for key, label in (
             ("characters_used", "characters used:"),
             ("character_budget", "character budget:"),
         ):
-            if key in budget:
-                lines.extend(_field(label, budget[key]))
-        if "truncated" in budget:
-            truncated = budget["truncated"]
-            if truncated is None:
-                lines.extend(_field("truncated:", None))
-            else:
-                lines.extend(_field("truncated:", str(bool(truncated)).lower()))
+            lines.extend(_field(label, budget.get(key)))
+        truncated = budget.get("truncated")
+        if truncated is None:
+            lines.extend(_field("truncated:", None))
+        else:
+            lines.extend(_field("truncated:", str(bool(truncated)).lower()))
     return lines or None
 
 

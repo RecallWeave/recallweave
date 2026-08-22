@@ -193,7 +193,11 @@ class ContractMarkdownTests(unittest.TestCase):
             for line in rendered.split("\n")
             if line == "None recorded."
         ]
-        self.assertEqual(len(section_placeholders), 8)
+        # The eight numbered sections each render the trusted marker on an empty
+        # document, plus the top-level Schema: block (a missing schema_version
+        # and an explicit None render identically, both as the marker), so the
+        # marker appears nine times.
+        self.assertEqual(len(section_placeholders), 9)
 
     def test_handling_statement_appears_verbatim(self) -> None:
         rendered = render_contract_markdown(base_document())
