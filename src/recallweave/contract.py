@@ -12,6 +12,7 @@ from .contract_spec import SourceRef, TaskSpec
 from .contract_text import (
     MAX_PASSAGE_CHARACTERS,
     MAX_STATEMENT_CHARACTERS,
+    _TRUNCATION_MARKER,
     bounded,
     sanitize,
 )
@@ -146,28 +147,34 @@ def connection_evidence_is_well_formed(connection: dict[str, Any]) -> bool:
     return True
 
 
-def _citation_resolves(connection, citation: str, resolved: dict[str, bool]) -> bool:
-    """True iff `citation` names a section that this INDEX actually contains.
+def _indexed_side_evidence(
+    connection, citation: str, cache: dict[str, dict[str, Any] | None]
+) -> dict[str, Any] | None:
+    """The evidence side the INDEX itself would produce for `citation`, or None
+    when the citation names no section this index contains.
 
     A citation resolves iff it parses as `<relative_path>:<start>-<end>` and
     some section satisfies `notes.relative_path = path`,
-    `sections.line_start = start` and `sections.line_end = end`. That is exactly
-    the form the builder itself mints (see `_resolve_item`, which builds
-    `f"{relative_path}:{line_start}-{line_end}"` from a chosen section), so an
-    exact match is the right test rather than a containment check.
+    `sections.line_start = start` and `sections.line_end = end`. The match is
+    EXACT rather than containment because exact is the only form the builder
+    mints (see `_resolve_item`, which builds
+    `f"{relative_path}:{line_start}-{line_end}"` from a chosen section), so a
+    sub-range citation is not a RecallWeave citation and must not look like one.
+
+    The returned shape reproduces `index.py`'s `cited_passage()` followed by the
+    same sanitizing and bounding `_edge_evidence` applies, so a caller can
+    compare a PERSISTED side against what the index actually holds rather than
+    against the caller's own assumptions.
 
     Resolution reads the INDEX, never the vault: the exporter's provenance
     asserts `network_calls` and `vault_writes` are 0, and opening note files at
-    contract time would make that false. `resolved` memoizes per build, since
-    edges commonly cite the same few sections.
-
-    This exists because connection-evidence citations arrive from persisted
-    edge JSON rather than being minted here, so before recallweave-dm4 a
-    fabricated citation was emitted and rendered exactly like a real one while
-    the documentation promised every citation resolved to physical lines."""
-    if citation in resolved:
-        return resolved[citation]
-    verdict = False
+    contract time would make that false. The consequence is stated honestly in
+    the docs — a citation is attributed to the INDEXED SNAPSHOT, not to the
+    vault's current bytes. `cache` memoizes per build, since edges commonly
+    cite the same few sections."""
+    if citation in cache:
+        return cache[citation]
+    expected: dict[str, Any] | None = None
     path, separator, line_range = citation.rpartition(":")
     if separator and path:
         start_text, dash, end_text = line_range.partition("-")
@@ -176,7 +183,7 @@ def _citation_resolves(connection, citation: str, resolved: dict[str, bool]) -> 
             if 1 <= start <= end:
                 row = connection.execute(
                     """
-                    SELECT 1
+                    SELECT s.heading, s.text
                     FROM sections s
                     JOIN notes n ON n.id = s.note_id
                     WHERE n.relative_path = ?
@@ -186,9 +193,54 @@ def _citation_resolves(connection, citation: str, resolved: dict[str, bool]) -> 
                     """,
                     (path, start, end),
                 ).fetchone()
-                verdict = row is not None
-    resolved[citation] = verdict
-    return verdict
+                if row is not None:
+                    text = str(row["text"])
+                    truncated = len(text) > MAX_PASSAGE_CHARACTERS
+                    indexed_passage = text[:MAX_PASSAGE_CHARACTERS].rstrip() + (
+                        _TRUNCATION_MARKER if truncated else ""
+                    )
+                    passage, _ = bounded(
+                        sanitize(indexed_passage), MAX_PASSAGE_CHARACTERS
+                    )
+                    expected = {
+                        "citation": citation,
+                        "heading": sanitize(str(row["heading"])),
+                        "passage": passage,
+                        "truncated": truncated,
+                    }
+    cache[citation] = expected
+    return expected
+
+
+def _side_attribution_is_authentic(
+    connection, side: Any, cache: dict[str, dict[str, Any] | None]
+) -> bool:
+    """True iff a persisted connection-evidence side is ATTRIBUTED: its citation
+    resolves to a section this index contains, AND the heading, passage and
+    truncation flag it carries are the ones that section actually holds.
+
+    Resolving the coordinates alone is not attribution. A citation that resolves
+    while the passage beside it says something else does not attribute that text
+    to those lines — it lends a real coordinate's credibility to content the
+    index never produced, and the artifact then renders it exactly like genuine
+    cited evidence. That was the state after recallweave-dm4 verified
+    coordinates only, and it is the whole reason this function compares content
+    (recallweave-e5w).
+
+    A side with no citation is handled by the well-formedness rules, which
+    reject a passage that carries none."""
+    if not isinstance(side, dict):
+        return True
+    citation = side.get("citation")
+    if citation is None:
+        return True
+    expected = _indexed_side_evidence(connection, citation, cache)
+    if expected is None:
+        return False
+    for leaf in ("heading", "passage", "truncated"):
+        if leaf in side and side[leaf] != expected[leaf]:
+            return False
+    return True
 
 
 def _edge_evidence(raw: str) -> dict[str, Any]:
@@ -466,7 +518,7 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                     break
 
         connections: list[dict[str, Any]] = []
-        resolved_citations: dict[str, bool] = {}
+        resolved_citations: dict[str, dict[str, Any] | None] = {}
         if seed_ids:
             edge_rows = _edge_rows(
                 connection, seed_ids, include_candidates=spec.include_candidates
@@ -534,32 +586,36 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                         "id rather than by note path so this diagnostic carries "
                         "no vault content."
                     )
-                # Every connection-evidence citation must resolve to a section
-                # this index actually contains. Unlike constraint, decision and
-                # retrieved-context citations -- which the builder MINTS from a
-                # chosen section and which therefore resolve by construction --
-                # these arrive from persisted edge JSON and are only a
-                # producer's assertion until checked. Fail closed, consistently
-                # with the malformed-evidence gate above, and keep the
-                # diagnostic content-free: name the edge, never the citation or
-                # the path it names (recallweave-w3k).
+                # Every connection-evidence side must be ATTRIBUTED: its
+                # citation must resolve to a section this index contains, AND
+                # the heading, passage and truncation flag beside it must be the
+                # ones that section actually holds. Unlike constraint, decision
+                # and retrieved-context evidence -- which the builder MINTS from
+                # a chosen section and which is therefore attributed by
+                # construction -- these arrive from persisted edge JSON and are
+                # only a producer's assertion until checked.
+                #
+                # Checking the coordinates alone is NOT enough: a citation that
+                # resolves while the passage beside it says something else lends
+                # a real coordinate's credibility to text the index never
+                # produced, and the artifact renders it exactly like genuine
+                # cited evidence. Fail closed, consistently with the
+                # malformed-evidence gate above, and keep the diagnostic
+                # content-free: name the edge, never the citation, the path or
+                # the passage (recallweave-w3k).
                 for side_name in ("source_evidence", "target_evidence"):
-                    side = evidence.get(side_name)
-                    if not isinstance(side, dict):
-                        continue
-                    side_citation = side.get("citation")
-                    if side_citation is None:
-                        continue
-                    if not _citation_resolves(
-                        connection, side_citation, resolved_citations
+                    if not _side_attribution_is_authentic(
+                        connection, evidence.get(side_name), resolved_citations
                     ):
                         raise ValueError(
-                            "unresolvable connection evidence citation in the "
-                            f"index for edge {row['id']}: the cited section is "
-                            "not present in this index, so the passage cannot "
-                            "be attributed. Re-index the vault. The edge is "
-                            "identified by its database id rather than by note "
-                            "path so this diagnostic carries no vault content."
+                            "unattributed connection evidence in the index for "
+                            f"edge {row['id']}: the cited section is missing "
+                            "from this index, or the passage and heading beside "
+                            "the citation are not the ones that section holds, "
+                            "so the evidence cannot be attributed. Re-index the "
+                            "vault. The edge is identified by its database id "
+                            "rather than by note path so this diagnostic "
+                            "carries no vault content."
                         )
                 evidence_cost = _evidence_cost(evidence)
                 # Connections are admitted last. When the budget is exhausted,

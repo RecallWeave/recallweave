@@ -56,6 +56,23 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         self.assertIn("not a whole-index scan", contract_docs)
         self.assertIn("never examined", contract_docs)
 
+    def test_docs_scope_attribution_to_the_indexed_snapshot(self) -> None:
+        # The exporter reads the INDEX, never the vault, so evidence is
+        # attributed to the snapshot the index recorded, not to the vault's
+        # current bytes. Documentation must not claim export-time verification
+        # against physical vault lines, which would be a promise the code does
+        # not keep (cycle 18).
+        for relative in ("ARCHITECTURE.md", "docs/task-contracts.md"):
+            with self.subTest(document=relative):
+                text = _norm(_text(relative))
+                self.assertNotIn("resolves to physical vault lines", text)
+                self.assertIn("indexed snapshot", text)
+        contract_docs = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("reads the index, never the vault", contract_docs)
+        # And the stronger property the code DOES keep: content, not just
+        # coordinates, is compared.
+        self.assertIn("Checking the coordinates alone is", contract_docs)
+
     def test_changelog_documents_per_field_projection(self) -> None:
         text = _norm(_text("CHANGELOG.md"))
         self.assertIn("per field", text)

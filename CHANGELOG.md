@@ -15,13 +15,16 @@
   thirty-one omitted fields, driving each to several values that vary
   cardinality and falsiness so a renderer reading only a length, a truthiness
   or an emptiness is caught;
-- `contract` resolves every connection-evidence citation against the index
-  before admitting its connection, failing closed on one that names no section
-  this index contains, and adds the resolved citations to
-  `provenance.citations` in document order — so a persisted edge can no longer
-  put a fabricated citation into the artifact, and the citation inventory is
-  genuinely complete. A connection evidence side quoting a passage must also
-  carry the citation attributing it;
+- `contract` attributes every connection-evidence side against the indexed
+  snapshot before admitting its connection: the citation must name a section
+  the index contains, and the quoted passage and heading must be the ones that
+  section holds, so neither a fabricated citation nor a fabricated passage
+  behind a real citation can reach the artifact. Attributed citations join
+  `provenance.citations` in document order, making the inventory complete. A
+  connection evidence side quoting a passage must also carry the citation
+  attributing it. Verification reads the index, never the vault, so evidence is
+  attributed to the snapshot the index recorded rather than to the vault's
+  current bytes;
 - `contract` failure receipts carry no vault content: a refused export names
   the offending edge by its database id rather than by its endpoint note paths;
 - `contract` fails closed on malformed persisted connection evidence: the

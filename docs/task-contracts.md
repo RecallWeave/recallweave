@@ -25,8 +25,15 @@ decisions) from the vault's source material (retrieved passages) and records
 which evidence class each item belongs to.
 
 The operator authors the spec. RecallWeave resolves its citations, retrieves
-lexically matched passages, verifies that every citation resolves to real
-physical vault lines, and attaches provenance. The contract is reproducible
+lexically matched passages, verifies that every citation resolves to a real
+section of the **indexed snapshot** — and, for evidence it did not mint itself,
+that the quoted passage and heading are the ones that section holds — and
+attaches provenance. The exporter reads the index, never the vault, so
+`network_calls` and `vault_writes` stay `0`. The honest consequence is that a
+citation is attributed to the snapshot the index recorded, not to the vault's
+current bytes: editing a note after indexing does not invalidate the artifact,
+and `provenance.index.indexed_at` is what tells a reader how old the snapshot
+is. The contract is reproducible
 from a single reviewed artifact: the spec file is the single source of truth
 for content selection.
 
@@ -526,20 +533,35 @@ until checked. Before this was enforced, a fabricated citation such as
 artifact**, indistinguishable from a real one, while `provenance.citations`
 omitted it entirely.
 
-Every connection-evidence citation is now resolved against the index before its
-connection is admitted. A citation resolves iff it parses as
+Every connection-evidence side is now **attributed** before its connection is
+admitted. The citation must resolve — it parses as
 `<relative_path>:<start>-<end>` and some section satisfies
 `notes.relative_path = path`, `sections.line_start = start` and
-`sections.line_end = end`. The match is **exact**, not containment, because
-exact is the only form the builder mints: a sub-range of a section is not a
-RecallWeave citation, and accepting one would let a producer point at an
-arbitrary slice while looking like a minted citation.
+`sections.line_end = end` — **and** the `heading`, `passage` and `truncated`
+values beside it must be the ones that section actually holds, compared against
+what `index.py`'s `cited_passage()` produces under the same sanitizing and
+bounding the exporter applies.
+
+Checking the coordinates alone is **not** attribution. A citation that resolves
+while the passage beside it says something else lends a real coordinate's
+credibility to text the index never produced, and the artifact renders it
+exactly like genuine cited evidence — so a fabricated passage behind a valid
+citation is rejected, not merely a fabricated citation.
+
+The citation match is **exact**, not containment, because exact is the only
+form the builder mints: a sub-range of a section is not a RecallWeave citation,
+and accepting one would let a producer point at an arbitrary slice while
+looking like a minted citation.
 
 Resolution reads the **index**, never the vault — the exporter's provenance
 asserts `network_calls` and `vault_writes` are `0`, and opening note files at
-contract time would make that false. A citation that does not resolve fails the
-export closed, with the same content-free diagnostic: the edge is named by its
-database id, never by the citation or the path it names.
+contract time would make that false. The boundary this buys is therefore the
+**indexed snapshot**: evidence is attributed to what the index recorded, not to
+the vault's current bytes, so editing a note after indexing does not invalidate
+the artifact and `provenance.index.indexed_at` is what dates it. A side that
+fails attribution fails the export closed, with the same content-free
+diagnostic: the edge is named by its database id, never by the citation, the
+path, or the passage that failed to match.
 
 Every resolved connection-evidence citation is then added to
 `provenance.citations`, in document order — retrieved context (section 5)

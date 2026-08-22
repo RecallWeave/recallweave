@@ -36,7 +36,11 @@ defense in depth; they are not the primary authorization boundary.
 A task contract is a bounded projection of the index for one task: the
 operator asserts the objective, constraints, prior decisions, and acceptance
 criteria; RecallWeave attaches provenance and verifies every cited passage
-resolves to physical vault lines. A contract inherits the existing evidence
+against the **indexed snapshot** — the citation must name a section the index
+contains, and the quoted passage and heading must be the ones that section
+holds. The exporter reads the index, never the vault, so `network_calls` and
+`vault_writes` stay `0`; `provenance.index.indexed_at` is what tells a reader
+how old that snapshot is. A contract inherits the existing evidence
 classes (`authored_by_operator`, `cited_passage`, `lexical_match`,
 `authored_link`, `discovery_candidate`) rather than inventing new ones, and
 RecallWeave never infers that a passage is a constraint or a decision. The

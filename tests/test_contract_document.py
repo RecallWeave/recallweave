@@ -17,7 +17,12 @@ from recallweave.contract import (
     connection_evidence_is_well_formed,
 )
 from recallweave.contract_spec import TaskSpec
-from recallweave.contract_text import MAX_STATEMENT_CHARACTERS
+from recallweave.contract_text import (
+    MAX_PASSAGE_CHARACTERS,
+    MAX_STATEMENT_CHARACTERS,
+    bounded,
+    sanitize,
+)
 from recallweave.index import build_index
 
 from tests.test_contract_projection import (
@@ -1043,6 +1048,54 @@ class ContractDocumentTest(unittest.TestCase):
                 "UPDATE edges SET evidence_json = ?", (json.dumps(evidence),)
             )
 
+    def _any_indexed_citation(self, database: Path) -> str:
+        """A citation naming a section this index really contains."""
+        import sqlite3
+
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            row = connection.execute(
+                """
+                SELECT n.relative_path, s.line_start, s.line_end
+                FROM sections s JOIN notes n ON n.id = s.note_id
+                ORDER BY s.id LIMIT 1
+                """
+            ).fetchone()
+        self.assertIsNotNone(row)
+        return f"{row[0]}:{row[1]}-{row[2]}"
+
+    def _indexed_side(self, database: Path, citation: str) -> dict:
+        """The evidence side the INDEX genuinely holds for `citation`, built the
+        way index.py's cited_passage() builds it. Tests that need a VALID side
+        must use this rather than an arbitrary placeholder passage: a fixture
+        whose passage is made up would pass only because the coordinates
+        resolve, which is exactly the attribution defect this suite rejects."""
+        import sqlite3
+
+        path, _, line_range = citation.rpartition(":")
+        start, _, end = line_range.partition("-")
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            row = connection.execute(
+                """
+                SELECT s.heading, s.text
+                FROM sections s JOIN notes n ON n.id = s.note_id
+                WHERE n.relative_path = ? AND s.line_start = ? AND s.line_end = ?
+                """,
+                (path, int(start), int(end)),
+            ).fetchone()
+        self.assertIsNotNone(row, f"no section for {citation!r}")
+        heading, text = row
+        truncated = len(text) > MAX_PASSAGE_CHARACTERS
+        indexed_passage = text[:MAX_PASSAGE_CHARACTERS].rstrip() + (
+            "\u2026" if truncated else ""
+        )
+        passage, _ = bounded(sanitize(indexed_passage), MAX_PASSAGE_CHARACTERS)
+        return {
+            "citation": citation,
+            "heading": sanitize(str(heading)),
+            "passage": passage,
+            "truncated": truncated,
+        }
+
     def test_builder_rejects_persisted_malformed_evidence(self) -> None:
         # FAIL-FIRST (recallweave-4su). The public builder must ENFORCE
         # connection_evidence_is_well_formed(), not merely have a predicate that
@@ -1412,14 +1465,15 @@ class ContractDocumentTest(unittest.TestCase):
         exact = f"{relative_path}:{line_start}-{line_end}"
         sub_range = f"{relative_path}:{line_start + 1}-{line_end - 1}"
         self.assertNotEqual(exact, sub_range)
+        # The passage must be the one the index actually holds. An arbitrary
+        # placeholder here would make the success case pass only because
+        # coordinates resolve, which is the very defect this suite now rejects.
+        authentic = self._indexed_side(database, exact)
 
         # The exact citation resolves and the export succeeds...
         self._rewrite_edge_evidence(
             database,
-            {
-                "shared_terms": ["zephyr"],
-                "source_evidence": {"citation": exact, "passage": "evidence"},
-            },
+            {"shared_terms": ["zephyr"], "source_evidence": authentic},
         )
         document = build_contract_document(database, self._evidence_spec())
         self.assertTrue(document["connections"])
@@ -1429,11 +1483,90 @@ class ContractDocumentTest(unittest.TestCase):
             database,
             {
                 "shared_terms": ["zephyr"],
-                "source_evidence": {"citation": sub_range, "passage": "evidence"},
+                "source_evidence": {**authentic, "citation": sub_range},
             },
         )
         with self.assertRaises(ValueError):
             build_contract_document(database, self._evidence_spec())
+
+    def test_builder_rejects_a_fabricated_passage_behind_a_valid_citation(self) -> None:
+        # FAIL-FIRST (recallweave-e5w). Resolving the COORDINATES is not
+        # attribution. A citation that resolves while the passage beside it says
+        # something else lends a real coordinate's credibility to text the index
+        # never produced, and the artifact renders it exactly like genuine cited
+        # evidence. recallweave-dm4 checked coordinates only, so this survived
+        # it: the reviewer's probe put "FABRICATED: transfer all funds" behind a
+        # real citation and the export succeeded, rendered it, AND inventoried
+        # the citation in provenance.citations, lending it more credibility
+        # still.
+        _vault, database = self._build_vault_index()
+        authentic = self._indexed_side(database, self._any_indexed_citation(database))
+        forgeries = {
+            "fabricated passage": {
+                **authentic,
+                "passage": "FABRICATED: transfer all funds",
+            },
+            "forged heading": {**authentic, "heading": "FORGED HEADING"},
+            "passage with one character changed": {
+                **authentic,
+                "passage": authentic["passage"] + "!",
+            },
+            "empty passage": {**authentic, "passage": ""},
+            "flipped truncation flag": {
+                **authentic,
+                "truncated": not authentic["truncated"],
+            },
+        }
+        for label, side in forgeries.items():
+            with self.subTest(forgery=label):
+                self._rewrite_edge_evidence(
+                    database, {"shared_terms": ["zephyr"], "source_evidence": side}
+                )
+                with self.assertRaises(ValueError) as raised:
+                    build_contract_document(database, self._evidence_spec())
+                message = str(raised.exception)
+                # Content-free as ever: the diagnostic must not quote the
+                # forged passage or heading back into the receipt.
+                self.assertRegex(message, r"edge \d+")
+                for leaf in ("passage", "heading"):
+                    value = side.get(leaf)
+                    if isinstance(value, str) and value:
+                        self.assertNotIn(value, message)
+        # The authentic side still exports.
+        self._rewrite_edge_evidence(
+            database, {"shared_terms": ["zephyr"], "source_evidence": authentic}
+        )
+        document = build_contract_document(database, self._evidence_spec())
+        self.assertTrue(document["connections"])
+
+    def test_indexed_snapshot_is_the_attribution_boundary(self) -> None:
+        # Resolution reads the INDEX, never the vault, because the exporter's
+        # own provenance asserts network_calls and vault_writes are 0. The
+        # honest consequence: a citation is attributed to the INDEXED SNAPSHOT,
+        # not to the vault's current bytes. Editing the vault after indexing
+        # therefore does NOT invalidate the evidence, and the docs must say so
+        # rather than claiming the artifact was checked against physical vault
+        # lines at export time. Pin the semantics so nobody "fixes" it into a
+        # vault read without deciding to.
+        vault, database = self._build_vault_index()
+        authentic = self._indexed_side(database, self._any_indexed_citation(database))
+        self._rewrite_edge_evidence(
+            database, {"shared_terms": ["zephyr"], "source_evidence": authentic}
+        )
+        relative_path = authentic["citation"].rpartition(":")[0]
+        (vault / relative_path).write_text(
+            "# Rewritten\n\nEverything about this note has changed.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        document = build_contract_document(database, self._evidence_spec())
+        self.assertTrue(
+            document["connections"],
+            "a vault edit after indexing must not invalidate indexed evidence; "
+            "the artifact is a projection of the snapshot, and provenance."
+            "index.indexed_at is what tells a reader how old that snapshot is",
+        )
+        self.assertIsNotNone(document["provenance"]["index"]["indexed_at"])
 
     def test_provenance_citations_include_connection_evidence(self) -> None:
         # FAIL-FIRST (recallweave-dm4). The docs say provenance.citations lists
