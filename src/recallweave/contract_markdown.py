@@ -228,20 +228,26 @@ def _render_connections(document: dict[str, Any]) -> list[_Escaped] | None:
     if not isinstance(items, list) or not items:
         return None
     # The table is removed: a CommonMark table cell cannot hold a fenced block.
-    # Each connection becomes a trusted label followed by a fenced block.
+    # Each connection becomes a trusted label followed by fenced blocks — one
+    # fenced block PER field (source, target, kind, verified), each preceded by
+    # its own trusted label. Never concatenate two document fields into one
+    # fence: merging fields destroys the evidence boundary (a source carrying
+    # the target's bytes renders byte-identically to a target carrying them).
+    # An absent field renders the explicit trusted marker so that absence is
+    # distinguishable from an empty string.
     lines: list[_Escaped] = []
     for index, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
-        lines.append(_literal(f"Connection {index}:"))
-        verified = "true" if item.get("verified") else "false"
-        content = (
-            f"source: {_as_str(item.get('source'))}\n"
-            f"target: {_as_str(item.get('target'))}\n"
-            f"kind: {_as_str(item.get('kind'))}\n"
-            f"verified: {verified}"
-        )
-        lines.append(_fenced_esc(content))
+        base = f"Connection {index}"
+        lines.extend(_field(f"{base} source:", item.get("source")))
+        lines.extend(_field(f"{base} target:", item.get("target")))
+        lines.extend(_field(f"{base} kind:", item.get("kind")))
+        verified = item.get("verified")
+        verified_str = "true" if verified else "false"
+        if verified is None:
+            verified_str = NONE_RECORDED
+        lines.extend(_field(f"{base} verified:", verified_str))
     return lines or None
 
 
@@ -302,20 +308,21 @@ def _render_provenance(document: dict[str, Any]) -> list[_Escaped] | None:
                 lines.append(_fenced_esc(citation))
     budget = document.get("budget")
     if isinstance(budget, dict):
-        used = _as_str(budget.get("characters_used"))
-        total = _as_str(budget.get("character_budget"))
+        # The budget numbers are document-derived and therefore untrusted; each
+        # gets its own trusted label and its own fenced block, so one numeric
+        # field carrying another's label+value cannot render byte-identically to
+        # that field carrying the value (same one-fence-per-field rule as the
+        # evidence sections).
+        for key, label in (
+            ("characters_used", "characters used:"),
+            ("character_budget", "character budget:"),
+        ):
+            value = budget.get(key)
+            if value is not None and _as_str(value):
+                lines.extend(_field(label, value))
         truncated = budget.get("truncated")
-        trunc = str(truncated).lower() if isinstance(truncated, bool) else ""
-        # The budget numbers are document-derived and therefore untrusted; a
-        # trusted literal label precedes a fenced block carrying them.
-        lines.append(_literal("Budget:"))
-        content = ""
-        if used:
-            content += "characters_used: " + used + "\n"
-        if total:
-            content += "character_budget: " + total + "\n"
-        content += "truncated: " + trunc
-        lines.append(_fenced_esc(content))
+        if isinstance(truncated, bool):
+            lines.extend(_field("truncated:", str(truncated).lower()))
     return lines or None
 
 

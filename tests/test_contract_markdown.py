@@ -227,14 +227,18 @@ class ContractMarkdownTests(unittest.TestCase):
             with self.subTest(field=label):
                 self.assertIn(value, rendered)
         # Boolean-derived literals the base renderer also emitted, asserted by
-        # their labeled form so the check is unambiguous.
+        # their labeled form so the check is unambiguous. The connection
+        # 'verified' boolean and the budget 'truncated' boolean now render in
+        # their own labelled fenced blocks.
         for labeled in (
-            "verified: true",
             "enforced: true",
-            "truncated: false",
         ):
             with self.subTest(field=labeled):
                 self.assertIn(labeled, rendered)
+        self.assertIn(
+            "Connection 1 verified:\n```text\ntrue\n```", rendered
+        )
+        self.assertIn("truncated:\n```text\nfalse\n```", rendered)
 
     def test_long_inner_fences_still_enclosed_and_structure_intact(self) -> None:
         document = base_document()
@@ -465,6 +469,54 @@ class ContractMarkdownTests(unittest.TestCase):
             render_contract_markdown(a),
             render_contract_markdown(b),
         )
+
+    def test_connection_fields_do_not_collide(self) -> None:
+        # Evidence-boundary collision in the connections section (recallweave
+        # 9ew.14): a connection whose source embeds the target bytes must render
+        # DIFFERENTLY from a connection whose target carries the same bytes, so
+        # a reader can always tell whether a renderer-looking line such as
+        # 'target: X' is part of a value or a label. Concatenating source,
+        # target, kind and verified into one fence made them byte-identical.
+        a = base_document()
+        a["connections"] = [
+            {"source": "A\ntarget: X", "target": "B", "kind": "K", "verified": True}
+        ]
+        b = base_document()
+        b["connections"] = [
+            {"source": "A", "target": "X\ntarget: B", "kind": "K", "verified": True}
+        ]
+        self.assertNotEqual(
+            render_contract_markdown(a),
+            render_contract_markdown(b),
+        )
+
+    def test_connection_target_and_kind_do_not_collide(self) -> None:
+        # The same evidence-boundary rule applies to target and kind: a target
+        # embedding the kind bytes must not render byte-identically to a kind
+        # carrying those bytes.
+        a = base_document()
+        a["connections"] = [
+            {"source": "S", "target": "T\nkind: edge", "kind": "edge2", "verified": True}
+        ]
+        b = base_document()
+        b["connections"] = [
+            {"source": "S", "target": "T", "kind": "edge\nkind: edge2", "verified": True}
+        ]
+        self.assertNotEqual(
+            render_contract_markdown(a),
+            render_contract_markdown(b),
+        )
+
+    def test_connection_absent_field_is_distinguishable_from_empty(self) -> None:
+        # An absent (None) connection field must render the explicit trusted
+        # marker so absence is distinguishable from an empty string.
+        document = base_document()
+        document["connections"] = [
+            {"source": None, "target": "", "kind": "edge", "verified": True}
+        ]
+        rendered = render_contract_markdown(document)
+        self.assertIn("None recorded.", rendered)
+        self.assertIn("source:\n```text\nNone recorded.\n```", rendered)
 
     def test_rendering_is_deterministic(self) -> None:
         document = base_document()
