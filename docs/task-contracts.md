@@ -479,8 +479,10 @@ well-formedness test:
 Well-formedness reaches **inside** an evidence side, not just the top-level
 members. A present side must be a non-empty dict whose leaves are all known
 (`citation`, `heading`, `passage`, `truncated`) with correct types (the
-`EVIDENCE_SIDE_LEAF_TYPES` table), and must carry `passage` — the substantive
-content. `truncated` is the one builder-reachable side leaf that is **not
+`EVIDENCE_SIDE_LEAF_TYPES` table), must carry `passage` — the substantive
+content — and must carry a `citation` alongside it. A quoted passage with no
+citation is **unattributed** evidence, which is exactly what the evidence
+classes exist to rule out. `truncated` is the one builder-reachable side leaf that is **not
 projected** by the renderer: it is a modifier on a passage, so a reader is not
 shown it, but a side carrying only `truncated` (or otherwise lacking a
 `passage`) is **partial** and is rejected as malformed rather than masquerading
@@ -498,12 +500,53 @@ identically for every projected field.
 
 #### Malformed persisted evidence fails the export closed
 
-`build_contract_document` **enforces** that predicate on every connection it is
-about to admit, before the character budget is consulted, so a malformed edge
-cannot escape validation by being too expensive to include. If any connection
+`build_contract_document` **enforces** that predicate on each connection it is
+about to admit, before that connection's budget check, so a malformed edge
+cannot escape validation by being too expensive to include.
+
+This validates every connection the export **returns**. It is deliberately not
+a whole-index scan: the connection loop stops once the character budget is
+exhausted, and edges ordered after that point are never examined. An edge never
+examined is never in the document, so "every connection in the output is
+well-formed" still holds, but a successful export is **not** evidence that
+every eligible edge in the index is well-formed.
+See `test_validation_reaches_only_edges_admitted_before_budget_truncation`. If any connection
 fails, the export **raises `ValueError` naming that connection** and the CLI
 exits `2` with the usual structured error on standard error; nothing is written
 to standard output and no artifact file is created.
+
+#### Connection-evidence citations are resolved against the index
+
+Constraint, prior-decision and retrieved-context citations resolve **by
+construction**: the builder mints them from a chosen section as
+`<relative_path>:<line_start>-<line_end>`. Connection-evidence citations do
+not — they arrive from persisted edge JSON and are only a producer's assertion
+until checked. Before this was enforced, a fabricated citation such as
+`Nonexistent.md:999-1000` was accepted, emitted and **rendered into the
+artifact**, indistinguishable from a real one, while `provenance.citations`
+omitted it entirely.
+
+Every connection-evidence citation is now resolved against the index before its
+connection is admitted. A citation resolves iff it parses as
+`<relative_path>:<start>-<end>` and some section satisfies
+`notes.relative_path = path`, `sections.line_start = start` and
+`sections.line_end = end`. The match is **exact**, not containment, because
+exact is the only form the builder mints: a sub-range of a section is not a
+RecallWeave citation, and accepting one would let a producer point at an
+arbitrary slice while looking like a minted citation.
+
+Resolution reads the **index**, never the vault — the exporter's provenance
+asserts `network_calls` and `vault_writes` are `0`, and opening note files at
+contract time would make that false. A citation that does not resolve fails the
+export closed, with the same content-free diagnostic: the edge is named by its
+database id, never by the citation or the path it names.
+
+Every resolved connection-evidence citation is then added to
+`provenance.citations`, in document order — retrieved context (section 5)
+before connections (section 6), source side before target side — deduplicated
+against what is already there, so that field is genuinely *every* citation the
+artifact carries rather than every citation the builder happened to mint
+itself.
 
 This matters because the input is not what this module just generated, it is
 what an index **persisted**. `_edge_evidence` whitelists, sanitizes and bounds

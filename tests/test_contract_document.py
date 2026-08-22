@@ -1348,6 +1348,185 @@ class ContractDocumentTest(unittest.TestCase):
         # malformed edge, every larger budget reaches it too.
         self.assertGreater(min(raised_at), max(truncated_at))
 
+    def test_builder_rejects_unresolvable_connection_evidence_citation(self) -> None:
+        # FAIL-FIRST (recallweave-dm4). ARCHITECTURE.md promises RecallWeave
+        # verifies every cited passage resolves to physical vault lines, but a
+        # connection-evidence citation came straight from persisted edge JSON
+        # and was never resolved: a fabricated citation was accepted, emitted,
+        # and RENDERED into the artifact, indistinguishable from a real one.
+        # A receiving agent must not be shown purported cited evidence that
+        # RecallWeave never checked.
+        # Each probe is DISTINCTIVE, so asserting it is absent from the
+        # diagnostic actually means something. A one-character probe like "x"
+        # would appear incidentally inside ordinary words in the message and
+        # report a leak that is not there.
+        unresolvable = {
+            "fabricated path": "ZZNonexistent.md:999-1000",
+            "real path, fabricated lines": "Alpha.md:999-1000",
+            "not a citation at all": "ZZNOTACITATION",
+            "path with no line range": "ZZAlphaNoRange.md",
+            "inverted line range": "Alpha.md:8-1",
+        }
+        for label, citation in unresolvable.items():
+            with self.subTest(citation=label):
+                _vault, database = self._build_vault_index()
+                self._rewrite_edge_evidence(
+                    database,
+                    {
+                        "shared_terms": ["zephyr"],
+                        "source_evidence": {
+                            "citation": citation,
+                            "passage": "purported evidence",
+                        },
+                    },
+                )
+                with self.assertRaises(ValueError) as raised:
+                    build_contract_document(database, self._evidence_spec())
+                message = str(raised.exception)
+                # The diagnostic stays content-free (recallweave-w3k): it names
+                # the edge, never the citation or the path it came from.
+                self.assertRegex(message, r"edge \d+")
+                self.assertNotIn(citation, message)
+
+    def test_citation_resolution_requires_an_exact_section_match(self) -> None:
+        # The resolution rule is EXACT section bounds, not containment, because
+        # exact is the only form the builder ever mints: _resolve_item builds
+        # `f"{relative_path}:{line_start}-{line_end}"` from a chosen section. A
+        # sub-range citation is therefore not a RecallWeave citation, and
+        # accepting one would let a producer point at an arbitrary slice of a
+        # section while looking like a minted citation. Pin the choice, so
+        # loosening the rule to containment fails here rather than passing
+        # silently.
+        import sqlite3
+
+        _vault, database = self._build_vault_index()
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute("UPDATE sections SET line_end = line_start + 5")
+            row = connection.execute(
+                """
+                SELECT n.relative_path, s.line_start, s.line_end
+                FROM sections s JOIN notes n ON n.id = s.note_id LIMIT 1
+                """
+            ).fetchone()
+        relative_path, line_start, line_end = row
+        exact = f"{relative_path}:{line_start}-{line_end}"
+        sub_range = f"{relative_path}:{line_start + 1}-{line_end - 1}"
+        self.assertNotEqual(exact, sub_range)
+
+        # The exact citation resolves and the export succeeds...
+        self._rewrite_edge_evidence(
+            database,
+            {
+                "shared_terms": ["zephyr"],
+                "source_evidence": {"citation": exact, "passage": "evidence"},
+            },
+        )
+        document = build_contract_document(database, self._evidence_spec())
+        self.assertTrue(document["connections"])
+
+        # ...while a sub-range of the very same section does not.
+        self._rewrite_edge_evidence(
+            database,
+            {
+                "shared_terms": ["zephyr"],
+                "source_evidence": {"citation": sub_range, "passage": "evidence"},
+            },
+        )
+        with self.assertRaises(ValueError):
+            build_contract_document(database, self._evidence_spec())
+
+    def test_provenance_citations_include_connection_evidence(self) -> None:
+        # FAIL-FIRST (recallweave-dm4). The docs say provenance.citations lists
+        # EVERY citation in document order, deduplicated. Connection-evidence
+        # citations were omitted, so the claimed complete inventory was not
+        # complete and a reader auditing the artifact by its citation list would
+        # never see the connection evidence at all.
+        _vault, database = self._build_vault_index()
+        # limit=1 so only ONE note is retrieved while the connections still
+        # cite the others. Without that the connection-evidence citations
+        # coincide with the retrieved-context citations and the test passes
+        # whether or not connection evidence is inventoried at all.
+        document = build_contract_document(database, self._evidence_spec(limit=1))
+        self.assertTrue(document["connections"])
+        retrieved_citations = {
+            item["citation"] for item in document["retrieved_context"]
+        }
+        connection_citations = {
+            side["citation"]
+            for connection_item in document["connections"]
+            for side_name in ("source_evidence", "target_evidence")
+            for side in [connection_item["evidence"].get(side_name)]
+            if isinstance(side, dict) and side.get("citation")
+        }
+        self.assertTrue(
+            connection_citations - retrieved_citations,
+            "the fixture must produce a connection citation that is NOT also a "
+            "retrieved-context citation, or this test proves nothing",
+        )
+        citations = document["provenance"]["citations"]
+        self.assertEqual(
+            len(citations), len(set(citations)), "citations must be deduplicated"
+        )
+        # Every connection-evidence citation is inventoried...
+        expected_order: list[str] = []
+        for item in document["retrieved_context"]:
+            if item["citation"] not in expected_order:
+                expected_order.append(item["citation"])
+        for connection_item in document["connections"]:
+            evidence = connection_item["evidence"]
+            for side_name in ("source_evidence", "target_evidence"):
+                side = evidence.get(side_name)
+                if isinstance(side, dict) and side.get("citation"):
+                    self.assertIn(
+                        side["citation"],
+                        citations,
+                        "connection evidence citation missing from the "
+                        "provenance inventory",
+                    )
+                    if side["citation"] not in expected_order:
+                        expected_order.append(side["citation"])
+        # ...and the inventory carries them in document order: retrieved
+        # context (section 5) before connections (section 6), source side
+        # before target side, first occurrence wins.
+        observed = [
+            citation for citation in citations if citation in expected_order
+        ]
+        self.assertEqual(observed, expected_order)
+
+    def test_well_formedness_rejects_passage_without_citation(self) -> None:
+        # FAIL-FIRST (recallweave-dm4). A side quoting a passage with no
+        # citation is unattributed evidence — exactly what this project exists
+        # to prevent — yet it passed well-formedness despite the "cited passage"
+        # framing throughout the docs. This tightens the rule in the SAME
+        # direction as the existing substantive-leaf requirement, so it does not
+        # reopen recallweave-6j3.
+        self.assertFalse(
+            connection_evidence_is_well_formed(
+                {
+                    "evidence_class": "discovery_candidate",
+                    "evidence": {
+                        "shared_terms": ["z"],
+                        "source_evidence": {"passage": "uncited passage"},
+                    },
+                }
+            ),
+            "a passage with no citation must be rejected as malformed",
+        )
+        self.assertTrue(
+            connection_evidence_is_well_formed(
+                {
+                    "evidence_class": "discovery_candidate",
+                    "evidence": {
+                        "shared_terms": ["z"],
+                        "source_evidence": {
+                            "citation": "Alpha.md:8-8",
+                            "passage": "cited passage",
+                        },
+                    },
+                }
+            )
+        )
+
     def test_well_formed_persisted_evidence_still_exports(self) -> None:
         # The fail-closed gate must not reject a healthy index. A freshly built
         # index exports connections, and each one passes the predicate.

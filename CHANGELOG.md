@@ -15,13 +15,23 @@
   thirty-one omitted fields, driving each to several values that vary
   cardinality and falsiness so a renderer reading only a length, a truthiness
   or an emptiness is caught;
+- `contract` resolves every connection-evidence citation against the index
+  before admitting its connection, failing closed on one that names no section
+  this index contains, and adds the resolved citations to
+  `provenance.citations` in document order — so a persisted edge can no longer
+  put a fabricated citation into the artifact, and the citation inventory is
+  genuinely complete. A connection evidence side quoting a passage must also
+  carry the citation attributing it;
 - `contract` failure receipts carry no vault content: a refused export names
   the offending edge by its database id rather than by its endpoint note paths;
 - `contract` fails closed on malformed persisted connection evidence: the
-  builder enforces its own well-formedness predicate on every connection before
-  the budget is consulted and raises rather than exporting a document its
-  validator rejects, so nothing malformed is silently shown and nothing is
-  silently dropped;
+  builder enforces its own well-formedness predicate on each connection it
+  considers, before that connection's budget check, and raises rather than
+  exporting a document its validator rejects, so nothing malformed is silently
+  shown and nothing is silently dropped. This validates every connection the
+  export RETURNS; it is not a whole-index scan, because the loop stops once the
+  character budget is exhausted and edges ordered after that point are never
+  examined;
 - task contract Markdown signals an absent field structurally — its trusted
   label followed by the marker as a bare chrome line, with no fenced block —
   so a field whose value is literally that marker text can no longer imitate

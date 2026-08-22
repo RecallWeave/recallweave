@@ -42,6 +42,20 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         text = _norm(_text("docs/task-contracts.md"))
         self.assertNotIn("one fenced block carrying the statement and, on its own line, the citation", text)
 
+    def test_docs_do_not_claim_whole_index_validation(self) -> None:
+        # The fail-closed gate validates every connection the export RETURNS,
+        # not every eligible edge in the index: the loop stops at the budget and
+        # later edges are never examined. Documentation must not claim the
+        # stronger property. Cycle 17 caught the CHANGELOG doing exactly that.
+        for relative in ("CHANGELOG.md", "docs/task-contracts.md"):
+            with self.subTest(document=relative):
+                text = _norm(_text(relative))
+                self.assertNotIn("on every connection before the budget", text)
+                self.assertNotIn("validates every connection before the budget", text)
+        contract_docs = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("not a whole-index scan", contract_docs)
+        self.assertIn("never examined", contract_docs)
+
     def test_changelog_documents_per_field_projection(self) -> None:
         text = _norm(_text("CHANGELOG.md"))
         self.assertIn("per field", text)

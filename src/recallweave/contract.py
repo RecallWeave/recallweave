@@ -134,7 +134,61 @@ def connection_evidence_is_well_formed(connection: dict[str, Any]) -> bool:
                 has_substantive = True
         if not has_substantive:
             return False
+        # A quoted passage must be ATTRIBUTED. A side carrying `passage` with
+        # no `citation` is unattributed evidence, which is precisely what the
+        # cited_passage evidence class exists to rule out, and the renderer
+        # would show the passage with a structurally absent citation as though
+        # that were a legitimate shape. This tightens the rule in the same
+        # direction as the substantive-leaf requirement above, so it does not
+        # reopen recallweave-6j3.
+        if "passage" in side and "citation" not in side:
+            return False
     return True
+
+
+def _citation_resolves(connection, citation: str, resolved: dict[str, bool]) -> bool:
+    """True iff `citation` names a section that this INDEX actually contains.
+
+    A citation resolves iff it parses as `<relative_path>:<start>-<end>` and
+    some section satisfies `notes.relative_path = path`,
+    `sections.line_start = start` and `sections.line_end = end`. That is exactly
+    the form the builder itself mints (see `_resolve_item`, which builds
+    `f"{relative_path}:{line_start}-{line_end}"` from a chosen section), so an
+    exact match is the right test rather than a containment check.
+
+    Resolution reads the INDEX, never the vault: the exporter's provenance
+    asserts `network_calls` and `vault_writes` are 0, and opening note files at
+    contract time would make that false. `resolved` memoizes per build, since
+    edges commonly cite the same few sections.
+
+    This exists because connection-evidence citations arrive from persisted
+    edge JSON rather than being minted here, so before recallweave-dm4 a
+    fabricated citation was emitted and rendered exactly like a real one while
+    the documentation promised every citation resolved to physical lines."""
+    if citation in resolved:
+        return resolved[citation]
+    verdict = False
+    path, separator, line_range = citation.rpartition(":")
+    if separator and path:
+        start_text, dash, end_text = line_range.partition("-")
+        if dash and start_text.isdigit() and end_text.isdigit():
+            start, end = int(start_text), int(end_text)
+            if 1 <= start <= end:
+                row = connection.execute(
+                    """
+                    SELECT 1
+                    FROM sections s
+                    JOIN notes n ON n.id = s.note_id
+                    WHERE n.relative_path = ?
+                      AND s.line_start = ?
+                      AND s.line_end = ?
+                    LIMIT 1
+                    """,
+                    (path, start, end),
+                ).fetchone()
+                verdict = row is not None
+    resolved[citation] = verdict
+    return verdict
 
 
 def _edge_evidence(raw: str) -> dict[str, Any]:
@@ -412,6 +466,7 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                     break
 
         connections: list[dict[str, Any]] = []
+        resolved_citations: dict[str, bool] = {}
         if seed_ids:
             edge_rows = _edge_rows(
                 connection, seed_ids, include_candidates=spec.include_candidates
@@ -479,6 +534,33 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                         "id rather than by note path so this diagnostic carries "
                         "no vault content."
                     )
+                # Every connection-evidence citation must resolve to a section
+                # this index actually contains. Unlike constraint, decision and
+                # retrieved-context citations -- which the builder MINTS from a
+                # chosen section and which therefore resolve by construction --
+                # these arrive from persisted edge JSON and are only a
+                # producer's assertion until checked. Fail closed, consistently
+                # with the malformed-evidence gate above, and keep the
+                # diagnostic content-free: name the edge, never the citation or
+                # the path it names (recallweave-w3k).
+                for side_name in ("source_evidence", "target_evidence"):
+                    side = evidence.get(side_name)
+                    if not isinstance(side, dict):
+                        continue
+                    side_citation = side.get("citation")
+                    if side_citation is None:
+                        continue
+                    if not _citation_resolves(
+                        connection, side_citation, resolved_citations
+                    ):
+                        raise ValueError(
+                            "unresolvable connection evidence citation in the "
+                            f"index for edge {row['id']}: the cited section is "
+                            "not present in this index, so the passage cannot "
+                            "be attributed. Re-index the vault. The edge is "
+                            "identified by its database id rather than by note "
+                            "path so this diagnostic carries no vault content."
+                        )
                 evidence_cost = _evidence_cost(evidence)
                 # Connections are admitted last. When the budget is exhausted,
                 # stop adding connections rather than emitting an oversized
@@ -497,6 +579,22 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
         for item in retrieved_context:
             if item["citation"] not in citations:
                 citations.append(item["citation"])
+        # Connection evidence renders in section 6, after retrieved context in
+        # section 5, and each connection renders its source side before its
+        # target side. The inventory follows that document order so
+        # provenance.citations is genuinely "every citation in document order,
+        # deduplicated" rather than every citation the builder happened to mint
+        # itself (recallweave-dm4). Every one of these has already been resolved
+        # against the index above.
+        for item in connections:
+            evidence = item["evidence"]
+            for side_name in ("source_evidence", "target_evidence"):
+                side = evidence.get(side_name)
+                if not isinstance(side, dict):
+                    continue
+                side_citation = side.get("citation")
+                if side_citation is not None and side_citation not in citations:
+                    citations.append(side_citation)
 
         has_passage = any(
             len(item["passage"] or "") > 0 for item in retrieved_context
