@@ -74,3 +74,5 @@
 {"id":"int-9318149fc71649207037ea602c946752","kind":"field_change","created_at":"2026-08-22T19:05:29.799807Z","actor":"josh","issue_id":"recallweave-0v1","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-7dbd6469661fbd2be13e78fb6d03e460","kind":"field_change","created_at":"2026-08-22T20:08:11.606394Z","actor":"josh","issue_id":"recallweave-6j3","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-44dd5c802bb19ab76475aea8ec66b1fd","kind":"field_change","created_at":"2026-08-22T20:08:21.169438Z","actor":"josh","issue_id":"recallweave-0kl","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
+{"id":"int-db369088210693cc2e5ab0ccfd2f6639","kind":"field_change","created_at":"2026-08-22T20:11:54.207366Z","actor":"josh","issue_id":"recallweave-0kl","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-a17de242671dd7b6e20b203c82c0e59b","kind":"field_change","created_at":"2026-08-22T20:14:29.863043Z","actor":"josh","issue_id":"recallweave-hl7","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
