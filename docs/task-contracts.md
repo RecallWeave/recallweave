@@ -271,9 +271,14 @@ This shape is deliberate and differs from a prettier layout:
 
 The renderer emits **one fenced block per field**, never two document fields in a
 single block, and every fenced block is preceded by its own renderer-authored
-label. A field that is absent renders its label with the trusted marker
-`None recorded`, so **absence** is distinguishable from **emptiness**: an absent
-citation and an empty-string citation do not produce the same output.
+label. No projected field is ever conditionally omitted: a field that is present
+**always** renders its trusted label. A field that is absent renders its label
+with the trusted marker `None recorded`, so **absence** is distinguishable from
+**emptiness**: an absent citation and an empty-string citation do not produce the
+same output — the absent one shows `None recorded.`, the empty-string one shows
+an empty fenced block. (A collection field with no elements, such as an empty
+list, renders no per-element blocks, which is likewise distinct from an absent
+collection that renders the marker.)
 
 This exists because the earlier shape merged a statement with its citation into
 one block, and that destroyed the **evidence boundary**. A constraint whose
@@ -339,12 +344,15 @@ read the JSON, not the Markdown.
 
 ### Injectivity
 
-The projection is injective **over the projected field set**: two documents that
-differ in any **projected** field never **render identically**. This is part of
-the **contract**, not an incidental property of the current layout, and it is
-enforced by tests rather than assumed. Any future formatting change that merged
-fields, dropped a projected field, or collapsed absence into emptiness would
-break injectivity and must be rejected on that ground alone.
+The projection is injective **over the projected field set**, holding up to line-ending normalization:
+two documents that differ in any **projected** field never **render identically**,
+with the single exception that values differing only in line endings (CRLF and
+bare CR are normalized to LF so every line boundary is recognized for fence
+safety) render identically. This is part of the **contract**, not an incidental
+property of the current layout, and it is enforced by tests rather than assumed.
+Any future formatting change that merged fields, dropped a projected field, or
+collapsed absence into emptiness would break injectivity and must be rejected on
+that ground alone.
 
 Because every projected field carries its own label and its own fence, a change
 in any projected field changes the projection. Injectivity is deliberately

@@ -331,6 +331,129 @@ def _mutate(doc: dict, name: str) -> dict:
     return doc
 
 
+def _set(doc: dict, name: str, value) -> dict:
+    """Set the projected field `name` to `value` in `doc` (mutates in place).
+    Supports the full PROJECTED_FIELDS set, so a test can drive every projected
+    field to an arbitrary value (None, an empty string, a populated value)."""
+    if name == "schema_version":
+        doc["schema_version"] = value
+    elif name == "task.id":
+        doc["task"]["id"] = value
+    elif name == "task.objective":
+        doc["task"]["objective"] = value
+    elif name == "handling.statement":
+        doc["handling"]["statement"] = value
+    elif name == "handling.scope":
+        doc["handling"]["scope"] = value
+    elif name == "acceptance_criteria[].id":
+        doc["acceptance_criteria"][0]["id"] = value
+    elif name == "acceptance_criteria[].statement":
+        doc["acceptance_criteria"][0]["statement"] = value
+    elif name == "constraints[].statement":
+        doc["constraints"][0]["statement"] = value
+    elif name == "constraints[].citation":
+        doc["constraints"][0]["citation"] = value
+    elif name == "constraints[].evidence_class":
+        doc["constraints"][0]["evidence_class"] = value
+    elif name == "prior_decisions[].statement":
+        doc["prior_decisions"][0]["statement"] = value
+    elif name == "prior_decisions[].citation":
+        doc["prior_decisions"][0]["citation"] = value
+    elif name == "prior_decisions[].evidence_class":
+        doc["prior_decisions"][0]["evidence_class"] = value
+    elif name == "retrieved_context[].citation":
+        doc["retrieved_context"][0]["citation"] = value
+    elif name == "retrieved_context[].passage":
+        doc["retrieved_context"][0]["passage"] = value
+    elif name == "retrieved_context[].evidence_class":
+        doc["retrieved_context"][0]["evidence_class"] = value
+    elif name == "connections[].source":
+        doc["connections"][0]["source"] = value
+    elif name == "connections[].target":
+        doc["connections"][0]["target"] = value
+    elif name == "connections[].kind":
+        doc["connections"][0]["kind"] = value
+    elif name == "connections[].verified":
+        doc["connections"][0]["verified"] = value
+    elif name == "exclusions.paths[]":
+        doc["exclusions"]["paths"] = value
+    elif name == "exclusions.globs[]":
+        doc["exclusions"]["globs"] = value
+    elif name == "exclusions.tags[]":
+        doc["exclusions"]["tags"] = value
+    elif name == "exclusions.directives[]":
+        doc["exclusions"]["directives"] = value
+    elif name == "exclusions.suppressed.retrieved_context":
+        doc["exclusions"]["suppressed"]["retrieved_context"] = value
+    elif name == "exclusions.suppressed.connections":
+        doc["exclusions"]["suppressed"]["connections"] = value
+    elif name == "exclusions.suppressed.notes":
+        doc["exclusions"]["suppressed"]["notes"] = value
+    elif name == "exclusions.enforced":
+        doc["exclusions"]["enforced"] = value
+    elif name == "provenance.generated_at":
+        doc["provenance"]["generated_at"] = value
+    elif name == "provenance.index.schema_version":
+        doc["provenance"]["index"]["schema_version"] = value
+    elif name == "provenance.index.indexed_at":
+        doc["provenance"]["index"]["indexed_at"] = value
+    elif name == "provenance.citations[]":
+        doc["provenance"]["citations"] = value
+    elif name == "budget.characters_used":
+        doc["budget"]["characters_used"] = value
+    elif name == "budget.character_budget":
+        doc["budget"]["character_budget"] = value
+    elif name == "budget.truncated":
+        doc["budget"]["truncated"] = value
+    else:
+        raise AssertionError(f"no setter defined for projected field {name!r}")
+    return doc
+
+
+# The "present but empty" value for every projected field: "" for strings, []
+# for list fields, False for booleans, 0 for integer counts. For each field this
+# must render DIFFERENTLY from an absent (None) value, proving that no projected
+# field is conditionally omitted (a field skipped when empty would make absent
+# and empty render identically).
+_EMPTY: dict[str, object] = {
+    "schema_version": "",
+    "task.id": "",
+    "task.objective": "",
+    "handling.statement": "",
+    "handling.scope": "",
+    "acceptance_criteria[].id": "",
+    "acceptance_criteria[].statement": "",
+    "constraints[].statement": "",
+    "constraints[].citation": "",
+    "constraints[].evidence_class": "",
+    "prior_decisions[].statement": "",
+    "prior_decisions[].citation": "",
+    "prior_decisions[].evidence_class": "",
+    "retrieved_context[].citation": "",
+    "retrieved_context[].passage": "",
+    "retrieved_context[].evidence_class": "",
+    "connections[].source": "",
+    "connections[].target": "",
+    "connections[].kind": "",
+    "connections[].verified": False,
+    "exclusions.paths[]": [],
+    "exclusions.globs[]": [],
+    "exclusions.tags[]": [],
+    "exclusions.directives[]": [],
+    "exclusions.suppressed.retrieved_context": 0,
+    "exclusions.suppressed.connections": 0,
+    "exclusions.suppressed.notes": 0,
+    "exclusions.enforced": False,
+    "provenance.generated_at": "",
+    "provenance.index.schema_version": "",
+    "provenance.index.indexed_at": "",
+    "provenance.citations[]": [],
+    "budget.characters_used": 0,
+    "budget.character_budget": 0,
+    "budget.truncated": False,
+}
+
+
 def _documented_projected_fields() -> list[str]:
     """Parse the 'Projected field set' section of docs/task-contracts.md and
     return the field names listed there, so the documented set can be compared
@@ -427,53 +550,41 @@ class InjectivityTest(unittest.TestCase):
             render_contract_markdown(doc_b),
         )
 
-    def test_absent_vs_empty_string_is_distinguishable(self) -> None:
-        # For every optional per-field block the renderer emits, a None (absent)
-        # field must render differently from an empty-string field: the former
-        # carries the explicit trusted 'None recorded.' marker, the latter an
-        # empty fence. Cases keep the enclosing item valid so the block renders.
-        cases = [
-            ("constraint statement", lambda d, v: d["constraints"].append(
-                _constraint_item(v, "authored_by_operator", citation=None)
-            )),
-            ("constraint citation", lambda d, v: d["constraints"].append(
-                _constraint_item("S.", "cited_passage", citation=v)
-            )),
-            ("constraint evidence class", lambda d, v: d["constraints"].append(
-                {**_constraint_item("S.", v, citation=None)}
-            )),
-            ("prior decision statement", lambda d, v: d["prior_decisions"].append(
-                _constraint_item(v, "authored_by_operator", citation=None)
-            )),
-            ("prior decision citation", lambda d, v: d["prior_decisions"].append(
-                _constraint_item("S.", "cited_passage", citation=v)
-            )),
-            ("prior decision evidence class", lambda d, v: d["prior_decisions"].append(
-                {**_constraint_item("S.", v, citation=None)}
-            )),
-            ("retrieved citation", lambda d, v: d["retrieved_context"].append(
-                _retrieved_item(citation=v, passage="P")
-            )),
-            ("retrieved passage", lambda d, v: d["retrieved_context"].append(
-                _retrieved_item(citation="C", passage=v)
-            )),
-            ("retrieved evidence class", lambda d, v: d["retrieved_context"].append(
-                _retrieved_item(citation="C", passage="P", evidence_class=v)
-            )),
-            ("acceptance id", lambda d, v: d["acceptance_criteria"].append(
-                {"id": v, "statement": "S."}
-            )),
-        ]
-        for name, setter in cases:
+    def test_absent_vs_empty_distinguishable_for_every_projected_field(self) -> None:
+        # For EVERY projected field, an absent (None) value must render
+        # differently from a present-but-empty value ("" for strings, [] for
+        # list fields, False/0 for booleans/counts). This is the strongest form
+        # of "no conditional omission": if any projected field were skipped when
+        # empty, absent and empty would both vanish and render identically,
+        # failing this test. The two documents differ ONLY in the field under
+        # test, so any difference in the renderings is attributable to it.
+        for name in PROJECTED_FIELDS:
             with self.subTest(field=name):
-                absent = base_document()
-                setter(absent, None)
-                empty = base_document()
-                setter(empty, "")
+                absent = copy.deepcopy(_populated_projected())
+                _set(absent, name, None)
+                empty = copy.deepcopy(_populated_projected())
+                _set(empty, name, _EMPTY[name])
                 self.assertNotEqual(
                     render_contract_markdown(absent),
                     render_contract_markdown(empty),
-                    f"absent vs empty string not distinguishable for {name}",
+                    f"absent vs empty not distinguishable for {name}",
+                )
+
+    def test_line_ending_normalization_is_the_documented_injectivity_exception(self) -> None:
+        # The renderer normalizes CRLF and bare CR to LF for fence safety, so two
+        # documents that differ only in a value's line endings render identically.
+        # This is the single documented exception to injectivity and must be
+        # pinned by a test rather than left implicit.
+        for field in ("task.objective", "handling.statement"):
+            with self.subTest(field=field):
+                lf = copy.deepcopy(_populated_projected())
+                _set(lf, field, "line one\nline two")
+                crlf = copy.deepcopy(_populated_projected())
+                _set(crlf, field, "line one\r\nline two")
+                self.assertEqual(
+                    render_contract_markdown(lf),
+                    render_contract_markdown(crlf),
+                    f"line-ending variants must render identically for {field}",
                 )
 
     def test_injectivity_over_projected_set(self) -> None:
@@ -532,6 +643,24 @@ class InjectivityTest(unittest.TestCase):
             "changes the projection",
             text,
             "docs must scope injectivity to the projected field set",
+        )
+
+    def test_docs_scope_injectivity_to_line_ending_normalization(self) -> None:
+        # The documentation must narrow the injectivity claim honestly: the
+        # renderer normalizes CRLF and bare CR to LF for fence safety, so the
+        # guarantee holds only up to line-ending normalization. The docs must
+        # say this precisely rather than leave a false absolute.
+        docs_path = Path(__file__).resolve().parents[1] / "docs" / "task-contracts.md"
+        text = docs_path.read_text()
+        self.assertIn(
+            "line-ending normalization",
+            text,
+            "docs must name line-ending normalization as the injectivity caveat",
+        )
+        self.assertIn(
+            "up to line-ending normalization",
+            text,
+            "docs must state injectivity holds up to line-ending normalization",
         )
 
 
