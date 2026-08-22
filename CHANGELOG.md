@@ -15,6 +15,12 @@
   thirty-one omitted fields, driving each to several values that vary
   cardinality and falsiness so a renderer reading only a length, a truthiness
   or an emptiness is caught;
+- `contract` authenticates a discovery candidate's own evidence, not only its
+  passages: `shared_terms` must be at least two non-empty strings that both
+  endpoint notes actually carry in the index, and `method` and `explanation`
+  must be the indexer's own, so a persisted edge can no longer assert a
+  relationship the index does not support or rewrite the standing warning that
+  lexical overlap is not proof;
 - `contract` attributes every connection-evidence side against the indexed
   snapshot before admitting its connection: the citation must name a section
   the index contains, and the quoted passage and heading must be the ones that

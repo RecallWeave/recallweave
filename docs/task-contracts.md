@@ -482,10 +482,33 @@ well-formedness test:
 - `authored_link` (a verified wikilink): `source_evidence`, `target_evidence`,
   `shared_terms`, `method`, and `explanation` are all **forbidden** — its
   evidence is the link text only, never passage quotes or TF-IDF terms.
-- `discovery_candidate` (unverified lexical overlap): `shared_terms` is
-  **required**; `source_evidence`, `target_evidence`, `method`, and
-  `explanation` are **optional** — each side is present only when that note
+- `discovery_candidate` (unverified lexical overlap): `shared_terms`,
+  `method` and `explanation` are **required**; `source_evidence` and
+  `target_evidence` are **optional** — each side is present only when that note
   resolves a cited passage.
+
+  `shared_terms` must be a list of at least **two** non-empty strings, and every
+  term must be one that **both** endpoint notes actually carry in the index. The
+  indexer refuses to create a candidate from fewer than two shared terms, and
+  ARCHITECTURE.md promises "at least two informative shared terms", so a
+  candidate claiming fewer, or claiming vocabulary the notes do not share, is
+  not something this indexer produced. This does not recompute the TF-IDF
+  ranking inside the exporter; it checks the weaker, sufficient property that
+  the ranking is a selection **from** the shared vocabulary.
+
+  `shared_terms` is the candidate's whole asserted basis for the relationship.
+  Typing it as "a list" left that assertion unauthenticated: an empty list, or
+  terms chosen to make an unrelated pair look related, passed and rendered
+  exactly like a real candidate. The persisted list is also checked for
+  non-string elements directly, because `_edge_evidence` drops those while
+  sanitizing and would otherwise turn corruption into a well-typed empty list.
+
+  `method` and `explanation` must be the indexer's own
+  (`INDEX_CANDIDATE_METHOD` and `INDEX_CANDIDATE_EXPLANATION`). They are not
+  decorative: `explanation` is the standing warning that lexical overlap is not
+  proof of a factual relationship, and a persisted edge that rewrites or drops
+  it changes what the artifact tells a receiving agent about how much the
+  connection is worth.
 
 Well-formedness reaches **inside** an evidence side, not just the top-level
 members. A present side must be a non-empty dict whose leaves are all known

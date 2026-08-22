@@ -77,6 +77,22 @@ EVIDENCE_SIDE_LEAF_TYPES: dict[str, type] = {
     "truncated": bool,
 }
 
+# What the INDEXER stamps on a discovery candidate. index.py emits exactly these
+# for every candidate edge, so a persisted candidate carrying anything else did
+# not come from this indexer and its "method" is an unverified assertion. A
+# drift check in the tests builds a real index and asserts its edges carry these
+# values, so the constants cannot silently diverge from index.py.
+INDEX_CANDIDATE_METHOD = "local_tfidf_cosine"
+INDEX_CANDIDATE_EXPLANATION = (
+    "Candidate only: lexical overlap is not proof of a factual relationship."
+)
+
+# The indexer refuses to create a candidate from fewer than two shared terms
+# (index.py: `if len(shared) < 2: continue`), and ARCHITECTURE.md promises "at
+# least two informative shared terms". A candidate claiming fewer is therefore
+# not something this indexer produced.
+MIN_SHARED_TERMS = 2
+
 # The substantive side leaf. A PRESENT side must carry `passage` — the actual
 # cited content — so a partial side (citation- or heading-only), a truncated-
 # only side, or an empty side cannot masquerade as an absent one. This is the
@@ -113,10 +129,34 @@ def connection_evidence_is_well_formed(connection: dict[str, Any]) -> bool:
     for member in evidence:
         if member not in applicability:
             return False
-    if "shared_terms" in evidence and not isinstance(evidence["shared_terms"], list):
-        return False
+    if "shared_terms" in evidence:
+        shared_terms = evidence["shared_terms"]
+        if not isinstance(shared_terms, list):
+            return False
+        # shared_terms is the evidence that MAKES an edge a discovery candidate:
+        # it is the whole asserted basis for the relationship. Typing it as "a
+        # list" left that assertion unauthenticated -- an empty list, or a list
+        # the indexer could never have produced, passed (recallweave-5vk). The
+        # element-level rules live here; whether the terms are genuinely shared
+        # by the two notes needs the index and is checked by
+        # _shared_terms_are_indexed().
+        if len(shared_terms) < MIN_SHARED_TERMS:
+            return False
+        for term in shared_terms:
+            if not isinstance(term, str) or not term:
+                return False
     for member in ("method", "explanation"):
         if member in evidence and not isinstance(evidence[member], str):
+            return False
+    # A discovery candidate must carry the indexer's own method and
+    # explanation. These are not decorative: `explanation` is the standing
+    # warning that lexical overlap is not proof of a factual relationship, and a
+    # persisted edge that rewrites or drops it changes what the artifact tells a
+    # receiving agent about how much the connection is worth.
+    if evidence_class == "discovery_candidate":
+        if evidence.get("method") != INDEX_CANDIDATE_METHOD:
+            return False
+        if evidence.get("explanation") != INDEX_CANDIDATE_EXPLANATION:
             return False
     for side_name in ("source_evidence", "target_evidence"):
         side = evidence.get(side_name)
@@ -220,6 +260,58 @@ def _indexed_side_evidence(
                     }
     cache[citation] = expected
     return expected
+
+
+def _shared_terms_are_indexed(
+    connection, source_note_id: int, target_note_id: int, terms: list[str]
+) -> bool:
+    """True iff every claimed shared term is a term BOTH endpoint notes actually
+    carry in this index.
+
+    A discovery candidate's whole claim is "these two notes share this
+    vocabulary". Checking only that the list is well shaped authenticates the
+    container and not the claim, so a persisted edge could assert any term at
+    all -- including one chosen to make an unrelated pair look related -- and it
+    rendered exactly like a real one (recallweave-5vk).
+
+    This does not recompute the indexer's TF-IDF ranking, which would duplicate
+    index.py inside the exporter. It checks the weaker, sufficient property that
+    the ranking is a selection FROM the shared vocabulary: a term the two notes
+    do not both carry cannot have been ranked into that list."""
+    if not terms:
+        return False
+    placeholders = ",".join("?" for _ in terms)
+    row = connection.execute(
+        f"""
+        SELECT COUNT(DISTINCT term) FROM terms
+        WHERE note_id = ? AND term IN ({placeholders})
+          AND term IN (SELECT term FROM terms WHERE note_id = ?)
+        """,
+        [source_note_id, *terms, target_note_id],
+    ).fetchone()
+    return row is not None and int(row[0]) == len(set(terms))
+
+
+def _persisted_terms_are_all_strings(raw: str) -> bool:
+    """True iff the PERSISTED shared_terms list contains only strings.
+
+    _edge_evidence sanitizes by dropping non-string elements, which is right for
+    the emitted shape but means corruption can arrive as silent normalization:
+    `[1, {"vault": "secret"}]` becomes `[]`, and a rule that only inspects the
+    emitted list sees a well-typed empty list instead of a corrupt edge. The
+    persisted bytes are the honest place to detect that."""
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    terms = parsed.get("shared_terms")
+    if terms is None:
+        return True
+    if not isinstance(terms, list):
+        return False
+    return all(isinstance(term, str) for term in terms)
 
 
 def _side_attribution_is_authentic(
@@ -629,6 +721,32 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                             "vault. The edge is identified by its database id "
                             "rather than by note path so this diagnostic "
                             "carries no vault content."
+                        )
+                # The shared terms are the candidate's whole asserted basis for
+                # the relationship, so they are authenticated against the index
+                # like the passages are. Two checks, because they fail
+                # differently: the PERSISTED list must contain only strings, or
+                # _edge_evidence's sanitizing turns corruption into a
+                # well-typed empty list and hides it; and every claimed term
+                # must be one both endpoint notes actually carry, or the edge is
+                # asserting a shared vocabulary the index does not support.
+                if candidate["evidence_class"] == "discovery_candidate":
+                    if not _persisted_terms_are_all_strings(
+                        str(row["evidence_json"])
+                    ) or not _shared_terms_are_indexed(
+                        connection,
+                        int(row["source_note_id"]),
+                        int(row["target_note_id"]),
+                        evidence.get("shared_terms") or [],
+                    ):
+                        raise ValueError(
+                            "unauthenticated connection evidence in the index "
+                            f"for edge {row['id']}: the shared terms this "
+                            "candidate claims are not terms both notes carry in "
+                            "this index, so the asserted relationship is not "
+                            "supported. Re-index the vault. The edge is "
+                            "identified by its database id rather than by note "
+                            "path so this diagnostic carries no vault content."
                         )
                 evidence_cost = _evidence_cost(evidence)
                 # Connections are admitted last. When the budget is exhausted,
