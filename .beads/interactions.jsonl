@@ -62,3 +62,4 @@
 {"id":"int-85b40c1a3ac3ebe778c15ee0ab1de2d4","kind":"field_change","created_at":"2026-08-22T13:32:12.621391Z","actor":"josh","issue_id":"recallweave-ah5","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-53f05333a05098ce88982f38289673f2","kind":"field_change","created_at":"2026-08-22T14:03:08.590763Z","actor":"josh","issue_id":"recallweave-ah5","extra":{"field":"status","new_value":"open","old_value":"in_progress"}}
 {"id":"int-2d4e037a9a82c6d5a22395c35413a90d","kind":"field_change","created_at":"2026-08-22T14:11:41.991179Z","actor":"josh","issue_id":"recallweave-ah5","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
+{"id":"int-11b8e1aa0c9105734fc36ded8fec6286","kind":"field_change","created_at":"2026-08-22T14:19:39.848072Z","actor":"josh","issue_id":"recallweave-ah5","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
