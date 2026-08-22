@@ -95,49 +95,33 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 7 is complete. The operator made two architectural decisions in response to
-your six consecutive escaping findings, and both are now implemented.
+Your cycle-7 finding is fixed.
 
-**Decision 1 — context-specific escaping abandoned for a uniform inert
-representation.** The invariant is now: no operator-controlled or vault-derived
-string may ever be interpreted as Markdown syntax. Only renderer-authored chrome
-is live Markdown; every value arriving from the document is emitted inside a
-fenced block (fence longer than any backtick run inside, info string `text`,
-content verbatim after CR/CRLF normalization). All context-specific escaping code
-is DELETED: `_inline`, `_inline_esc`, `_escape_inline`, `_escape_metachars`,
-`_collapse_newlines`, `_escape_blockquote_line`, `_citation_inline`, `_cell`,
-`_quote_line`. Grep confirms zero references.
+- **High — `schema_version` silently dropped from the Markdown projection.**
+  Confirmed exactly as you described: base `da58ccd` emitted
+  `> Schema: recallweave.contract.v1`, the restructured renderer referenced only
+  `index.schema_version` inside provenance, and
+  `tests/test_contract_markdown.py:82` had been flipped from `assertIn` to
+  `assertNotIn`, pinning the removal rather than approving it. You were right
+  that removing the blockquote was approved but dropping the field it carried
+  was not.
 
-Approved appearance changes, all documented: trusted literal `# Task contract`
-title; the connections TABLE is removed (a table cell cannot contain a fence);
-acceptance criteria are label + fenced block rather than an interpolated
-checklist; citations are fenced rather than inline code spans; retrieved-context
-headings are trusted `### Passage N`; no handling blockquote. The eight numbered
-sections and their order are unchanged. The JSON schema did not change.
+  Now: the top-level `schema_version` renders inside a `CodeFence` (it is
+  document-derived, so it is fenced like everything else), the flipped assertion
+  is restored as a presence assertion in the fenced form, and a new
+  projection-completeness test enumerates the semantic fields the `da58ccd`
+  renderer emitted and asserts each still appears — so a future formatting
+  change cannot silently delete content again. The skip-based gate was also
+  tightened so the authoritative security tests cannot report green while
+  skipped.
 
-**Decision 2 — a CommonMark parser is now a test-only dependency.** `mistletoe`
-(pure Python, zero required dependencies) is declared under
-`[project.optional-dependencies] test`. `pip install -e .` still installs
-recallweave and nothing else — verified. CI installs `-e ".[test]"`.
-Parser-backed AST assertions are now the authoritative inertness gate; string
-heuristics are retained only as secondary regression checks.
+Suite: 326 tests with the parser.
 
-Suite: 322 tests with the parser, `compileall` clean, documented example runs
-verbatim in both formats.
-
-Reassess, explicitly:
-1. every original Critical and High finding from all six previous cycles;
-2. the cycle-6 High (indented markers inside the handling blockquote);
-3. the new uniform-inert-rendering invariant — try hard to find ANY document
-   value that still reaches a Markdown-active position, including scalars where
-   a number is expected, and any way to break out of a fence;
-4. regressions introduced by this restructuring, especially in benign output,
-   and whether the golden expectation was regenerated honestly rather than
-   fitted to whatever the code happened to emit.
-
-Note one process fact for your judgment: the final Bead C commit was made by the
-architect rather than a swarm worker, after the assigned worker stalled with the
-substantive work already correct. Its diff is deletion plus routing four
-document-derived scalars through the fence, and a regenerated golden that was
-re-verified inert via the AST before being pinned.
+This was a gate failure on our side as much as a code failure: cycle 7 verified
+structural inertness and benign-vs-hostile heading equality, but nothing verified
+that every semantic field survived the restructuring. Probe that axis hard —
+look for any other content the restructuring dropped, reordered, or merged, and
+for any test that was adjusted to match emitted output rather than to assert an
+intended property. Also re-confirm the uniform-inertness invariant still holds
+now that a new field has been routed through the renderer.
 <!-- CYCLE-CONTEXT-END -->
