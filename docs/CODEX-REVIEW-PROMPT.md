@@ -95,38 +95,64 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your cycle-12 findings are fixed.
+Your cycle-13 findings are fixed, and one further defect was found here after
+they were.
 
-- **High — "well-formed" was vacuous.** You were right, and this one was an
-  architect error: the injectivity claim was scoped to "well-formed" documents
-  and then enforced by a test that derived applicability *from presence*
-  (`if "shared_terms" in evidence`, `if side_dict is not None`), never branched
-  on `evidence_class`, and exercised one document shape. A connection with
-  `evidence == {}` passed under either class, so the condition could not reject
-  anything. Applicability is now defined as data: an explicit
-  evidence_class -> required/optional/forbidden mapping shared by the docs and
-  the test. The test branches on `evidence_class` and demonstrably REJECTS a
-  `discovery_candidate` missing its required `shared_terms`, and covers the
-  publicly obtainable connection shapes rather than a single `_full_spec()`.
+- **High — well-formedness stopped at the evidence side.** Confirmed and fixed
+  (`recallweave-6j3`). The evidence-class table was applied to the presence of
+  `source_evidence` / `target_evidence` but not to their contents, so a side
+  carrying only some of `citation` / `heading` / `passage` satisfied the table
+  while rendering ambiguously. Well-formedness now reaches inside each side.
+  **Judge this fix, do not assume it.** A partial side is now REJECTED as
+  malformed rather than projected with a side-level `truncated` flag. Both
+  options were legitimate; the reject path was taken deliberately. Decide
+  whether that is honest or whether it merely relocates the hole — for example
+  whether a shape that is rejectable in the test is actually unreachable
+  through the public builder, or whether rejection now discards evidence a
+  reader would have been entitled to see.
 
-- **Medium — sentinels that could never match.** Confirmed exactly as reported:
-  `line_start` injected `1111` while the test searched `NPS_LINESTART`, same for
-  `line_end` and `truncated`, leaving four of ten omitted fields unchecked. The
-  disclosure test no longer uses string needles for non-string fields.
+- **Medium — the disclosure test pinned today's formatting.** Confirmed and
+  fixed (`recallweave-0kl`). It asserted omission by matching the expected
+  rendered form of each omitted field, so a field whose rendered form differed
+  from that serialization escaped detection. Omission is now proven by
+  value-invariance: the omitted field is driven to two different values and the
+  rendering must be identical.
 
-- **Medium — a regression of the cycle-11 fix.** Also confirmed:
-  `_documented_projected_fields()` had been removed, so the documented projected
-  list and `PROJECTED_FIELDS` could drift silently while the docs still claimed
-  they were compared. The direct equality check is restored.
+- **Projection order fidelity** was pinned for every projected collection
+  (`recallweave-hl7`): each collection's rendered element sequence must equal
+  its document sequence, and multiplicity must be preserved.
 
-Suite: 363 tests with the parser, `compileall` clean.
+- **High, found here by a mutation audit and NOT reported by you in thirteen
+  cycles — absence was signalled in-band** (`recallweave-4a6`). `_field()`
+  rendered the absence marker `None recorded.` INSIDE the field's fence, i.e.
+  in the same value space as untrusted content, so a field whose value was
+  exactly that string rendered byte-identically to that field being absent.
+  Reachable with no hostile intent: operator objectives, acceptance statements
+  and vault passages all reach the renderer. This was a true injectivity
+  violation over well-formed documents with none of the documented
+  qualifications available. Absence is now STRUCTURAL: a present field always
+  renders its label followed by a fenced block, an absent field renders its
+  label followed by the marker as a bare chrome line and emits no fence at all.
 
-Attack hardest this cycle: whether the evidence-class mapping is now the single
-source of truth or merely a second place that can drift from `_edge_evidence`;
-whether "required/optional/forbidden" is complete enough that some obtainable
-connection satisfies the table while still being unrenderable or ambiguous;
-whether the restored drift check actually fails on a real drift in either
-direction; and whether the new disclosure detection can still be defeated by a
-field whose rendered form differs from the expected serialization. Reassess every
-Critical and High from all twelve cycles.
+Suite: 372 tests with the parser, `compileall` clean. Runtime dependencies are
+still empty; `mistletoe` remains test-only.
+
+Attack hardest this cycle:
+
+1. **The new absence rule.** Is absence genuinely unforgeable now, or only
+   harder to forge? Look for any path where a document-derived value can reach
+   the output outside a fence, or where a label line can be produced by content
+   rather than by the renderer, which would let content synthesize the
+   label+bare-marker pair. Check `exclusions.enforced`, which is the one
+   projected field rendered as an inline trusted literal and therefore has no
+   fenced/bare distinction, and the empty-section marker, which emits the same
+   literal as section chrome. Check that the new tests would actually fail on a
+   regression rather than merely on a byte change.
+2. **The cycle-13 reject path**, per the High above.
+3. Whether the evidence-class table is the single source of truth or a second
+   place that can drift from `_edge_evidence`.
+4. Whether the value-invariance disclosure proof can still be defeated by a
+   field that influences the rendering only indirectly, e.g. through
+   `budget.characters_used`.
+5. Reassess every Critical and High from all thirteen cycles.
 <!-- CYCLE-CONTEXT-END -->
