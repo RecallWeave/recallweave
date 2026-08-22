@@ -6,7 +6,12 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from recallweave.contract import CONTRACT_SCHEMA_VERSION, build_contract_document
+from recallweave.contract import (
+    CONNECTION_EVIDENCE_APPLICABILITY,
+    CONTRACT_SCHEMA_VERSION,
+    build_contract_document,
+    connection_evidence_is_well_formed,
+)
 from recallweave.contract_spec import TaskSpec
 from recallweave.contract_text import MAX_STATEMENT_CHARACTERS
 from recallweave.index import build_index
@@ -215,44 +220,133 @@ class ContractDocumentTest(unittest.TestCase):
         # always carries every projected key that applies to that item's
         # evidence class — so the well-formedness condition the docs rely on is
         # enforced by a test rather than asserted in prose. The connection
-        # evidence leaves are conditional (present only when the underlying
-        # edge carries that side), so they are checked separately.
+        # evidence leaves are conditional (present only when the evidence class
+        # and the underlying edge carry them), so they are checked against the
+        # applicability table, which branches on evidence_class.
         document = build_contract_document(self.database, self._full_spec())
         for name in PROJECTED_FIELDS:
             with self.subTest(field=name):
                 if name in CONDITIONAL_PROJECTED_FIELDS:
-                    self._assert_connection_evidence_conditional(document, name)
+                    self._assert_all_connection_evidence_well_formed(document)
                 else:
                     self.assertTrue(
                         _has_key_at_path(document, _projected_path(name)),
                         f"built document missing projected key for {name}",
                     )
 
-    def _assert_connection_evidence_conditional(self, document: dict, name: str) -> None:
-        # The connection evidence leaves are present exactly when the underlying
-        # edge carries that side: a verified authored-link connection has no
-        # TF-IDF shared_terms, so the leaf is legitimately absent there. The
-        # renderer treats a missing key and an explicit None identically, so
-        # this conditional presence keeps the projection coherent without
-        # fabricating fields that carry no meaning for the evidence class.
+    def _assert_all_connection_evidence_well_formed(self, document: dict) -> None:
+        # Every connection a real build produces must obey
+        # CONNECTION_EVIDENCE_APPLICABILITY: each evidence member is required,
+        # optional, or forbidden for that connection's evidence_class. This
+        # branches on conn['evidence_class'] — presence alone can no longer
+        # satisfy the check, because a required member must be present and a
+        # forbidden member must be absent.
         for conn in document["connections"]:
-            evidence = conn.get("evidence") or {}
-            if name.endswith("shared_terms[]"):
-                if "shared_terms" in evidence:
-                    self.assertIsInstance(evidence["shared_terms"], list)
-                continue
-            if ".source_evidence." in name:
-                side, leaf = "source_evidence", name.split("source_evidence.")[1]
-            elif ".target_evidence." in name:
-                side, leaf = "target_evidence", name.split("target_evidence.")[1]
-            else:
-                raise AssertionError(f"unexpected conditional field {name!r}")
-            side_dict = evidence.get(side)
-            if side_dict is not None:
+            with self.subTest(
+                evidence_class=conn["evidence_class"],
+                source=conn.get("source"),
+                target=conn.get("target"),
+            ):
+                self.assertTrue(
+                    connection_evidence_is_well_formed(conn),
+                    "connection evidence violates the applicability table for "
+                    f"evidence_class={conn['evidence_class']!r}: "
+                    f"{sorted((conn.get('evidence') or {}).keys())}",
+                )
+
+    def test_connection_evidence_applicability_table_is_decisive(self) -> None:
+        # The table must state the applicability of EVERY evidence member for
+        # every connection evidence class the builder can emit, so validity is
+        # decidable from the table alone. An unknown evidence_class or member
+        # is not well-formed.
+        for evidence_class, members in CONNECTION_EVIDENCE_APPLICABILITY.items():
+            for member, status in members.items():
                 self.assertIn(
-                    leaf,
-                    side_dict,
-                    f"connection evidence {side} missing projected leaf {leaf!r}",
+                    status, ("required", "optional", "forbidden"),
+                    f"invalid status {status!r} for {evidence_class}.{member}",
+                )
+        for evidence_class in ("authored_link", "discovery_candidate"):
+            self.assertEqual(
+                set(CONNECTION_EVIDENCE_APPLICABILITY[evidence_class]),
+                {"source_evidence", "target_evidence", "shared_terms"},
+                f"applicability table must govern every evidence member for "
+                f"{evidence_class}",
+            )
+
+    def test_well_formedness_rejects_missing_required_leaf(self) -> None:
+        # A discovery_candidate REQUIRES shared_terms; removing it must be
+        # rejected by the well-formedness predicate. This is the negative case
+        # that the old presence-derived check could never catch (it passed for
+        # any shape under either class).
+        document = build_contract_document(self.database, self._full_spec())
+        conn = next(
+            c for c in document["connections"]
+            if c["evidence_class"] == "discovery_candidate"
+        )
+        self.assertTrue(connection_evidence_is_well_formed(conn))
+        conn["evidence"].pop("shared_terms", None)
+        self.assertFalse(
+            connection_evidence_is_well_formed(conn),
+            "a discovery_candidate missing its required shared_terms must be "
+            "rejected",
+        )
+
+    def test_well_formedness_rejects_forbidden_leaf(self) -> None:
+        # An authored_link FORBIDS source_evidence (and target_evidence and
+        # shared_terms); adding one must be rejected. This is the other negative
+        # case the old presence-derived check could never catch.
+        document = build_contract_document(self.database, self._full_spec())
+        conn = next(
+            c for c in document["connections"]
+            if c["evidence_class"] == "authored_link"
+        )
+        self.assertTrue(connection_evidence_is_well_formed(conn))
+        conn["evidence"]["source_evidence"] = {
+            "citation": "x", "heading": "h", "passage": "p",
+        }
+        self.assertFalse(
+            connection_evidence_is_well_formed(conn),
+            "an authored_link carrying forbidden source_evidence must be "
+            "rejected",
+        )
+
+    def test_well_formedness_covers_every_connection_shape(self) -> None:
+        # Exercise the predicate over every publicly obtainable connection shape
+        # so the applicability table is proven decisive for all of them, not
+        # just the single _full_spec() result: authored wikilink (empty
+        # evidence), discovery candidate, empty evidence, unilateral evidence,
+        # bilateral evidence, and empty and non-empty shared_terms.
+        side = {"citation": "c", "heading": "h", "passage": "p"}
+        cases: list[tuple[str, dict, bool]] = [
+            # authored wikilink: no passage evidence or TF-IDF shared terms.
+            ("authored_link", {}, True),
+            ("authored_link", {"source_evidence": side}, False),
+            ("authored_link", {"target_evidence": side}, False),
+            ("authored_link", {"shared_terms": ["x"]}, False),
+            # discovery candidate: shared_terms required, sides optional.
+            ("discovery_candidate", {"shared_terms": []}, True),
+            ("discovery_candidate", {"shared_terms": ["x"]}, True),
+            ("discovery_candidate", {"shared_terms": ["x"], "source_evidence": side}, True),
+            ("discovery_candidate", {"shared_terms": ["x"], "target_evidence": side}, True),
+            (
+                "discovery_candidate",
+                {"shared_terms": ["x"], "source_evidence": side, "target_evidence": side},
+                True,
+            ),
+            # A discovery_candidate without its required shared_terms is invalid.
+            ("discovery_candidate", {}, False),
+            ("discovery_candidate", {"source_evidence": side}, False),
+            # An unknown evidence_class is never well-formed.
+            ("unknown", {}, False),
+        ]
+        for evidence_class, evidence, expected in cases:
+            with self.subTest(evidence_class=evidence_class, evidence=sorted(evidence)):
+                conn = {"evidence_class": evidence_class, "evidence": evidence}
+                self.assertEqual(
+                    connection_evidence_is_well_formed(conn),
+                    expected,
+                    f"shape {evidence_class} {sorted(evidence)} expected "
+                    f"{expected}",
                 )
 
     def test_cited_passage_citation_resolves_to_physical_lines(self) -> None:

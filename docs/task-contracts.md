@@ -162,7 +162,11 @@ Each item carries `source`, `target`, `kind`, `verified`, `score`, `evidence`,
 and `evidence_class`. `evidence_class` is `"authored_link"` for authored,
 verified edges or `"discovery_candidate"` for unverified lexical candidates.
 Candidate edges appear only when `include_candidates` is set in the spec; the
-list is bounded at 200 rows, same as `query`.
+list is bounded at 200 rows, same as `query`. The `evidence` members are
+present exactly as `CONNECTION_EVIDENCE_APPLICABILITY` (see
+[Injectivity](#injectivity)) dictates: an `authored_link` carries no
+`source_evidence`, `target_evidence`, or `shared_terms`; a
+`discovery_candidate` always carries `shared_terms` and may carry either side.
 
 ### `constraints` and `prior_decisions`
 
@@ -387,10 +391,27 @@ underlying edge actually carries them, because a verified connection authored
 as a wikilink has no TF-IDF shared terms. Those projected leaves are therefore
 present exactly when they apply to the connection's evidence class, and the
 renderer treats a missing key and an explicit `None` identically — so an absent
-leaf renders the trusted marker, never an invented field. A missing key is
-otherwise unreachable through the public API — it occurs only in hand-crafted
-dicts — and the renderer treats a missing key and an explicit `None`
-identically for every projected field.
+leaf renders the trusted marker, never an invented field.
+
+Which leaves apply to each connection evidence class is stated explicitly as
+data — the `CONNECTION_EVIDENCE_APPLICABILITY` table in `contract.py` is the
+single source of truth, referenced by the docs prose here and enforced by the
+well-formedness test:
+
+- `authored_link` (a verified wikilink): `source_evidence`, `target_evidence`,
+  and `shared_terms` are all **forbidden** — its evidence is the link text
+  only, never passage quotes or TF-IDF terms.
+- `discovery_candidate` (unverified lexical overlap): `shared_terms` is
+  **required**; `source_evidence` and `target_evidence` are **optional** —
+  each side is present only when that note resolves a cited passage.
+
+`connection_evidence_is_well_formed` decides validity from that table alone,
+so a reader can determine whether a connection is well-formed without
+reverse-engineering `_edge_evidence`: a `discovery_candidate` missing its
+`shared_terms`, or an `authored_link` carrying a side or shared terms, is
+rejected. A missing key is otherwise unreachable through the public API — it
+occurs only in hand-crafted dicts — and the renderer treats a missing key and
+an explicit `None` identically for every projected field.
 
 Over well-formed documents the projection is injective **over the projected
 field set**, holding up to line-ending normalization: two well-formed documents
