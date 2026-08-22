@@ -15,7 +15,6 @@ from .safe_write import install, prepare_destination, verify_destination
 def _base_receipt(
     document: dict[str, Any], output_format: str
 ) -> dict[str, Any]:
-    suppressed = document["exclusions"]["suppressed"]
     return {
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "operation": "export_contract",
@@ -28,11 +27,6 @@ def _base_receipt(
         "prior_decisions": len(document["prior_decisions"]),
         "acceptance_criteria": len(document["acceptance_criteria"]),
         "exclusions_enforced": document["exclusions"]["enforced"],
-        "suppressed_total": (
-            suppressed["retrieved_context"]
-            + suppressed["connections"]
-            + suppressed["notes"]
-        ),
         "characters_used": document["budget"]["characters_used"],
         "character_budget": document["budget"]["character_budget"],
         "truncated": document["budget"]["truncated"],

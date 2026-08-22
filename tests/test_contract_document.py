@@ -146,7 +146,6 @@ class ContractDocumentTest(unittest.TestCase):
                 "paths": ["Restricted/Secret.md"],
                 "tags": ["private"],
             },
-            "notes": "Work packet for the review agent.",
         }
         payload.update(overrides)
         return TaskSpec.from_payload(payload)

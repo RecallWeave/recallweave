@@ -114,7 +114,6 @@ class ContractExclusionLeakageTest(unittest.TestCase):
             "prior_decisions": [],
             "acceptance_criteria": ["No excluded content leaks."],
             "exclusions": exclusions,
-            "notes": "review",
         }
         self.spec_path.write_text(json.dumps(payload), encoding="utf-8")
         return self.spec_path
