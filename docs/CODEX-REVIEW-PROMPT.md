@@ -95,28 +95,36 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-A fifth cycle just completed. Your cycle-4 finding:
+A sixth cycle just completed. Your cycle-5 findings:
 
-- **High — the multiline cited-item branch emitted citations unescaped**
-  (`contract_markdown.py:174-179`), reachable end to end because citations are
-  built from vault-relative paths, so a hostile Markdown filename reaches it.
-  Reproduced as failing first; now renders with no live image or autolink for
-  both `constraints` and `prior_decisions`.
+- **High — bare CR escaped the blockquote.** Fixed: CR and CRLF are normalized at
+  the renderer's single line-splitting choke point, and the test oracle now
+  normalizes line endings before counting structure (it previously split on LF
+  only, which is why it missed this). Verified: `handling.statement` of
+  `safe# forged` produces no active heading after normalization.
+- **High — unapproved compatibility regression on falsy citations.** Fixed: the
+  prior truthiness condition is restored. Verified byte-identical to base
+  `bf1a5e7` for citation values `""`, `0`, `False`, and `None`, in both
+  single-line and multiline cited items, pinned by a golden test.
+- **Low — `_Escaped` accepted raw text.** Addressed by narrowing it.
 
-Your recommendation 4 was adopted as the primary fix, not just the one-line
-patch: renderer interpolation is now centralized behind position-specific
-helpers, so a future branch cannot emit an unconverted string. Four consecutive
-reviews each found one more unescaped branch; per-branch discipline had failed
-four times, so the class of defect was removed rather than the instance.
-Rendered output for benign documents is unchanged.
+Suite: 301 tests passing.
 
-Suite: 290 tests passing.
+This is the sixth review of this module. Your five previous cycles each found a
+further escaping edge case: block structure, inline constructs, `handling`
+routing, the multiline citation branch, and bare CR. The escaping approach is
+hand-rolled and stdlib-only by project policy.
 
-Probe hardest at the restructuring itself: whether centralization is actually
-total (any path that still reaches the output buffer without a position helper),
-whether it changed rendering for benign input, and whether the helpers
-themselves are correct at their boundaries — particularly backslash runs
-adjacent to metacharacters, and any field whose position changed as a result of
-the refactor. Also confirm the end-to-end hostile-filename case is genuinely
-covered rather than only unit-tested through the public renderer.
+Two things worth your explicit judgment this round, stated plainly rather than
+buried:
+
+1. Whether the remaining risk in hand-rolled Markdown escaping is now acceptable,
+   or whether the surface keeps producing edge cases and the approach itself
+   should change — for example rendering every untrusted value inside a code span
+   or fence uniformly, so inline escaping correctness stops mattering. If you
+   believe the approach must change, say so directly; that is a design decision
+   the maintainer will weigh, and repeated narrow findings are evidence for it.
+2. Whether verification without a CommonMark parser is now sufficient. You
+   previously judged that no single finding justified a first test dependency.
+   With five escaping findings behind us, say whether that judgment still holds.
 <!-- CYCLE-CONTEXT-END -->
