@@ -95,68 +95,64 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both cycle-21 findings are fixed. You could not write to a database from the
-sandbox, so all four of your scenarios were reproduced here first — every one
-of them exported cleanly, including the two severe ones.
+Both cycle-22 findings are fixed, and all eight of your suggested tests are in
+the suite. You were right and the framing was the useful part: I had built a
+proxy and called it a re-derivation. Checking the parts is not re-derivation.
 
-- **High — the persisted edge record was unauthenticated** (`recallweave-o6r`).
-  Reproduced: an arbitrary score of 99.5 exported; `kind='human_verified'`
-  exported with the class unchanged; a hand-inserted `is_verified = 1` row with
-  empty evidence between two unlinked notes exported as an **authored,
-  verified** relationship; and rewriting every candidate as verified exported
-  them all as `authored_link`.
+- **High — the authored-link check verified the parts, not the binding**
+  (`recallweave-ze7`). Your reproduction stands as reported: a line reading
+  "This line contains no link at all." authenticated a verified relationship
+  between unlinked notes.
 
-  The envelope is now declared as data (`AUTHORED_LINK_KINDS`, `CANDIDATE_KIND`,
-  `AUTHORED_EVIDENCE_MEMBERS`), the way the evidence applicability tables are,
-  and is validated BEFORE the payload so an edge's class is established before
-  anything is judged by class:
+  The check now uses the INDEXER'S OWN code rather than a parallel matcher that
+  can drift from it. The exact physical line is read back out of the indexed
+  section covering the claimed coordinate and the quoted source text must BE
+  that line, not any nearby text; that one line is parsed with
+  `parser._links`, and an extracted link must match the edge's kind AND target;
+  and that link is resolved with `index._resolve_link`, requiring exactly one
+  candidate and no ambiguity reason — so ambiguous names are rejected as the
+  indexer rejects them, and path resolution uses the indexer's exact keys
+  instead of the previous suffix match.
 
-  - a candidate carries `kind = "discovery_candidate"`, `is_verified = 0` and a
-    finite cosine score in `(0, 1]`;
-  - an authored link carries a real link kind, `is_verified = 1`,
-    `score = 1.0`, and must **re-derive from the index** — its persisted
-    evidence names the link's line, source text and target; the source note must
-    really have an indexed section covering that line whose text contains that
-    source text; and the target must really resolve to the target note, by
-    normalized name or by path, the same two routes `_resolve_link` takes.
+  One implementation note worth your scrutiny: the `note_names` lookup is
+  de-duplicated per normalized name, because one note contributes several rows
+  (title and stem) and without that a single unambiguous note looks like two
+  candidates and EVERY genuine link is rejected. Distinct ids under one name is
+  what ambiguity means. The ambiguity test tries BOTH ambiguous endpoints, so a
+  resolver that returned several candidates and took the first cannot pass by
+  luck.
 
-  Those three persisted members are never projected — `_edge_evidence`
-  whitelists them away, which is why an `authored_link` renders with empty
-  evidence — but they are what makes the link re-derivable, so they are
-  validated anyway.
+  Everything still reads the index — `_links` runs over one line already stored
+  in `sections.text` — so the exporter performs no file reads.
 
-- **Medium — the documentation did not disclose what was unauthenticated.**
-  Fixed, and deliberately in the direction of disclosure rather than silence.
-  Josh's decision was envelope rules plus authored-link re-derivation, and NOT
-  full recomputation: the exporter does not re-run the TF-IDF cosine, the score
-  threshold, or the bounded top-per-note selection, because that duplicates
-  `index.py` inside the exporter and makes export time scale with index size.
-  `docs/task-contracts.md` now says so under its own heading: a candidate is
-  checked to be **shaped and evidenced like** one the indexer produces, not to
-  **be** one the indexer did produce.
+- **Medium — the score wording overstated the implementation.** Corrected. A
+  candidate's `score` is described as **persisted and range-checked**, not as a
+  recomputed cosine, and the disclaimer now appears where the `connections`
+  contract is first described rather than only in a later section. The
+  CHANGELOG's false claim is fixed. Two docs tests pin the wording.
 
-Four mutations killed: removing the envelope gate, removing the authored
-re-derivation, dropping the candidate kind/score rules, and removing the
-source-text containment check. A positive test proves a genuine index still
-exports BOTH evidence classes, so the rules are calibrated to the real producer
-rather than to the tests' idea of it. A subtest that would have silently skipped
-for want of an authored edge now runs against the fixture that has one.
+Five mutations killed: dropping the link/kind/target binding, unbinding the
+declared kind, unbinding the link target, relaxing uniqueness, and relaxing the
+exact physical line to a substring of the section.
 
-Suite: 404 tests with the parser, green under `-W error::ResourceWarning`;
+Suite: 408 tests with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies are still empty.
 
 This cycle decides promotion.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
    nothing blocks promotion, say so explicitly.
-2. Judge the DECISION, not just the code: is "shaped and evidenced like a real
-   candidate, with the boundary documented" a defensible place to stop, or does
-   the artifact's own language still promise more than that? If the latter, the
-   fix may be wording rather than recomputation — say which.
-3. Five cycles have now found the next level down. If there is a sixth, name it.
-   If you believe the sequence has converged, say that too, and say why.
+2. Six cycles have found the next level down. Is there a seventh? The authored
+   link now re-derives through the indexer's own parser and resolver, so the
+   remaining gap would have to be in what the INDEX itself records — or in the
+   retrieved-context and operator-citation paths, which have had far less
+   attention this run than connections have.
+3. Scrutinise the de-duplication above specifically: it is the one place where
+   the exporter reconstructs an input to the indexer's resolver rather than
+   reusing it, and getting it wrong in the other direction would reject genuine
+   links or accept ambiguous ones.
 4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
    `PRIVACY.md` and `CHANGELOG.md` against the code.
-5. Reassess every Critical and High from all twenty-one cycles and say which
+5. Reassess every Critical and High from all twenty-two cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
