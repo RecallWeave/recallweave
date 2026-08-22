@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -9,6 +10,8 @@ from pathlib import Path
 from recallweave.contract import (
     CONNECTION_EVIDENCE_APPLICABILITY,
     CONTRACT_SCHEMA_VERSION,
+    EVIDENCE_SIDE_LEAF_TYPES,
+    SUBSTANTIVE_SIDE_LEAVES,
     build_contract_document,
     connection_evidence_is_well_formed,
 )
@@ -268,10 +271,31 @@ class ContractDocumentTest(unittest.TestCase):
         for evidence_class in ("authored_link", "discovery_candidate"):
             self.assertEqual(
                 set(CONNECTION_EVIDENCE_APPLICABILITY[evidence_class]),
-                {"source_evidence", "target_evidence", "shared_terms"},
+                {
+                    "source_evidence",
+                    "target_evidence",
+                    "shared_terms",
+                    "method",
+                    "explanation",
+                },
                 f"applicability table must govern every evidence member for "
                 f"{evidence_class}",
             )
+        # The nested side-leaf table must describe every leaf the renderer or
+        # the builder can place inside a side, and the substantive set must be
+        # non-empty and a subset of those leaves.
+        self.assertEqual(
+            set(EVIDENCE_SIDE_LEAF_TYPES),
+            {"citation", "heading", "passage", "truncated"},
+            "side-leaf table must govern every known side leaf",
+        )
+        self.assertTrue(SUBSTANTIVE_SIDE_LEAVES)
+        self.assertLessEqual(
+            set(SUBSTANTIVE_SIDE_LEAVES), set(EVIDENCE_SIDE_LEAF_TYPES)
+        )
+        # The substantive leaf (passage) must be a str, so a present side's
+        # content is actual quoted text.
+        self.assertIs(EVIDENCE_SIDE_LEAF_TYPES["passage"], str)
 
     def test_well_formedness_rejects_missing_required_leaf(self) -> None:
         # A discovery_candidate REQUIRES shared_terms; removing it must be
@@ -348,6 +372,94 @@ class ContractDocumentTest(unittest.TestCase):
                     f"shape {evidence_class} {sorted(evidence)} expected "
                     f"{expected}",
                 )
+
+    def test_reproduction_truncated_only_side_rejected(self) -> None:
+        # The exact pair from the defect report: a side carrying only the
+        # unprojected 'truncated' leaf renders byte-identically to an absent
+        # side and was classified well-formed, so the injectivity claim held
+        # for a pair of distinguishable documents. A truncated-only side is
+        # partial (no substantive passage) and must be rejected as malformed.
+        a = {
+            "evidence_class": "discovery_candidate",
+            "evidence": {"shared_terms": ["x"]},
+        }
+        b = {
+            "evidence_class": "discovery_candidate",
+            "evidence": {
+                "shared_terms": ["x"],
+                "source_evidence": {"truncated": True},
+            },
+        }
+        self.assertTrue(connection_evidence_is_well_formed(a))
+        self.assertFalse(
+            connection_evidence_is_well_formed(b),
+            "a side carrying only the unprojected 'truncated' leaf must be "
+            "rejected as malformed",
+        )
+
+    def test_well_formedness_rejects_partial_and_malformed_sides(self) -> None:
+        # The negative cases that must all be rejected by the validator,
+        # covering a partial side (no passage), a truncated-only side, an
+        # empty side, a non-dict side, and a side with an unknown leaf or a
+        # wrongly-typed leaf.
+        base = {"evidence_class": "discovery_candidate", "evidence": {"shared_terms": []}}
+        cases: list[tuple[str, object]] = [
+            ("partial citation-only side", {"citation": "c"}),
+            ("partial heading-only side", {"heading": "h"}),
+            ("truncated-only side", {"truncated": True}),
+            ("empty side", {}),
+            ("non-dict side", "not a dict"),
+            ("unknown side leaf", {"passage": "p", "evil": 1}),
+            ("wrongly-typed passage", {"passage": 123}),
+            ("wrongly-typed truncated", {"passage": "p", "truncated": "yes"}),
+        ]
+        for label, side in cases:
+            with self.subTest(side=label):
+                conn = copy.deepcopy(base)
+                conn["evidence"]["source_evidence"] = side
+                self.assertFalse(
+                    connection_evidence_is_well_formed(conn),
+                    f"{label!r} must be rejected as malformed",
+                )
+
+    def test_well_formedness_rejects_bad_shared_terms_and_unknown_members(self) -> None:
+        # shared_terms that is None or a non-list, and any unknown top-level
+        # evidence member, must be rejected so validity is decidable from the
+        # table alone.
+        base = {"evidence_class": "discovery_candidate", "evidence": {}}
+        bad: list[tuple[str, dict]] = [
+            ("shared_terms None", {"shared_terms": None}),
+            ("shared_terms non-list", {"shared_terms": "x"}),
+            ("unknown top-level member", {"shared_terms": [], "evil": 1}),
+        ]
+        for label, evidence in bad:
+            with self.subTest(case=label):
+                conn = copy.deepcopy(base)
+                conn["evidence"] = evidence
+                self.assertFalse(
+                    connection_evidence_is_well_formed(conn),
+                    f"{label!r} must be rejected as malformed",
+                )
+
+    def test_well_formedness_accepts_real_sides(self) -> None:
+        # A present side that carries a passage — the substantive content —
+        # with correct leaf types is well-formed, including the projected
+        # truncated modifier that accompanies a cut passage.
+        real = {
+            "evidence_class": "discovery_candidate",
+            "evidence": {
+                "shared_terms": ["x"],
+                "method": "local_tfidf_cosine",
+                "explanation": "lexical overlap",
+                "source_evidence": {
+                    "citation": "c",
+                    "heading": "h",
+                    "passage": "p",
+                    "truncated": True,
+                },
+            },
+        }
+        self.assertTrue(connection_evidence_is_well_formed(real))
 
     def test_cited_passage_citation_resolves_to_physical_lines(self) -> None:
         document = build_contract_document(self.database, self._full_spec())

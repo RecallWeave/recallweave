@@ -167,6 +167,10 @@ present exactly as `CONNECTION_EVIDENCE_APPLICABILITY` (see
 [Injectivity](#injectivity)) dictates: an `authored_link` carries no
 `source_evidence`, `target_evidence`, or `shared_terms`; a
 `discovery_candidate` always carries `shared_terms` and may carry either side.
+Each present side may carry `citation`, `heading`, `passage`, and `truncated`
+(the types per `EVIDENCE_SIDE_LEAF_TYPES`); only `citation`, `heading`, and
+`passage` are projected — `truncated` is a not-projected modifier, and a side
+lacking a `passage` is malformed.
 
 ### `constraints` and `prior_decisions`
 
@@ -399,19 +403,32 @@ single source of truth, referenced by the docs prose here and enforced by the
 well-formedness test:
 
 - `authored_link` (a verified wikilink): `source_evidence`, `target_evidence`,
-  and `shared_terms` are all **forbidden** — its evidence is the link text
-  only, never passage quotes or TF-IDF terms.
+  `shared_terms`, `method`, and `explanation` are all **forbidden** — its
+  evidence is the link text only, never passage quotes or TF-IDF terms.
 - `discovery_candidate` (unverified lexical overlap): `shared_terms` is
-  **required**; `source_evidence` and `target_evidence` are **optional** —
-  each side is present only when that note resolves a cited passage.
+  **required**; `source_evidence`, `target_evidence`, `method`, and
+  `explanation` are **optional** — each side is present only when that note
+  resolves a cited passage.
 
-`connection_evidence_is_well_formed` decides validity from that table alone,
+Well-formedness reaches **inside** an evidence side, not just the top-level
+members. A present side must be a non-empty dict whose leaves are all known
+(`citation`, `heading`, `passage`, `truncated`) with correct types (the
+`EVIDENCE_SIDE_LEAF_TYPES` table), and must carry `passage` — the substantive
+content. `truncated` is the one builder-reachable side leaf that is **not
+projected** by the renderer: it is a modifier on a passage, so a reader is not
+shown it, but a side carrying only `truncated` (or otherwise lacking a
+`passage`) is **partial** and is rejected as malformed rather than masquerading
+as an absent side.
+
+`connection_evidence_is_well_formed` decides validity from those tables alone,
 so a reader can determine whether a connection is well-formed without
 reverse-engineering `_edge_evidence`: a `discovery_candidate` missing its
-`shared_terms`, or an `authored_link` carrying a side or shared terms, is
-rejected. A missing key is otherwise unreachable through the public API — it
-occurs only in hand-crafted dicts — and the renderer treats a missing key and
-an explicit `None` identically for every projected field.
+`shared_terms`, an `authored_link` carrying a side or shared terms, a side that
+is a non-dict or lacks a `passage`, `shared_terms` that is `None` or a
+non-list, or any unknown evidence member is rejected. A missing key is
+otherwise unreachable through the public API — it occurs only in hand-crafted
+dicts — and the renderer treats a missing key and an explicit `None`
+identically for every projected field.
 
 Over well-formed documents the projection is injective **over the projected
 field set**, holding up to line-ending normalization: two well-formed documents
