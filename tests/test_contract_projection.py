@@ -757,27 +757,56 @@ def _has_key_at_path(container, path: tuple[str, ...]) -> bool:
     return True
 
 
-# Sentinels for the disclosed-not-projected detection. For each documented
-# not-projected field, `_populate_not_projected` injects a type-correct
-# distinctive value and the disclosure test asserts that the value's expected
-# serialization does NOT leak into the Markdown. No string sentinel is stuffed
-# into a non-string field: integers inject an int and are detected by their
-# str() serialization; the boolean `truncated` is detected by its rendered
-# label (its "true"/"false" serialization collides with projected fields).
-_LABEL_ONLY = object()
+# The documented not-projected fields are proven omitted by VALUE INVARIANCE:
+# for each, the same document is rendered twice with the field set to two
+# distinct values, and the rendered Markdown must be byte-identical. This
+# asserts the property — the renderer never reads or emits the field — rather
+# than today's formatting, so it cannot be evaded by re-serialization (a label
+# like 'Passage 1 was truncated:', a thousands-separated integer, a boolean as
+# true/false). No omitted field's detection depends on a specific label or
+# serialization.
 
-_NOT_PROJECTED_NEEDLES: dict[str, object] = {
-    "relative_path": "NPS_RELPATH",
-    "title": "NPS_TITLE",
-    "heading": "NPS_HEADING",
-    "line_start": "1234567",
-    "line_end": "7654321",
-    "truncated": _LABEL_ONLY,
-    "matched_terms": "NPS_MATCHTERM",
-    "status": "NPS_STATUS",
-    "domain": "NPS_DOMAIN",
-    "verified": "NPS_VERIFIED",
-}
+def _not_projected_leaf(field: str) -> str:
+    """Return the bare leaf key of a documented not-projected field name (e.g.
+    ``retrieved_context[].line_start`` -> ``line_start``), stripping a trailing
+    ``[]`` collection marker (``retrieved_context[].matched_terms[]`` ->
+    ``matched_terms``). Every documented-omitted field lives on a
+    retrieved-context item."""
+    assert field.startswith("retrieved_context[].")
+    leaf = field[len("retrieved_context[].") :]
+    if leaf.endswith("[]"):
+        leaf = leaf[:-2]
+    return leaf
+
+
+def _not_projected_path(field: str) -> tuple[str, ...]:
+    """Return the key path of a documented not-projected field in the document.
+    Every such field lives on a retrieved-context item, resolved to the first
+    item (the disclosure population uses a single item)."""
+    return ("retrieved_context", 0, _not_projected_leaf(field))
+
+
+def _set_at_path(container, path: tuple[str, ...], value) -> None:
+    """Set `container`'s key at `path` to `value` (mutates in place)."""
+    for step in path[:-1]:
+        container = container[step]
+    container[path[-1]] = value
+
+
+def _not_projected_pair(field: str):
+    """Return two distinct, type-correct values for a documented not-projected
+    field, used to prove the field cannot influence the rendered Markdown. The
+    values are type-appropriate (booleans differ as True/False, integers as two
+    distinct ints, collections as two distinct lists, strings as two distinct
+    strings), so the proof is not evadable by re-serialization."""
+    leaf = _not_projected_leaf(field)
+    if leaf in ("truncated", "verified"):
+        return True, False
+    if leaf in ("line_start", "line_end"):
+        return 1111, 2222
+    if leaf == "matched_terms":
+        return ["matched-A"], ["matched-B"]
+    return "value-A", "value-B"
 
 
 def _documented_not_projected_fields() -> list[str]:
@@ -817,36 +846,6 @@ def _documented_projected_fields() -> list[str]:
         if line.startswith("- `") and line.endswith("`"):
             fields.append(line[3:-1])
     return fields
-
-
-def _not_projected_needle(field: str):
-    """Return the leak needle for a documented not-projected field name: either
-    the string serialization to assert is absent from the rendered Markdown, or
-    `_LABEL_ONLY` for a boolean detected by its rendered label. Maps the
-    prefixed form (e.g. ``retrieved_context[].relative_path`` or
-    ``retrieved_context[].matched_terms[]``) to its bare segment for the
-    lookup, stripping a trailing ``[]`` collection marker."""
-    base = field.split("[].")[-1]
-    if base.endswith("[]"):
-        base = base[:-2]
-    return _NOT_PROJECTED_NEEDLES.get(base)
-
-
-def _populate_not_projected(doc: dict) -> None:
-    """Inject type-correct distinctive values into the canonical JSON slots of
-    `doc` (mutates in place) for every documented not-projected field, so a leak
-    into the Markdown is detectable by the field's expected serialization."""
-    rc = doc["retrieved_context"][0]
-    rc["relative_path"] = "NPS_RELPATH"
-    rc["title"] = "NPS_TITLE"
-    rc["heading"] = "NPS_HEADING"
-    rc["line_start"] = 1234567
-    rc["line_end"] = 7654321
-    rc["truncated"] = True
-    rc["matched_terms"] = ["NPS_MATCHTERM"]
-    rc["status"] = "NPS_STATUS"
-    rc["domain"] = "NPS_DOMAIN"
-    rc["verified"] = "NPS_VERIFIED"
 
 
 class InjectivityTest(unittest.TestCase):
@@ -1010,41 +1009,30 @@ class InjectivityTest(unittest.TestCase):
                     f"changing projected field {name} did not change the Markdown",
                 )
 
-    def test_no_documented_not_projected_field_is_rendered(self) -> None:
-        # The docs claim certain canonical fields are deliberately NOT projected
-        # (intentionally omitted from the Markdown). Render a document that
-        # populates every projected field AND every documented not-projected
-        # field with a distinctive type-correct value, then assert that none of
-        # those values' expected serializations leaks into the Markdown. If the
-        # renderer emits a field the docs say is omitted — a privacy/disclosure
-        # violation — the field's serialized value appears and this test fails.
-        # Detection is type-correct: integers are injected as ints and detected
-        # by their str() serialization; the boolean `truncated` (whose
-        # "true"/"false" serialization collides with projected fields) is
-        # detected by the rendered label the renderer would attach to a
-        # retrieved-context boolean. No string sentinel is stuffed into a
-        # non-string field.
-        doc = _populated_projected()
-        _populate_not_projected(doc)
-        rendered = render_contract_markdown(doc)
-        labels = [label for label, _ in _extract_field_blocks(rendered)]
+    def test_documented_not_projected_fields_cannot_influence_output(self) -> None:
+        # The claimed property is that the renderer never reads or emits the
+        # documented-omitted fields. Assert the property, not a formatting
+        # detail: for each omitted field, render the same document twice with
+        # that field set to two distinct values and require byte-identical
+        # output. This holds no matter how a renderer might format the field (a
+        # label like 'Passage 1 was truncated:', a thousands-separated integer,
+        # a boolean as true/false) and fails the instant the renderer starts
+        # reading it, so it cannot be evaded by a presentation change. No
+        # omitted field's detection depends on a specific label or
+        # serialization.
         for field in _documented_not_projected_fields():
-            needle = _not_projected_needle(field)
-            if needle is None:
-                continue
-            if needle is _LABEL_ONLY:
-                self.assertFalse(
-                    any(
-                        label.startswith("Passage ") and label.endswith("truncated")
-                        for label in labels
-                    ),
-                    f"documented not-projected field {field!r} is rendered",
-                )
-            else:
-                self.assertNotIn(
-                    needle,
-                    rendered,
-                    f"documented not-projected field {field!r} is rendered",
+            with self.subTest(field=field):
+                path = _not_projected_path(field)
+                value_a, value_b = _not_projected_pair(field)
+                doc_a = _populated_projected()
+                doc_b = _populated_projected()
+                _set_at_path(doc_a, path, value_a)
+                _set_at_path(doc_b, path, value_b)
+                self.assertEqual(
+                    render_contract_markdown(doc_a),
+                    render_contract_markdown(doc_b),
+                    f"documented not-projected field {field!r} must not "
+                    "influence the rendered Markdown",
                 )
 
     def test_documented_projected_set_matches_tested(self) -> None:
