@@ -95,41 +95,63 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your Low is fixed, and it was a good catch twice over: the bypass you described
-was the very failure mode the guard exists to prevent, reproduced inside the
-guard itself.
+**A different reviewer found what this gate did not.** The GitHub PR-review bot
+raised 19 findings on #1, including three P1s, and one of them was the most
+serious defect in the whole effort. This gate had returned a clean PASS on
+essentially this tree. That is worth stating plainly, because it means the
+local-tree review and the diff review see different things.
 
-- **Low — the source scan matched only double-quoted literals.** Confirmed.
-  `self.hostile_name = '![pixel](x)  [click](evil:payload).md'` slipped past it,
-  and the equality assertion did not close the gap either — it proved the
-  imported constant matched, which says nothing about what the fixture assigns.
+The P1 that matters most — **an exclusion breach**. A connection evidence side
+was authenticated as a real section SOMEWHERE in the index, never as a section
+belonging to that side's endpoint. Reproduced: with only `source_evidence`
+swapped for the real citation, heading and passage of a note EXCLUDED by path,
+the export succeeded and the excluded note's citation **and its passage text**
+reached both the JSON and the rendered Markdown, while `exclusions.enforced`
+still reported `true`. Every check passed because every check asked the wrong
+question. Lookups are now scoped to the endpoint, and the memo key includes it.
 
-  Both halves now use `ast` instead of text matching, because a regex over
-  source has to guess at quoting and the parser does not care how a string was
-  written:
+The other two P1s were also exclusion integrity, both failing SILENTLY while
+reporting the boundary held:
 
-  - no hostile-filename LITERAL anywhere in the module, matched as a filename
-    shape (a string ending in `.md` carrying Markdown link syntax), so ordinary
-    sentinel assertions like
-    `assert_sentinel_inert(self, markdown, "![pixel](x)")` stay untouched;
-  - every assignment to `self.hostile_name` must be the shared NAME, not a
-    literal and not an expression derived from it.
+- exclusion selectors were matched RAW but emitted SANITIZED, so
+  `Restricted/<ZWSP>Secret.md` failed to match `Restricted/Secret.md` while the
+  artifact displayed the exclusion as applied. Matching now sanitizes both
+  sides, and selectors that sanitization would change are rejected;
+- `json.loads` keeps the LAST duplicate key, so a spec visibly carrying a
+  restrictive exclusion could be overridden by a later `"exclusions"` key. The
+  spec is now decoded strictly.
 
-  Mutation-proven against your exact bypass and two more: the single-quoted
-  colon-bearing literal, the constant imported but mutated with `.replace(...)`
-  to reintroduce a colon, and the assignment removed altogether. All three fail
-  locally now, on macOS, rather than only on Windows.
+Sixteen further findings are fixed: in-vault destinations refused, duplicate and
+over-length shared terms rejected, self-referential edges rejected, persisted
+candidate strings required to be canonical (a normalization COLLISION let
+`shared<ZWSP>` authenticate as the genuine term `shared`), verification flags
+restricted to 0/1, ambiguous section headings refused, emitted vault metadata
+sanitized, the objective budgeted as emitted, excluded connection endpoints
+counted as dropped notes, exclusion names counted toward the disclosure profile,
+null item selectors reported through the structured error contract, directory
+destinations refused even under `--force`, and a false documented receipt shape
+corrected.
 
-Suite: **434 tests** with the parser, green under `-W error::ResourceWarning`;
-`compileall` clean. Runtime dependencies still empty. Since the cycle-30 PASS
-there is still **no `src/` change**: the delta is a `main` merge carrying only
-viewer dependency updates, one test fixture, and guard tests.
+Two are FILED rather than fixed (`recallweave-z1a`): the connection cap is
+applied before exclusions (under-inclusion, not a leak), and a text item
+silently discards note-only fields (rejecting is right but is a compatibility
+change). Both need an owner decision.
 
-This is the gate before the milestone merge.
+Every finding was reproduced before being acted on, and every fix is
+mutation-proven. Two tests had to be strengthened because they passed for the
+wrong reason — the self-edge case needed a FULLY authentic self-edge, since the
+endpoint binding rejected the naive version first.
+
+Suite: **454 tests** with the parser, green under `-W error::ResourceWarning`;
+`compileall` clean. Runtime dependencies still empty.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. Confirm the no-`src/`-change reading still holds.
-3. If anything at any severity remains, name it and say whether it blocks.
-4. Reassess every Critical and High from all thirty-two cycles and say which
-   remain closed.
+2. The endpoint-binding fix is the one to attack hardest. Is a side now bound to
+   its endpoint everywhere it is read, and can any other path reach an excluded
+   note's content — retrieved context, constraint resolution, provenance
+   citations?
+3. Given this gate missed the exclusion breach, say what you would need to see
+   differently to catch that class here rather than in diff review.
+4. Reassess every Critical and High across all cycles and say which remain
+   closed.
 <!-- CYCLE-CONTEXT-END -->
