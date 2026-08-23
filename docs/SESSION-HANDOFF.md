@@ -24,8 +24,9 @@ This is a durable capability, not a demo.
   empty (`mistletoe` remains test-only). For the current count and verdict read
   the newest files in `.codex-reviews/` rather than trusting a number written
   here — volatile status goes stale faster than this document is rewritten.
-- Adversarial review: cycles 14-28 run this session. The last four returned
-  PASS WITH FIXES; the fixes for each are landed.
+- Adversarial review: cycles 14-29 run this session. For the run of verdicts
+  read `.codex-reviews/review-*.md` in order; restating a count here only
+  creates something else to go stale.
 - Promotion still requires a **clean PASS** plus explicit human approval.
   Nothing has been promoted; no PR exists.
 
@@ -76,9 +77,10 @@ will repeat work already paid for.
 ## 4. Open blockers
 
 <!-- The line below is machine-checked against the committed Beads export by
-tests/test_docs_per_field_projection.py, so a stale blocker list fails the
-suite instead of sending the next session into work that is already done.
-Write `none`, or a comma-separated list of bead ids. -->
+tests/test_docs_per_field_projection.py. The declared set must EQUAL the set of
+open beads labelled `blocker` or `needs-human` -- the same definition the Git
+Cadence uses -- so both a stale entry and a MISSING one fail the suite. Write
+`none`, or a comma-separated list of bead ids. -->
 
 **Blocking beads:** none
 
@@ -96,10 +98,10 @@ Both P0 beads that blocked promotion at the previous handoff are closed:
   stripped source line) and comparing stored bytes.
 
 What remains between this branch and `main` is a **clean PASS verdict** and
-Josh's approval, not a known defect. The last three cycles each returned PASS
-WITH FIXES, and each round's fixes were landed; the findings have been
+Josh's approval, not a known defect. The recent findings have been
 documentation drift and false rejections on the heading route rather than
-integrity holes.
+integrity holes, and cycle 29 stated plainly that the code and
+evidence-integrity mechanisms are sound.
 
 ## 5. What was completed (cycles 14-28)
 

@@ -166,55 +166,124 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         self.assertIn("note_headings.source_text", text)
         self.assertIn("rather than rebuilding", text)
 
-    def test_session_handoff_does_not_name_closed_beads_as_blockers(self) -> None:
-        # The handoff instructs the next session to treat it as durable
-        # resumption state, so a stale blocker list sends that session into
-        # remediation work that is already done (cycle 28). Check it against the
-        # committed passive Beads export rather than against a hand-maintained
-        # copy of the same facts.
+    # A bead blocks promotion when it is OPEN and carries `blocker` or
+    # `needs-human`. That is the mechanical definition the Git Cadence in
+    # CLAUDE.md uses to decide whether the integration branch may be pushed, so
+    # it is the definition the handoff's declaration is checked against.
+    PROMOTION_BLOCKING_LABELS = frozenset({"blocker", "needs-human"})
+
+    @staticmethod
+    def _blocker_state(export_text: str) -> tuple[set[str], set[str], set[str]]:
+        """(all ids, closed ids, open promotion-blocking ids) from a Beads
+        export."""
         import json
 
-        handoff = _text("docs/SESSION-HANDOFF.md")
-        export = ROOT / ".beads" / "issues.jsonl"
-        if not export.is_file():
-            self.skipTest("no passive Beads export in this checkout")
-        closed = set()
-        for line in export.read_text(encoding="utf-8").splitlines():
+        known: set[str] = set()
+        closed: set[str] = set()
+        blocking: set[str] = set()
+        for line in export_text.splitlines():
             if not line.strip():
                 continue
             record = json.loads(line)
             if record.get("_type") != "issue":
                 continue
+            issue_id = str(record["id"])
+            known.add(issue_id)
             if str(record.get("status", "")).lower() in {"closed", "done"}:
-                closed.add(str(record["id"]))
+                closed.add(issue_id)
+                continue
+            labels = {str(label) for label in record.get("labels") or ()}
+            if labels & DocsPerFieldProjectionTest.PROMOTION_BLOCKING_LABELS:
+                blocking.add(issue_id)
+        return known, closed, blocking
+
+    @staticmethod
+    def _declared_blockers(handoff: str) -> set[str]:
         marker = "**Blocking beads:**"
-        self.assertIn(
-            marker,
-            handoff,
-            "the handoff must carry a machine-checkable blocker line",
-        )
+        assert marker in handoff, "the handoff must carry a blocker line"
         line = handoff[handoff.index(marker) + len(marker) :].split("\n", 1)[0]
-        declared = {
+        return {
             token.strip()
             for token in line.split(",")
             if token.strip() and token.strip().lower() != "none"
         }
-        stale = declared & closed
-        self.assertEqual(
-            stale,
-            set(),
-            f"the handoff declares closed beads as blockers: {sorted(stale)}",
+
+    def test_session_handoff_blocker_line_matches_the_beads_export(self) -> None:
+        # The handoff instructs the next session to treat it as durable
+        # resumption state, so a stale blocker list sends that session into work
+        # that is already done -- or, worse, past work that is not.
+        #
+        # The declared set must equal the OPEN PROMOTION-BLOCKING set exactly.
+        # An earlier version only rejected declared beads that were closed or
+        # unknown, so it would have accepted `none` after a real blocker was
+        # filed (cycle 29) -- it checked what the handoff says, not what is
+        # true, which is the wrong direction for a freshness check.
+        export = ROOT / ".beads" / "issues.jsonl"
+        if not export.is_file():
+            self.skipTest("no passive Beads export in this checkout")
+        known, closed, blocking = self._blocker_state(
+            export.read_text(encoding="utf-8")
         )
-        known = {
-            str(json.loads(entry)["id"])
-            for entry in export.read_text(encoding="utf-8").splitlines()
-            if entry.strip() and json.loads(entry).get("_type") == "issue"
-        }
-        unknown = declared - known
+        declared = self._declared_blockers(_text("docs/SESSION-HANDOFF.md"))
         self.assertEqual(
-            unknown,
+            declared & closed,
             set(),
-            f"the handoff declares beads that do not exist: {sorted(unknown)}",
+            f"the handoff declares closed beads as blockers: "
+            f"{sorted(declared & closed)}",
+        )
+        self.assertEqual(
+            declared - known,
+            set(),
+            f"the handoff declares beads that do not exist: "
+            f"{sorted(declared - known)}",
+        )
+        self.assertEqual(
+            declared,
+            blocking,
+            "the handoff's blocking-bead declaration must equal the set of "
+            "open beads labelled "
+            f"{sorted(self.PROMOTION_BLOCKING_LABELS)}",
+        )
+
+    def test_handoff_blocker_check_catches_an_undeclared_blocker(self) -> None:
+        # Prove the check fails in the direction that matters: a real blocker
+        # exists and the handoff still says `none`. Driven through the same
+        # helpers the real check uses, against a synthetic export, so the
+        # assertion is about the MECHANISM rather than about today's data.
+        import json
+
+        synthetic = "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "_type": "issue",
+                    "id": "recallweave-zzz",
+                    "status": "open",
+                    "labels": ["blocker"],
+                },
+                {
+                    "_type": "issue",
+                    "id": "recallweave-yyy",
+                    "status": "open",
+                    "labels": ["contract"],
+                },
+            )
+        )
+        known, closed, blocking = self._blocker_state(synthetic)
+        self.assertEqual(blocking, {"recallweave-zzz"})
+        self.assertEqual(closed, set())
+        self.assertIn("recallweave-yyy", known)
+        # A handoff claiming `none` against that export must not match.
+        declared = self._declared_blockers("**Blocking beads:** none\n")
+        self.assertNotEqual(
+            declared,
+            blocking,
+            "an undeclared open blocker must make the declaration unequal",
+        )
+        # And one that names it must.
+        self.assertEqual(
+            self._declared_blockers("**Blocking beads:** recallweave-zzz\n"),
+            blocking,
         )
 
     def test_changelog_documents_per_field_projection(self) -> None:

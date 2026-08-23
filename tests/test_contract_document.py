@@ -950,6 +950,62 @@ class ContractDocumentTest(unittest.TestCase):
             "the long supporting passage WAS shortened and must say so",
         )
 
+    def test_documented_selector_shapes_match_actual_builder_output(self) -> None:
+        # The evidence-class documentation has now been wrong in three separate
+        # places across three cycles, and each time a phrase-presence test would
+        # have kept passing. Anchor it to BEHAVIOUR instead: drive both
+        # documented `note`-selector shapes through the public builder and check
+        # the class and the support fields the docs promise for each.
+        #
+        # A docs test that only greps for wording proves the sentence exists,
+        # not that it is true.
+        _vault, database = self._gloss_vault()
+        documented = {
+            # note selector WITH an operator gloss -> operator-authored, with
+            # the citation and passage carried beside it as support.
+            "with gloss": (
+                {
+                    "note": "Notes.md",
+                    "heading": "Background",
+                    "statement": "This architecture decision was approved.",
+                },
+                "authored_by_operator",
+                True,
+            ),
+            # note selector WITHOUT a gloss -> the statement IS the passage.
+            "without gloss": (
+                {"note": "Notes.md", "heading": "Background"},
+                "cited_passage",
+                False,
+            ),
+        }
+        for label, (selector, expected_class, gloss) in documented.items():
+            with self.subTest(shape=label):
+                spec = self._gloss_spec(
+                    constraints=[selector], prior_decisions=[selector]
+                )
+                document = build_contract_document(database, spec)
+                for collection in ("constraints", "prior_decisions"):
+                    item = document[collection][0]
+                    self.assertEqual(item["evidence_class"], expected_class)
+                    # Support travels with the selector in BOTH shapes.
+                    self.assertIsNotNone(item["citation"])
+                    self.assertIsNotNone(item["relative_path"])
+                    self.assertIsNotNone(item["passage"])
+                    if gloss:
+                        self.assertNotEqual(item["statement"], item["passage"])
+                    else:
+                        self.assertEqual(item["statement"], item["passage"])
+        # And the third documented shape: a `text` item has no support at all.
+        spec = self._gloss_spec(
+            constraints=[{"text": "Operator assertion."}], prior_decisions=[]
+        )
+        item = build_contract_document(database, spec)["constraints"][0]
+        self.assertEqual(item["evidence_class"], "authored_by_operator")
+        self.assertIsNone(item["citation"])
+        self.assertIsNone(item["relative_path"])
+        self.assertIsNone(item["passage"])
+
     def test_markdown_exposes_the_cited_passage_separately_from_the_statement(self) -> None:
         # FAIL-FIRST (recallweave-nv0). The human projection omitted
         # constraints[].passage entirely, so a reader saw the operator's
