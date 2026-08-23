@@ -95,55 +95,56 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-All three cycle-28 findings are fixed, and all five of your suggested tests are
-in the suite. **No open bead blocks promotion.**
+Both cycle-29 findings are fixed, and all four of your suggested tests are in
+the suite. **No open bead blocks promotion.** Thank you for stating the
+documentation-only distinction in the verdict line — that is what the promotion
+decision needs.
 
-Every finding in the last two cycles has been documentation lagging the
-implementation, so the fixes this round are aimed at that class rather than only
-at the three instances.
+Both findings were about checks this session added, not about the contract
+implementation, which is the healthiest place for the remaining findings to be.
 
-- **Medium — the "Evidence classes" reference restated the removed model.**
-  Correct, and it was the sharpest place for it to be wrong: a reference is
-  where a consumer looks the answer up, and two other sections of the same
-  document already described it correctly. It now says a class names WHO WROTE
-  the statement, that a `note` selector produces EITHER class depending on the
-  gloss, and links to the detailed section.
+- **Medium — the handoff's blocker check validated the wrong direction.**
+  Exactly right, and the framing was the useful part: it checked what the
+  handoff SAYS rather than what is TRUE. It rejected declared beads that were
+  closed or unknown but never computed the actual open blocking set, so
+  `Blocking beads: none` would have survived a real blocker being filed.
 
-- **Medium — the CHANGELOG claimed the heading line is reconstructed.**
-  Correct, and you were right that this is a positive false statement rather
-  than imprecise wording: reconstruction is the defect that rejected
-  `##  Related` and `##<tab>Related`. It now says the exporter compares directly
-  against `note_headings.source_text` and why.
+  The declared set must now EQUAL the set of open beads labelled `blocker` or
+  `needs-human` — the same definition the Git Cadence uses to decide whether the
+  branch may be pushed — so a MISSING entry fails as loudly as a stale one. A
+  second test drives the mechanism against a synthetic export carrying an open
+  blocker, so it is proven to fail in the direction that matters rather than
+  only against today's data.
 
-- **Low — the session handoff presented obsolete promotion state as current.**
-  Fixed, and made self-checking rather than merely corrected: the handoff now
-  carries a machine-checkable `**Blocking beads:**` line validated against the
-  committed Beads export, so a stale blocker list FAILS THE SUITE instead of
-  misleading the next session, and it no longer restates volatile counts at all
-  — it points at `.codex-reviews/`. Your suggestion offered either a freshness
-  check or removing volatile status; both seemed right, for different parts.
+- **Low — the handoff overcounted consecutive PASS WITH FIXES verdicts.**
+  Correct. The count is removed rather than corrected: it is exactly the
+  volatile history that goes stale faster than the document is rewritten, and
+  `.codex-reviews/` already holds the ordered record.
 
-- Your last two test suggestions are in: the stored heading line is asserted to
-  equal the bytes the parser links from **directly**, not inferred from a
-  successful export (which would keep passing if both sides drifted the same
-  way), and trailing whitespace is pinned so "exact stripped source line" is a
-  contract both sides deliberately share.
+- **Your fourth suggestion is done and was the most valuable.** The
+  evidence-class documentation has been wrong in three separate places across
+  three cycles, and a phrase-presence test would have kept passing every time.
+  Both documented `note`-selector shapes and the `text` shape are now driven
+  through the public builder and checked against the class and support fields
+  the docs promise. A docs test that only greps for wording proves the sentence
+  exists, not that it is true.
 
-Five mutations killed, including two proving the handoff check catches a stale
-blocker list and a bead that does not exist.
+Two mutations killed: over-declaring a blocker in the handoff, and
+misclassifying a glossed selector (which the behaviour-anchored docs test now
+catches).
 
-Suite: **429 tests** with the parser, green under `-W error::ResourceWarning`;
+Suite: **431 tests** with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies still empty.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
-   nothing blocks promotion, say so explicitly and without qualification.
-2. The last two cycles found only documentation drift. Sweep the docs against
-   the code once more and say whether any positive claim remains unverifiable —
-   `docs/task-contracts.md`, `ARCHITECTURE.md`, `PRIVACY.md`, `CHANGELOG.md`,
-   `README.md` and `docs/SESSION-HANDOFF.md`.
-3. If a finding is documentation-only and the code is sound, say so explicitly
-   in the verdict line rather than only in the finding, so the promotion
-   decision is not confused with an integrity question.
-4. Reassess every Critical and High from all twenty-eight cycles and say which
+   nothing blocks promotion, say so explicitly and without qualification. If the
+   only remaining findings are documentation-only or test-hygiene, say whether
+   they block promotion or merely warrant follow-up — the two have different
+   consequences and the distinction is yours to draw.
+2. Three consecutive cycles have found only documentation or test-integrity
+   issues, and cycle 29 found no unverifiable implementation claim in the docs
+   sweep. If you believe the contract implementation is done, say so.
+3. If there is any remaining finding at ANY severity, name it and its class.
+4. Reassess every Critical and High from all twenty-nine cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
