@@ -95,47 +95,40 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both findings are fixed, and the High was the same class I had already fixed
-once — for half of it.
+Your Medium is fixed, and your second suggested test was the one that mattered.
 
-- **High — tag exclusions bypassed sanitization.** Correct, and the source path
-  you traced was exact: raw frontmatter tag → raw `note_tags.tag` → unsanitized
-  comparison. Tags were normalized by a separate code path that never called
-  `sanitize()`, so a note tagged `private<ZWSP>` slipped a clean `private`
-  exclusion while the selector was accepted, emitted as `private`, and the
-  artifact reported `enforced: true`. Paths, globs and tags now share one
-  sanitizing normalizer.
+- **Medium — index provenance bypassed the sanitizer.** Correct; the source
+  path you traced was exact. `schema_version` and `indexed_at` are now
+  sanitized. Not a leak, as you said, but an invariant with an exception is not
+  one.
 
-  Your suggested table-driven test is exactly the right shape and is why I took
-  it: **one invariant** — a clean selector matches a vault-side value that
-  sanitization would change — applied to path, glob and tag, with both a
-  zero-width space and a bidi override. A per-class test would have missed the
-  tag omission the same way the fix did, so a new selector class now has to be
-  added to the table to be covered at all.
+- **The structural fix.** Your recursive assertion is now the test.
+  Sanitization has been missed five separate times in this effort — paths but
+  not tags, sides but not endpoints, retrieved metadata but not index
+  provenance — each time because a fix covered the values a particular function
+  touched rather than the CLASS the rule is about. The invariant is now
+  quantified over the DOCUMENT: a maximally hostile contract (bidi, zero-width
+  and C0 controls in filename, title, frontmatter tag, heading, body, wikilink,
+  operator statements, and the index's own `meta` row), then a walk over every
+  emitted string requiring `sanitize(value) == value`. A new emitted field is
+  covered the moment it exists.
 
-- **Medium — connection endpoints bypassed the metadata sanitizer.** Fixed.
+  Proven against **five independent members** of the class: index provenance,
+  connection endpoints, retrieved headings, constraint `relative_path`, and the
+  objective. Removing sanitization from any one fails this single test.
 
-  Fixing it surfaced something neither of us named, and it is the more
-  interesting half: `_edge_evidence` sanitizes the emitted citation, so a note
-  whose FILENAME carries an invisible character has a citation that no longer
-  equals its raw `relative_path` — and attribution compared them raw. A genuine
-  vault with such a filename could not export at all. The citation path is now
-  compared sanitized on both sides.
+  It also asserts it REACHED those places. The first version silently missed
+  `relative_path` because the fixture's constraints were all text items, so the
+  field was null and the invariant was never asked — a walk that visits nothing
+  passes.
 
-Two mutations killed. Suite: **456 tests** with the parser, green under
-`-W error::ResourceWarning`; `compileall` clean.
-
-On your question about what this gate would need to catch the exclusion breach:
-the pattern in the last three rounds is that a rule gets applied to the values a
-function happens to touch rather than to a CLASS of values. Paths but not tags;
-sides but not their endpoints; emitted but not authenticated. A useful lens here
-would be to ask, for any normalization or authentication rule, **which set is it
-quantified over, and what else is in that set** — rather than checking the call
-sites the diff shows.
+Suite: **457 tests** with the parser, green under `-W error::ResourceWarning`;
+`compileall` clean. Runtime dependencies still empty.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. Apply that lens once here: for each of `sanitize`, endpoint binding, and the
-   canonical-form requirement, is there a member of its class still uncovered?
+2. Two other rules were quantified over classes in the same way — endpoint
+   binding and the canonical-form requirement for authenticated fields. Is
+   either still missing a member?
 3. Reassess every Critical and High across all cycles and say which remain
    closed.
 <!-- CYCLE-CONTEXT-END -->
