@@ -1322,22 +1322,59 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
             "the AST end-to-end test must use the shared fixture, not copy "
             "it -- a copy is exactly how this defect reached Windows",
         )
-        # And no hostile-filename LITERAL may reappear there. Scanned as a
-        # filename shape -- a quoted string ending in `.md` that carries
-        # Markdown link syntax -- so ordinary sentinel assertions like
-        # `assert_sentinel_inert(self, markdown, "![pixel](x)")`, which are not
-        # filenames, are not caught by it.
-        import re
+        # And the fixture must be USED there, not merely imported. Inspected
+        # with `ast` rather than by scanning text: a regex over the source has
+        # to guess at quoting, and a single-quoted literal slipped past an
+        # earlier double-quote-only pattern -- passing locally and failing only
+        # on Windows, which is precisely the failure mode this guard exists to
+        # prevent. The parser does not care how a string was quoted.
+        import ast as ast_lib
 
-        source = Path(ast_module.__file__).read_text(encoding="utf-8")
-        literals = re.findall(r'"([^"\n]*\.md)"', source)
-        hostile = [name for name in literals if "](" in name]
+        tree = ast_lib.parse(
+            Path(ast_module.__file__).read_text(encoding="utf-8")
+        )
+
+        # (a) No hostile-filename LITERAL anywhere in the module. Matched as a
+        # filename shape -- a string ending in `.md` carrying Markdown link
+        # syntax -- so ordinary sentinel assertions such as
+        # `assert_sentinel_inert(self, markdown, "![pixel](x)")` are untouched.
+        hostile_literals = [
+            node.value
+            for node in ast_lib.walk(tree)
+            if isinstance(node, ast_lib.Constant)
+            and isinstance(node.value, str)
+            and node.value.endswith(".md")
+            and "](" in node.value
+        ]
         self.assertEqual(
-            hostile,
+            hostile_literals,
             [],
             "the AST test carries a hostile-filename literal; it must use "
             "HOSTILE_VAULT_FILENAME so this guard covers it",
         )
+
+        # (b) Every assignment to `self.hostile_name` must be the shared NAME.
+        # Equality of the module constant only proves the import survived; it
+        # says nothing about what the fixture actually assigns.
+        assignments = [
+            node.value
+            for node in ast_lib.walk(tree)
+            if isinstance(node, ast_lib.Assign)
+            for target in node.targets
+            if isinstance(target, ast_lib.Attribute)
+            and target.attr == "hostile_name"
+        ]
+        self.assertTrue(
+            assignments, "the AST test no longer assigns self.hostile_name"
+        )
+        for value in assignments:
+            self.assertIsInstance(
+                value,
+                ast_lib.Name,
+                "self.hostile_name must be assigned the shared constant, not a "
+                "literal or expression",
+            )
+            self.assertEqual(value.id, "HOSTILE_VAULT_FILENAME")
 
     def test_hostile_filename_still_carries_live_markdown_syntax(self) -> None:
         # The other half: legal everywhere is worthless if the fixture stopped
