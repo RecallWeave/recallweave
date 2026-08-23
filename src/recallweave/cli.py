@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__
+from .contract_export import export_contract
+from .contract_spec import TaskSpec
 from .index import SCHEMA_VERSION, build_index, default_database_for_vault
 from .policy import IndexPolicy
 from .query import connections, context_packet, doctor, path_between, resurface, stats
@@ -152,6 +154,25 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace an existing viewer JSON file.",
     )
+
+    export_contract_parser = subparsers.add_parser(
+        "contract",
+        help="Export a cited task-contract work packet from a task spec and the index.",
+    )
+    export_contract_parser.add_argument("spec", type=_path)
+    _add_database_locator(export_contract_parser)
+    export_contract_parser.add_argument("--output", type=_path)
+    export_contract_parser.add_argument(
+        "--format",
+        choices=["json", "markdown"],
+        default="json",
+        help="Artifact format. Defaults to json.",
+    )
+    export_contract_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing contract artifact.",
+    )
     return parser
 
 
@@ -243,6 +264,17 @@ def main(argv: list[str] | None = None) -> int:
                 include_excerpts=args.include_excerpts,
                 title=args.title,
                 force=args.force,
+            ),
+            "contract": lambda: export_contract(
+                database,
+                TaskSpec.from_file(args.spec),
+                args.output,
+                output_format=args.format,
+                force=args.force,
+                # The same vault this command resolves its index against, so an
+                # in-vault destination is refused rather than silently making
+                # `vault_writes: 0` false.
+                vault=args.vault or Path.cwd(),
             ),
         }
         action = commands[args.command]

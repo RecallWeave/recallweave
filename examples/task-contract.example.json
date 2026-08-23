@@ -1,0 +1,49 @@
+{
+  "spec_version": "recallweave.contract.spec.v1",
+  "task_id": "growth-atlas-refresh",
+  "objective": "Refresh the growth operating system: name the current binding constraint and confirm the weekly review cadence that gates reversible experiments.",
+  "retrieval": {
+    "query": "binding constraint reversible experiment weekly review decision owner",
+    "limit": 6,
+    "include_candidates": false,
+    "max_characters": 6000
+  },
+  "constraints": [
+    {
+      "text": "Prefer reversible experiments with a named decision owner before adding activity."
+    },
+    {
+      "note": "Projects/Growth Atlas.md",
+      "heading": "Working method",
+      "statement": "Find the binding constraint before adding activity."
+    }
+  ],
+  "prior_decisions": [
+    {
+      "note": "Operations/Review Cadence.md",
+      "heading": "Weekly review",
+      "statement": "The weekly review compares the active constraint with new evidence."
+    },
+    {
+      "note": "Projects/Growth Atlas.md",
+      "heading": "Working method"
+    }
+  ],
+  "acceptance_criteria": [
+    "The current binding constraint is named from Growth Atlas.",
+    "The weekly review cadence and its steps are stated from Review Cadence.",
+    "The reversible-experiment rule recorded in Growth Atlas is reproduced with citations."
+  ],
+  "exclusions": {
+    "paths": [],
+    "globs": [
+      "Restricted/**"
+    ],
+    "tags": [
+      "private"
+    ],
+    "directives": [
+      "Do not infer client identity."
+    ]
+  }
+}

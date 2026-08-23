@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import unquote
 
-from .model import LinkEvidence, Note, Section
+from .model import HeadingRef, LinkEvidence, Note, Section
 
 WIKILINK_RE = re.compile(r"(?<!!)\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
@@ -316,6 +316,29 @@ def _heading_positions(lines: list[str], body_start: int) -> list[tuple[int, str
     return headings
 
 
+def _heading_refs(lines: list[str], body_start: int) -> list[HeadingRef]:
+    """Every heading line in the body, with its physical line and `#` level.
+
+    Independent of _sections(), which drops a heading with no body beneath it.
+    Links are extracted from every heading line, so a bodyless heading can still
+    produce an authored edge, and that edge needs its coordinate on record.
+    Fenced headings are excluded here for the same reason they are excluded from
+    sections: _heading_positions() skips anything inside a code fence."""
+    refs: list[HeadingRef] = []
+    for index, text in _heading_positions(lines, body_start):
+        match = HEADING_RE.match(lines[index])
+        if match:
+            refs.append(
+                HeadingRef(
+                    line=index + 1,
+                    level=len(match.group(1)),
+                    text=text,
+                    source_text=lines[index].strip(),
+                )
+            )
+    return refs
+
+
 def _sections(lines: list[str], body_start: int) -> list[Section]:
     headings = _heading_positions(lines, body_start)
     starts: list[tuple[int, str]] = []
@@ -457,6 +480,7 @@ def parse_note(path: Path, vault: Path) -> Note:
         modified_at=modified,
         content_hash=hashlib.sha256(content).hexdigest(),
         sections=_sections(lines, body_start),
+        headings=_heading_refs(lines, body_start),
         links=[*_links(lines, body_start), *_frontmatter_tag_links(lines, body_start, tags)],
         frontmatter=frontmatter,
         frontmatter_valid=frontmatter_valid,

@@ -1,0 +1,296 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _text(rel: str) -> str:
+    return (ROOT / rel).read_text(encoding="utf-8")
+
+
+def _norm(text: str) -> str:
+    return " ".join(text.split())
+
+
+class DocsPerFieldProjectionTest(unittest.TestCase):
+    def test_documents_one_fenced_block_per_field(self) -> None:
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("one fenced block per field", text)
+        self.assertIn("per field", text)
+
+    def test_documents_absence_distinguishable_from_emptiness(self) -> None:
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("absence", text)
+        self.assertIn("emptiness", text)
+        self.assertIn("None recorded", text)
+
+    def test_documents_evidence_boundary_rationale(self) -> None:
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("evidence boundary", text)
+        self.assertIn("first-order defect", text)
+        self.assertIn("operator asserted", text)
+
+    def test_documents_injectivity_property(self) -> None:
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("injectivity", text)
+        self.assertIn("render identically", text)
+        self.assertIn("contract", text)
+
+    def test_does_not_document_merged_block_shape(self) -> None:
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertNotIn("one fenced block carrying the statement and, on its own line, the citation", text)
+
+    def test_docs_do_not_claim_whole_index_validation(self) -> None:
+        # The fail-closed gate validates every connection the export RETURNS,
+        # not every eligible edge in the index: the loop stops at the budget and
+        # later edges are never examined. Documentation must not claim the
+        # stronger property. Cycle 17 caught the CHANGELOG doing exactly that.
+        for relative in ("CHANGELOG.md", "docs/task-contracts.md"):
+            with self.subTest(document=relative):
+                text = _norm(_text(relative))
+                self.assertNotIn("on every connection before the budget", text)
+                self.assertNotIn("validates every connection before the budget", text)
+        contract_docs = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("not a whole-index scan", contract_docs)
+        self.assertIn("never examined", contract_docs)
+
+    def test_docs_scope_attribution_to_the_indexed_snapshot(self) -> None:
+        # The exporter reads the INDEX, never the vault, so evidence is
+        # attributed to the snapshot the index recorded, not to the vault's
+        # current bytes. Documentation must not claim export-time verification
+        # against physical vault lines, which would be a promise the code does
+        # not keep (cycle 18).
+        for relative in ("ARCHITECTURE.md", "docs/task-contracts.md"):
+            with self.subTest(document=relative):
+                text = _norm(_text(relative))
+                self.assertNotIn("resolves to physical vault lines", text)
+                self.assertIn("indexed snapshot", text)
+        contract_docs = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("reads the index, never the vault", contract_docs)
+        # And the stronger property the code DOES keep: content, not just
+        # coordinates, is compared.
+        self.assertIn("Checking the coordinates alone is", contract_docs)
+
+    def test_docs_do_not_claim_the_candidate_score_is_authenticated(self) -> None:
+        # The exporter checks that a candidate's score is finite and in range;
+        # it does not recompute the cosine. Documentation must describe the
+        # value as persisted and range-checked, and must say so where the
+        # `connections` contract is first described, not only in a later
+        # section a reader may never reach (cycle 22).
+        # Assertions use substrings that survive Markdown emphasis, since the
+        # docs bold the negation.
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("range-checked", text)
+        self.assertIn("recomputed at export time", text)
+        self.assertIn("a score the index claims rather than one the artifact", text)
+        self.assertNotIn("and a cosine score in", text)
+
+    def test_docs_describe_authored_link_rederivation_as_a_binding(self) -> None:
+        # Re-derivation means the BINDING among line, link syntax, declared kind
+        # and resolved target -- not the parts checked independently, which is
+        # what an earlier version did while the docs already claimed the
+        # stronger property.
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertIn("Re-derivation means the binding, not the parts", text)
+        self.assertIn("indexer's own link extractor", text)
+        self.assertIn("uniqueness included", text)
+        # The parser-state property, which an isolated-line re-derivation lost.
+        self.assertIn("fenced-code state across lines", text)
+        self.assertIn("never one isolated line", text)
+
+    def test_docs_no_longer_disclose_a_heading_binding_gap(self) -> None:
+        # recallweave-kob closed the gap: the index now records each heading's
+        # own line and level, so a heading link is bound like a body link. The
+        # disclosure paragraph must be GONE -- leaving it would understate the
+        # guarantee, which is its own kind of untrue documentation -- and the
+        # docs must describe the coordinate binding instead.
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertNotIn("only partly bound, and this is a known gap", text)
+        self.assertIn("A link on a heading line is fully bound too", text)
+        self.assertIn("takes the whole heading line **from indexed data**", text)
+        # No current heading-binding claim may name the removed storage route.
+        self.assertNotIn("bound to `sections.heading`", text)
+        self.assertIn("note_headings.source_text", text)
+        # The CHANGELOG carried BOTH the old disclosure and the new guarantee
+        # in one entry for a moment (cycle 26). A changelog that contradicts
+        # itself about an evidence-integrity property is worse than one that
+        # says nothing, so assert the obsolete half is gone.
+        changelog = _norm(_text("CHANGELOG.md"))
+        self.assertNotIn("the coordinate and heading level are not", changelog)
+        self.assertNotIn("which the docs disclose", changelog)
+        self.assertIn("A link on a heading line is bound the same way", changelog)
+
+    def test_spec_item_docs_classify_a_glossed_selector_as_operator_authored(self) -> None:
+        # The spec-input section described every note selector as producing
+        # `cited_passage`, contradicting the authorship model the rest of the
+        # document (and the code) follows. A reader who only reads the input
+        # spec would come away with the classification that recallweave-nv0
+        # removed (cycle 27).
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertNotIn(
+            'a cited passage with evidence class `cited_passage`. `heading` is '
+            "optional",
+            text,
+        )
+        self.assertIn(
+            "evidence class depends on whether that gloss is present", text
+        )
+        self.assertIn("the class stays `authored_by_operator`", text)
+
+    def test_evidence_class_reference_covers_both_note_selector_shapes(self) -> None:
+        # The dedicated "Evidence classes" reference is where a consumer looks
+        # up what a class means, and it still said `cited_passage` applies to
+        # `note` items -- the exact evidence-integrity error recallweave-nv0
+        # removed, restated as a reference claim while two other sections of the
+        # same document described it correctly (cycle 28). A reference that
+        # contradicts the body is worse than a missing one.
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertNotIn(
+            "`cited_passage` — the operator cited a vault passage (`note` items)",
+            text,
+        )
+        self.assertIn("A class names **who wrote the statement**", text)
+        self.assertIn("a `note` item carrying a `statement` gloss", text)
+        self.assertIn("a `note` item with no `statement` gloss", text)
+        self.assertIn("a `note` selector produces either class", text)
+
+    def test_changelog_does_not_claim_the_heading_line_is_reconstructed(self) -> None:
+        # Reconstruction was the DEFECT that rejected `##  Related` and
+        # `##<tab>Related`. A changelog claiming the obsolete algorithm is still
+        # in use is a positive false statement about an evidence-integrity
+        # property, not merely imprecise wording (cycle 28).
+        text = _norm(_text("CHANGELOG.md"))
+        self.assertNotIn("reconstructs the heading line", text)
+        self.assertIn("note_headings.source_text", text)
+        self.assertIn("rather than rebuilding", text)
+
+    # A bead blocks promotion when it is OPEN and carries `blocker` or
+    # `needs-human`. That is the mechanical definition the Git Cadence in
+    # CLAUDE.md uses to decide whether the integration branch may be pushed, so
+    # it is the definition the handoff's declaration is checked against.
+    PROMOTION_BLOCKING_LABELS = frozenset({"blocker", "needs-human"})
+
+    @staticmethod
+    def _blocker_state(export_text: str) -> tuple[set[str], set[str], set[str]]:
+        """(all ids, closed ids, open promotion-blocking ids) from a Beads
+        export."""
+        import json
+
+        known: set[str] = set()
+        closed: set[str] = set()
+        blocking: set[str] = set()
+        for line in export_text.splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("_type") != "issue":
+                continue
+            issue_id = str(record["id"])
+            known.add(issue_id)
+            if str(record.get("status", "")).lower() in {"closed", "done"}:
+                closed.add(issue_id)
+                continue
+            labels = {str(label) for label in record.get("labels") or ()}
+            if labels & DocsPerFieldProjectionTest.PROMOTION_BLOCKING_LABELS:
+                blocking.add(issue_id)
+        return known, closed, blocking
+
+    @staticmethod
+    def _declared_blockers(handoff: str) -> set[str]:
+        marker = "**Blocking beads:**"
+        assert marker in handoff, "the handoff must carry a blocker line"
+        line = handoff[handoff.index(marker) + len(marker) :].split("\n", 1)[0]
+        return {
+            token.strip()
+            for token in line.split(",")
+            if token.strip() and token.strip().lower() != "none"
+        }
+
+    def test_session_handoff_blocker_line_matches_the_beads_export(self) -> None:
+        # The handoff instructs the next session to treat it as durable
+        # resumption state, so a stale blocker list sends that session into work
+        # that is already done -- or, worse, past work that is not.
+        #
+        # The declared set must equal the OPEN PROMOTION-BLOCKING set exactly.
+        # An earlier version only rejected declared beads that were closed or
+        # unknown, so it would have accepted `none` after a real blocker was
+        # filed (cycle 29) -- it checked what the handoff says, not what is
+        # true, which is the wrong direction for a freshness check.
+        export = ROOT / ".beads" / "issues.jsonl"
+        if not export.is_file():
+            self.skipTest("no passive Beads export in this checkout")
+        known, closed, blocking = self._blocker_state(
+            export.read_text(encoding="utf-8")
+        )
+        declared = self._declared_blockers(_text("docs/SESSION-HANDOFF.md"))
+        self.assertEqual(
+            declared & closed,
+            set(),
+            f"the handoff declares closed beads as blockers: "
+            f"{sorted(declared & closed)}",
+        )
+        self.assertEqual(
+            declared - known,
+            set(),
+            f"the handoff declares beads that do not exist: "
+            f"{sorted(declared - known)}",
+        )
+        self.assertEqual(
+            declared,
+            blocking,
+            "the handoff's blocking-bead declaration must equal the set of "
+            "open beads labelled "
+            f"{sorted(self.PROMOTION_BLOCKING_LABELS)}",
+        )
+
+    def test_handoff_blocker_check_catches_an_undeclared_blocker(self) -> None:
+        # Prove the check fails in the direction that matters: a real blocker
+        # exists and the handoff still says `none`. Driven through the same
+        # helpers the real check uses, against a synthetic export, so the
+        # assertion is about the MECHANISM rather than about today's data.
+        import json
+
+        synthetic = "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "_type": "issue",
+                    "id": "recallweave-zzz",
+                    "status": "open",
+                    "labels": ["blocker"],
+                },
+                {
+                    "_type": "issue",
+                    "id": "recallweave-yyy",
+                    "status": "open",
+                    "labels": ["contract"],
+                },
+            )
+        )
+        known, closed, blocking = self._blocker_state(synthetic)
+        self.assertEqual(blocking, {"recallweave-zzz"})
+        self.assertEqual(closed, set())
+        self.assertIn("recallweave-yyy", known)
+        # A handoff claiming `none` against that export must not match.
+        declared = self._declared_blockers("**Blocking beads:** none\n")
+        self.assertNotEqual(
+            declared,
+            blocking,
+            "an undeclared open blocker must make the declaration unequal",
+        )
+        # And one that names it must.
+        self.assertEqual(
+            self._declared_blockers("**Blocking beads:** recallweave-zzz\n"),
+            blocking,
+        )
+
+    def test_changelog_documents_per_field_projection(self) -> None:
+        text = _norm(_text("CHANGELOG.md"))
+        self.assertIn("per field", text)
+        self.assertIn("evidence boundary", text)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -83,3 +83,40 @@ bounded and applies to every supported list item; a parser recursion failure
 skips only the affected note. These notes are counted as
 `unparseable_frontmatter` in the index receipt. Exact `include_paths` allowlists
 remain the strongest boundary for an agent-facing index.
+
+## Task contract bundles
+
+`recallweave contract` produces a portable work packet for another agent. By
+design it quotes the source vault: the bundle contains passage text, relative
+note paths, titles, headings, citations, and operator-authored statements and
+criteria. It is therefore at least as sensitive as the vault subset it quotes,
+and arguably more dangerous, because its purpose is to be handed to another
+agent.
+
+A bundle is **not anonymous** and is **not automatically safe to forward**.
+Review it before sending it anywhere, the same way you would review the vault
+files it quotes.
+
+Exclusions reduce the content selected, but they do **not** make a bundle safe
+to share. Excluded passages are left out; everything that remains is still real
+vault content. Treat the bundle as confidential unless you have reviewed it.
+
+The receipt's `output` and `replacement_backup` fields are local file paths. A
+broker that relays a receipt should redact them, as with `export-viewer`.
+
+**Failure receipts carry no vault content.** When `recallweave contract` refuses
+to export — for example because the index holds a connection whose persisted
+evidence is malformed — it exits `2` and writes a structured error to standard
+error, and no bundle is produced at all. That diagnostic identifies the
+offending edge by its **database id**, never by its endpoint note paths.
+Vault-relative paths are vault-derived metadata that can disclose people, health
+information, legal matters and organizational structure, and a failure receipt
+is the worst place to disclose them: the operator receives no bundle, so they
+consented to no disclosure. An edge whose endpoint you have **excluded** is
+suppressed before it is ever validated, so exclusions hold on the error path
+exactly as they do on the success path. Resolve an edge id against your own
+local index if you need to see which notes it joins.
+
+Keep task contract bundles outside Git and synchronized or shared folders
+unless sharing is intentional. A bundle that quotes passages should be handled
+and stored like the vault subset it contains.

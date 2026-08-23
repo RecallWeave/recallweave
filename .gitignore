@@ -46,3 +46,18 @@ graph-exports/
 Thumbs.db
 .idea/
 .vscode/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# NTM creates per-agent git worktrees and OpenCode lane state under .ntm/ inside
+# the project directory. Those are local orchestration artifacts, not source.
+.ntm/
+
+# Local Codex review output. Generated, not source.
+.codex-reviews/

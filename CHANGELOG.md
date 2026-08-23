@@ -2,11 +2,118 @@
 
 ## 0.1.0 - Unreleased
 
+- task contract Markdown renders one fenced block per field with a trusted
+  label, preserving the evidence boundary between an operator's statement and
+  the citation attached to it, and keeping the projection injective over a
+  documented projected field set (omitted canonical fields, such as connection
+  score and evidence, are intentionally not projected; the JSON contract
+  remains canonical and complete);
+- the task contract Markdown's projected and omitted field sets are an
+  exhaustive partition of the canonical document, enforced against a document
+  the public builder produced across several shapes, and the value-invariance
+  proof that an omitted field cannot influence the rendering runs over all
+  thirty-one omitted fields, driving each to several values that vary
+  cardinality and falsiness so a renderer reading only a length, a truthiness
+  or an emptiness is caught;
+- task contract evidence classes name the **origin** of a statement, not the
+  presence of a citation: an operator's own wording stays
+  `authored_by_operator` even when the operator cited a note, and only a
+  statement that IS the cited passage is `cited_passage`. The citation and
+  passage travel beside an operator statement as support, the Markdown
+  projection now shows that supporting passage under its own label instead of
+  omitting it, and `truncated` and `passage_truncated` say separately which
+  text was shortened. Nothing infers whether a passage supports a statement;
+  both are shown and each is attributed;
+- `contract` binds each connection evidence side to its own endpoint, closing
+  an exclusion breach: a tampered candidate could carry an authentic passage
+  from an excluded note into the artifact while `exclusions.enforced` still
+  reported true;
+- `contract` further hardens candidate authentication: shared terms are capped
+  at the eight the indexer emits, an edge's endpoints must be distinct notes,
+  and the persisted terms, method and explanation must already be in sanitized
+  form so normalization cannot collide a tampered value onto a genuine one.
+  Exclusion paths and tags now count toward the disclosure profile, since they
+  are emitted and are exactly the vault-derived names that flag describes. A
+  destination that exists and is not a regular file is refused even under
+  `--force`, which authorizes replacing an artifact rather than relocating a
+  directory tree;
+- `contract` closes two exclusion-integrity holes: an exclusion selector
+  carrying an invisible character was matched raw but displayed sanitized, so
+  the artifact could report an exclusion that never applied — matching now
+  sanitizes both sides and such selectors are rejected — and a task spec with a
+  repeated JSON key silently applied the last value, so a spec visibly carrying
+  a restrictive exclusion could be overridden by a later duplicate;
+- `contract` hardening from independent PR review: shared terms must be
+  distinct, a verification flag must be exactly 0 or 1, an ambiguous section
+  heading is refused rather than silently bound to the first match, emitted
+  vault metadata is sanitized like passage text, the objective is budgeted as
+  it is emitted, an excluded connection endpoint counts toward the dropped-note
+  total, a null item selector is reported through the structured error contract
+  instead of a traceback, and a destination inside the vault is refused so
+  `vault_writes: 0` stays true;
+- `contract` authenticates the persisted edge record, not only its evidence: a
+  candidate must carry the candidate kind, an unset verification flag and a
+  cosine score in range, and an authored link must carry a real link kind, a
+  set verification flag, a unit score, and a link that re-derives from the
+  index. For a link in a section body that means the exact physical line read
+  back from the indexed section, parsed with the indexer's own link extractor
+  and resolved with its own resolver, uniqueness included. A link on a heading
+  line is bound the same way: the index records every heading's own physical
+  line, `#` level and **exact stripped source line** — including a heading with
+  no body beneath it, which produces no section but can still carry a link —
+  the exporter compares the quoted text directly against
+  `note_headings.source_text` at the claimed coordinate rather than rebuilding
+  the line, since any canonical rebuild is a guess about formatting the source
+  already settled, and an index written before those were recorded is
+  refused with a request to re-index. So a hand-written row can no longer
+  export as an authored, verified relationship. Candidate existence, ranking
+  and `score` are deliberately not recomputed: a candidate's score is persisted
+  and range-checked, not authenticated, and the docs say so;
+- `contract` authenticates a discovery candidate's own evidence, not only its
+  passages: `shared_terms` must be at least two non-empty strings that both
+  endpoint notes actually carry in the index, and `method` and `explanation`
+  must be the indexer's own, so a persisted edge can no longer assert a
+  relationship the index does not support or rewrite the standing warning that
+  lexical overlap is not proof;
+- `contract` attributes every connection-evidence side against the indexed
+  snapshot before admitting its connection: the citation must name a section
+  the index contains, and the quoted passage and heading must be the ones that
+  section holds, so neither a fabricated citation nor a fabricated passage
+  behind a real citation can reach the artifact. Attributed citations join
+  `provenance.citations` in document order, making the inventory complete. A
+  connection evidence side quoting a passage must also carry the citation
+  attributing it, and each present side must carry the complete leaf set the
+  indexer emits, so a shortened passage can never arrive without the
+  `truncated` flag that declares it shortened. Verification reads the index,
+  never the vault, so evidence is attributed to the snapshot the index recorded
+  rather than to the vault's current bytes;
+- `contract` failure receipts carry no vault content: a refused export names
+  the offending edge by its database id rather than by its endpoint note paths;
+- `contract` fails closed on malformed persisted connection evidence: the
+  builder enforces its own well-formedness predicate on each connection it
+  considers, before that connection's budget check, and raises rather than
+  exporting a document its validator rejects, so nothing malformed is silently
+  shown and nothing is silently dropped. This validates every connection the
+  export RETURNS; it is not a whole-index scan, because the loop stops once the
+  character budget is exhausted and edges ordered after that point are never
+  examined;
+- task contract Markdown signals an absent field structurally — its trusted
+  label followed by the marker as a bare chrome line, with no fenced block —
+  so a field whose value is literally that marker text can no longer imitate
+  absence; the marker previously rendered inside the fence, in the same channel
+  as untrusted operator and vault text;
 - optional RecallWeave Atlas viewer with deterministic, in-browser graph
   exploration and a synthetic demonstration graph;
 - `export-viewer` structure-only and bounded-passage profiles, bilateral
   candidate citations, explicit privacy content flags, verified-only filtering,
   non-replacing writes, and recoverable two-phase forced replacement;
+- `contract` exports a minimal, cited work packet for another agent in JSON and
+  Markdown under the `recallweave.contract.v1` schema, with enforced
+  exclusions;
+- the Markdown contract artifact renders every operator-controlled or
+  vault-derived string inside a fenced code block so it is an inert,
+  human-readable projection of the canonical JSON contract, never Markdown
+  syntax;
 - explicit CLI policy choice for indexing: a JSON policy or an acknowledged
   `--no-policy` opt-out;
 - clean-clone Atlas builds and dedicated Node CI for install, lint, build, and

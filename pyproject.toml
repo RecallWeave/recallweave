@@ -23,6 +23,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+test = ["mistletoe>=1.6"]
+
 [project.urls]
 Homepage = "https://github.com/RecallWeave/recallweave"
 Issues = "https://github.com/RecallWeave/recallweave/issues"

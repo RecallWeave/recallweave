@@ -18,6 +18,12 @@ from .model import LinkEvidence, Note
 from .parser import normalize_name, parse_note, tokenize
 from .policy import IndexPolicy, RESERVED_DIRECTORY_NAMES
 
+# This is the PUBLIC receipt schema version, shared by every command's JSON
+# output (see query.py and docs/json-output.md), not a private index revision.
+# Do not bump it to record a new index column: adding `heading_line` and
+# `heading_level` to `sections` for recallweave-kob changed what an index
+# stores, not what a receipt promises. The contract builder detects that
+# capability directly and refuses an index that predates it.
 SCHEMA_VERSION = "2"
 APPLICATION_ID = "recallweave"
 DISCOVERY_POSTING_WINDOW = 12
@@ -55,6 +61,14 @@ CREATE TABLE sections (
     line_start INTEGER NOT NULL,
     line_end INTEGER NOT NULL,
     text TEXT NOT NULL
+);
+CREATE TABLE note_headings (
+    note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    line INTEGER NOT NULL,
+    level INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    source_text TEXT NOT NULL,
+    PRIMARY KEY(note_id, line)
 );
 CREATE INDEX idx_sections_note ON sections(note_id);
 CREATE TABLE terms (
@@ -238,6 +252,25 @@ def _insert_notes(connection: sqlite3.Connection, notes: list[Note]) -> dict[str
             )
             if note_id not in lookup[normalized]:
                 lookup[normalized].append(note_id)
+
+        # Every heading line, whether or not it has a body. Sections are
+        # body-driven and drop a bodyless heading, but links are extracted from
+        # every heading line, so an authored edge can point at one
+        # (recallweave-kob).
+        connection.executemany(
+            "INSERT OR IGNORE INTO note_headings("
+            "note_id, line, level, text, source_text) VALUES (?, ?, ?, ?, ?)",
+            [
+                (
+                    note_id,
+                    heading.line,
+                    heading.level,
+                    heading.text,
+                    heading.source_text,
+                )
+                for heading in note.headings
+            ],
+        )
 
         for section in note.sections:
             section_cursor = connection.execute(
