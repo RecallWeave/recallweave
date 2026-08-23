@@ -8,6 +8,8 @@ from io import StringIO
 from pathlib import Path
 
 from recallweave.cli import main as cli_main
+from recallweave.contract import build_contract_document
+from recallweave.contract_spec import TaskSpec
 from recallweave.index import build_index
 
 PATH_SENTINEL = "ZZQEXCLUDEDSENTINEL"
@@ -152,6 +154,57 @@ class ContractExclusionLeakageTest(unittest.TestCase):
         document = json.loads(json_out.read_text(encoding="utf-8"))
         markdown = md_out.read_bytes()
         return document, markdown, json_out
+
+    def test_a_clean_selector_excludes_a_path_carrying_invisible_characters(self) -> None:
+        # Matching is sanitized on BOTH sides. Without that, a note whose own
+        # path carries a zero-width character could not be excluded by the
+        # readable selector an operator would naturally write, and the note
+        # would be emitted with its path shown clean -- looking exactly like
+        # the path they thought they had excluded.
+        import tempfile
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        (vault / "Restricted").mkdir(parents=True)
+        (vault / "Public.md").write_text(
+            "---\ntitle: P\n---\n# P\n\n## S\n\nzephyr public body.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Restricted" / "\u200bSecret.md").write_text(
+            "---\ntitle: S\n---\n# S\n\n## S\n\nzephyr ZZSECRETBODY here.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "invisible path",
+                "retrieval": {
+                    "query": "zephyr",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 9000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": ["Restricted/Secret.md"],
+                    "globs": [],
+                    "tags": [],
+                    "directives": [],
+                },
+            }
+        )
+        document = build_contract_document(database, spec)
+        blob = json.dumps(document)
+        self.assertNotIn("ZZSECRETBODY", blob)
+        self.assertNotIn("Secret.md", blob.replace("Restricted/Secret.md", ""))
+        self.assertTrue(document["exclusions"]["enforced"])
 
     def test_path_exclusion_absent_from_both_formats(self) -> None:
         document, markdown, json_out = self.export_both_formats(

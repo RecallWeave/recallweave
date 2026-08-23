@@ -5,12 +5,26 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from .contract_text import sanitize
+
 if TYPE_CHECKING:
     from .contract_spec import TaskSpec
 
 
 def _normalize(value: str) -> str:
-    return value.replace("\\", "/").casefold()
+    # SANITIZED on both sides of every comparison. The contract emits its
+    # exclusions sanitized, so normalizing without sanitizing let the two
+    # diverge: a selector like "Restricted/\u200bSecret.md" failed to match
+    # "Restricted/Secret.md" while the artifact displayed the exclusion as
+    # though it had applied, reporting `enforced: true` and including the note.
+    # A privacy boundary that fails silently while claiming to hold is worse
+    # than one that fails loudly.
+    #
+    # Sanitizing the VAULT side too is what lets a clean selector still exclude
+    # a note whose own path carries such a character; _validate below refuses
+    # selectors that sanitization changes, so the operator can never express an
+    # intent that differs from what is matched and shown.
+    return sanitize(value).replace("\\", "/").casefold()
 
 
 def _clean_tag(value: str) -> str:
@@ -23,6 +37,12 @@ def _validate(name: str, values: Any) -> list[str]:
     for item in values:
         if not isinstance(item, str) or item == "":
             raise ValueError(f"{name} entries must be non-empty strings.")
+        if sanitize(item) != item:
+            raise ValueError(
+                f"{name} entries must not contain control, bidi or zero-width "
+                f"characters: {item!r} is changed by sanitization, so what it "
+                "matches and what the contract displays would differ."
+            )
     return list(values)
 
 

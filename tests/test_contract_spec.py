@@ -46,6 +46,65 @@ def valid_payload() -> dict:
 
 
 class TaskSpecParsingTest(unittest.TestCase):
+    def test_a_repeated_key_is_rejected(self) -> None:
+        # `json.loads` keeps the LAST value for a repeated key, so a spec that
+        # VISIBLY carries a restrictive exclusion can be overridden by a later
+        # duplicate: a reviewer reading the artifact sees the exclusion, the
+        # exporter applies the empty one, and the contract still reports
+        # exclusions as enforced. The spec is the operator's authority over what
+        # may leave the vault, so it is read strictly.
+        raw = (
+            b'{"objective":"o","retrieval":{"query":"q","limit":1,'
+            b'"max_characters":100},"constraints":[],"prior_decisions":[],'
+            b'"acceptance_criteria":[],'
+            b'"exclusions":{"paths":["Secret.md"]},'
+            b'"exclusions":{"paths":[]}}'
+        )
+        with self.assertRaises(ValueError) as raised:
+            TaskSpec.from_bytes(raw)
+        self.assertIn("duplicate key", str(raised.exception))
+        # Nested objects too, not just the top level.
+        nested = (
+            b'{"objective":"o","retrieval":{"query":"q","query":"other",'
+            b'"limit":1,"max_characters":100},"constraints":[],'
+            b'"prior_decisions":[],"acceptance_criteria":[],'
+            b'"exclusions":{"paths":[]}}'
+        )
+        with self.assertRaises(ValueError) as raised:
+            TaskSpec.from_bytes(nested)
+        self.assertIn("duplicate key", str(raised.exception))
+
+    def test_exclusion_selectors_changed_by_sanitization_are_rejected(self) -> None:
+        # An exclusion selector must be exactly what the contract MATCHES and
+        # what it DISPLAYS. One carrying a zero-width character was matched raw
+        # and emitted sanitized, so the artifact showed
+        # "Restricted/Secret.md" as excluded, reported enforced: true, and
+        # included the note. A privacy boundary that fails silently while
+        # claiming to hold is worse than one that fails loudly.
+        for field_name in ("paths", "globs", "tags", "directives"):
+            for bad in ("Restricted/\u200bSecret.md", "Restricted/\u202eSecret.md"):
+                with self.subTest(field=field_name, selector=bad):
+                    exclusions = {
+                        "paths": [], "globs": [], "tags": [], "directives": []
+                    }
+                    exclusions[field_name] = [bad]
+                    with self.assertRaises(ValueError) as raised:
+                        TaskSpec.from_payload(
+                            {
+                                "objective": "o",
+                                "retrieval": {
+                                    "query": "q",
+                                    "limit": 1,
+                                    "max_characters": 100,
+                                },
+                                "constraints": [],
+                                "prior_decisions": [],
+                                "acceptance_criteria": [],
+                                "exclusions": exclusions,
+                            }
+                        )
+                    self.assertIn("zero-width", str(raised.exception))
+
     def test_null_item_selectors_are_rejected_with_a_structured_error(self) -> None:
         # The discriminator is key PRESENCE, so `{"text": null}` selects the
         # text branch. Skipping validation when the value was None produced a

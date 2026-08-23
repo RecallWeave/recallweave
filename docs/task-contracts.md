@@ -33,9 +33,22 @@ citation to a passage the operator did not choose.
 Vault-derived **metadata** is sanitized like passage text: relative paths,
 titles, headings, citations, matched terms, status and domain. Bidi overrides
 and zero-width characters survive JSON loading and can visually spoof a path or
-a heading for a downstream agent. Exclusion matching still runs against the
-**raw** path, so sanitizing cannot weaken an operator's exclusion of a path that
-contains such a character.
+a heading for a downstream agent.
+
+Exclusion matching sanitizes **both sides**, and an exclusion selector that
+sanitization would change is **rejected**. Those two rules go together: a
+selector must be exactly what the contract matches AND what it displays.
+Matching raw while displaying sanitized let a selector like
+`Restricted/<ZWSP>Secret.md` fail to match `Restricted/Secret.md` while the
+artifact showed the exclusion as applied and reported `enforced: true` —
+a privacy boundary failing silently while claiming to hold. Sanitizing both
+sides also means the readable selector an operator would naturally write still
+excludes a note whose own path carries such a character.
+
+The task spec is decoded **strictly**: a repeated JSON key is an error at every
+object level. `json.loads` keeps the last value, so
+`{"exclusions": {...restrictive...}, "exclusions": {...empty...}}` would apply
+the empty rule while a reviewer reading that spec saw the restrictive one.
 
 A contract artifact may not be written **inside the vault**. The receipt and the
 embedded document both assert `vault_writes: 0`, and the document is serialized

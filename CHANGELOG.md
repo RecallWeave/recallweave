@@ -28,6 +28,12 @@
   an exclusion breach: a tampered candidate could carry an authentic passage
   from an excluded note into the artifact while `exclusions.enforced` still
   reported true;
+- `contract` closes two exclusion-integrity holes: an exclusion selector
+  carrying an invisible character was matched raw but displayed sanitized, so
+  the artifact could report an exclusion that never applied — matching now
+  sanitizes both sides and such selectors are rejected — and a task spec with a
+  repeated JSON key silently applied the last value, so a spec visibly carrying
+  a restrictive exclusion could be overridden by a later duplicate;
 - `contract` hardening from independent PR review: shared terms must be
   distinct, a verification flag must be exactly 0 or 1, an ambiguous section
   heading is refused rather than silently bound to the first match, emitted

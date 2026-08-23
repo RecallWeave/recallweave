@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .contract_text import sanitize
+
 CONTRACT_SPEC_VERSION = "recallweave.contract.spec.v1"
 
 ALLOWED_SPEC_KEYS = {
@@ -177,13 +179,41 @@ class TaskSpec:
             exclusion_directives=exclusion_directives,
         )
 
+    @staticmethod
+    def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        """Decode one JSON object, refusing a repeated key.
+
+        `json.loads` silently keeps the LAST value for a repeated key, so a spec
+        that visibly carries a restrictive rule can be overridden by a later
+        duplicate:
+
+            {"exclusions": {"paths": ["Secret.md"]}, "exclusions": {"paths": []}}
+
+        A reviewer reading that artifact sees the exclusion; the exporter
+        applies the empty one, includes the protected note, and still reports
+        exclusions as enforced. The spec is the operator's authority over what
+        may leave the vault, so it is read strictly: a key that appears twice is
+        an error, not a last-one-wins."""
+        seen: set[str] = set()
+        for key, _ in pairs:
+            if key in seen:
+                raise ValueError(
+                    f"Task spec contains a duplicate key {key!r}; a repeated "
+                    "key silently overrides the earlier value, so the spec a "
+                    "reader reviews would differ from the one applied."
+                )
+            seen.add(key)
+        return dict(pairs)
+
     @classmethod
     def from_bytes(cls, payload: bytes) -> "TaskSpec":
         try:
             text = payload.decode("utf-8-sig")
         except UnicodeDecodeError as error:
             raise ValueError("Task spec must be UTF-8 JSON.") from error
-        return cls.from_payload(json.loads(text))
+        return cls.from_payload(
+            json.loads(text, object_pairs_hook=cls._reject_duplicate_keys)
+        )
 
     @classmethod
     def from_file(cls, path: Path) -> "TaskSpec":
@@ -303,5 +333,17 @@ class TaskSpec:
             if max_len is not None and len(item) > max_len:
                 raise ValueError(
                     f"{name}[{index}] must be at most {max_len} characters."
+                )
+            # An exclusion selector must be exactly what the contract will match
+            # AND display. One containing a character sanitization removes would
+            # be matched raw and shown clean, so the artifact could report an
+            # exclusion that never applied. ExclusionSet enforces this too, at
+            # build time; rejecting here reports it against the spec, where the
+            # operator can see which entry is at fault.
+            if sanitize(item) != item:
+                raise ValueError(
+                    f"{name}[{index}] must not contain control, bidi or "
+                    "zero-width characters: what it matches and what the "
+                    "contract displays would differ."
                 )
         return value
