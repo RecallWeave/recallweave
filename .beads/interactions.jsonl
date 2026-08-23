@@ -98,3 +98,4 @@
 {"id":"int-d31efdaf1956bc139437a634fb1a2ec0","kind":"field_change","created_at":"2026-08-23T19:23:01.752817Z","actor":"josh","issue_id":"recallweave-z1a","extra":{"field":"status","new_value":"open","old_value":"deferred"}}
 {"id":"int-df203bcacfb2dd9ce3343840b822051f","kind":"field_change","created_at":"2026-08-23T19:23:37.065899Z","actor":"josh","issue_id":"recallweave-z1a","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
 {"id":"int-1bd5a6b3bba1dbd140276b1948e587c2","kind":"field_change","created_at":"2026-08-23T19:59:51.271303Z","actor":"josh","issue_id":"recallweave-z1a","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-074bcd41ee208645e83a9305b1a5998b","kind":"field_change","created_at":"2026-08-23T22:20:57.757314Z","actor":"josh","issue_id":"recallweave-ur0","extra":{"field":"status","new_value":"in_progress","old_value":"open"}}
