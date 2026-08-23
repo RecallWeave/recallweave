@@ -19,14 +19,14 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.48.0",
+    "@cloudflare/vite-plugin": "1.53.1",
     "@eslint/js": "10.0.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
-    "@vitejs/plugin-rsc": "0.5.26",
+    "@vitejs/plugin-rsc": "0.5.34",
     "eslint": "10.8.0",
     "eslint-plugin-react-a11y": "2.1.7",
     "eslint-plugin-react-hooks": "7.1.1",
@@ -35,9 +35,9 @@
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.65.0",
-    "vinext": "0.0.53",
+    "vinext": "1.0.0-beta.8",
     "vite": "8.1.5",
-    "wrangler": "4.115.0"
+    "wrangler": "4.125.0"
   },
   "type": "module",
   "overrides": {
