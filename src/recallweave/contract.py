@@ -224,7 +224,10 @@ def connection_evidence_is_well_formed(connection: dict[str, Any]) -> bool:
 
 
 def _indexed_side_evidence(
-    connection, citation: str, cache: dict[str, dict[str, Any] | None]
+    connection,
+    citation: str,
+    note_id: int,
+    cache: dict[tuple[int, str], dict[str, Any] | None],
 ) -> dict[str, Any] | None:
     """The evidence side the INDEX itself would produce for `citation`, or None
     when the citation names no section this index contains.
@@ -246,10 +249,20 @@ def _indexed_side_evidence(
     asserts `network_calls` and `vault_writes` are 0, and opening note files at
     contract time would make that false. The consequence is stated honestly in
     the docs — a citation is attributed to the INDEXED SNAPSHOT, not to the
-    vault's current bytes. `cache` memoizes per build, since edges commonly
-    cite the same few sections."""
-    if citation in cache:
-        return cache[citation]
+    vault's current bytes. `cache` memoizes per build, keyed by note AND
+    citation, since edges commonly cite the same few sections.
+
+    The lookup is scoped to `note_id`: a side must cite a section of ITS OWN
+    endpoint. Resolving a citation against the whole index authenticated a
+    section that merely existed somewhere, which let a tampered candidate carry
+    an authentic passage from an unrelated -- including an EXCLUDED -- note. The
+    content was real, the citation resolved, the heading and passage matched;
+    every check passed because every check asked the wrong question, and an
+    excluded note's citation and passage reached the artifact while
+    `exclusions.enforced` still reported true."""
+    key = (note_id, citation)
+    if key in cache:
+        return cache[key]
     expected: dict[str, Any] | None = None
     path, separator, line_range = citation.rpartition(":")
     if separator and path:
@@ -262,12 +275,13 @@ def _indexed_side_evidence(
                     SELECT s.heading, s.text
                     FROM sections s
                     JOIN notes n ON n.id = s.note_id
-                    WHERE n.relative_path = ?
+                    WHERE n.id = ?
+                      AND n.relative_path = ?
                       AND s.line_start = ?
                       AND s.line_end = ?
                     LIMIT 1
                     """,
-                    (path, start, end),
+                    (note_id, path, start, end),
                 ).fetchone()
                 if row is not None:
                     text = str(row["text"])
@@ -284,7 +298,7 @@ def _indexed_side_evidence(
                         "passage": passage,
                         "truncated": truncated,
                     }
-    cache[citation] = expected
+    cache[key] = expected
     return expected
 
 
@@ -562,7 +576,10 @@ def _edge_envelope_is_authentic(connection, row) -> bool:
 
 
 def _side_attribution_is_authentic(
-    connection, side: Any, cache: dict[str, dict[str, Any] | None]
+    connection,
+    side: Any,
+    note_id: int,
+    cache: dict[tuple[int, str], dict[str, Any] | None],
 ) -> bool:
     """True iff a persisted connection-evidence side is ATTRIBUTED: its citation
     resolves to a section this index contains, AND the heading, passage and
@@ -577,13 +594,19 @@ def _side_attribution_is_authentic(
     (recallweave-e5w).
 
     A side with no citation is handled by the well-formedness rules, which
-    reject a passage that carries none."""
+    reject a passage that carries none.
+
+    `note_id` is the endpoint this side belongs to -- the SOURCE note for
+    `source_evidence`, the TARGET note for `target_evidence` -- and the cited
+    section must belong to it. Without that binding a side could carry any
+    authentic passage in the index, including one from a note the operator
+    excluded."""
     if not isinstance(side, dict):
         return True
     citation = side.get("citation")
     if citation is None:
         return True
-    expected = _indexed_side_evidence(connection, citation, cache)
+    expected = _indexed_side_evidence(connection, citation, note_id, cache)
     if expected is None:
         return False
     # Compare ALL of them unconditionally. Well-formedness already requires the
@@ -894,7 +917,7 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                     break
 
         connections: list[dict[str, Any]] = []
-        resolved_citations: dict[str, dict[str, Any] | None] = {}
+        resolved_citations: dict[tuple[int, str], dict[str, Any] | None] = {}
         if seed_ids and not _index_records_heading_coordinates(connection):
             # Fail closed, and say what to do. An index that cannot supply a
             # heading's own line cannot have a heading link's coordinate bound,
@@ -1006,9 +1029,15 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                 # malformed-evidence gate above, and keep the diagnostic
                 # content-free: name the edge, never the citation, the path or
                 # the passage (recallweave-w3k).
-                for side_name in ("source_evidence", "target_evidence"):
+                for side_name, endpoint_id in (
+                    ("source_evidence", int(row["source_note_id"])),
+                    ("target_evidence", int(row["target_note_id"])),
+                ):
                     if not _side_attribution_is_authentic(
-                        connection, evidence.get(side_name), resolved_citations
+                        connection,
+                        evidence.get(side_name),
+                        endpoint_id,
+                        resolved_citations,
                     ):
                         raise ValueError(
                             "unattributed connection evidence in the index for "

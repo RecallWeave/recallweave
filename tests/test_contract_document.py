@@ -1379,7 +1379,7 @@ class ContractDocumentTest(unittest.TestCase):
         )
 
     def test_connection_evidence_strips_control_and_bidi_characters(self) -> None:
-        _vault, database = self._build_vault_index()
+        _vault, database = self._candidate_pair_index()
         document = build_contract_document(database, self._evidence_spec())
         self.assertTrue(document["connections"])
         for conn in document["connections"]:
@@ -1439,17 +1439,73 @@ class ContractDocumentTest(unittest.TestCase):
                 "UPDATE edges SET evidence_json = ?", (json.dumps(evidence),)
             )
 
+    def _candidate_pair_index(self):
+        """A vault of exactly TWO notes, so there is one candidate edge and one
+        possible source note.
+
+        Fixtures that hand an AUTHENTIC evidence side to every edge need this.
+        A side must cite a section of its own endpoint, so a three-note vault --
+        whose candidates have different source notes -- cannot be given one
+        authentic source side; the payload would be genuine for one edge and a
+        forgery for the others, which is exactly what the endpoint binding
+        rejects."""
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        for name, body in (
+            ("Alpha.md", "zephyr quadrata shared topic alpha."),
+            ("Beta.md", "zephyr quadrata shared topic beta."),
+        ):
+            (vault / name).write_text(
+                f"---\ntitle: {name[:-3]}\n---\n# {name[:-3]}\n\n## S\n\n{body}\n",
+                encoding="utf-8",
+                newline="",
+            )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        return vault, database
+
     def _any_indexed_citation(self, database: Path) -> str:
-        """A citation naming a section this index really contains."""
+        """A citation naming a section that EVERY candidate edge's source note
+        can legitimately cite.
+
+        An evidence side must cite a section of its own endpoint, so a fixture
+        cannot hand the same source side to edges with different source notes --
+        that is the very forgery the endpoint binding rejects. `_rewrite_edge_
+        evidence` writes one payload to every edge, so this returns a citation
+        only when all candidate edges share a source note, and fails loudly
+        otherwise rather than producing a fixture that cannot be authentic."""
         import sqlite3
 
         with closing(sqlite3.connect(str(database))) as connection, connection:
+            sources = [
+                int(value)
+                for (value,) in connection.execute(
+                    "SELECT DISTINCT source_note_id FROM edges WHERE is_verified = 0"
+                )
+            ]
+            self.assertTrue(sources, "no candidate edge in this index")
+            self.assertEqual(
+                len(sources),
+                1,
+                "this fixture writes one evidence payload to every edge, so "
+                "every candidate must share a source note; got "
+                f"{len(sources)} distinct source notes",
+            )
             row = connection.execute(
                 """
                 SELECT n.relative_path, s.line_start, s.line_end
                 FROM sections s JOIN notes n ON n.id = s.note_id
+                WHERE n.id = ?
                 ORDER BY s.id LIMIT 1
-                """
+                """,
+                (sources[0],),
             ).fetchone()
         self.assertIsNotNone(row)
         return f"{row[0]}:{row[1]}-{row[2]}"
@@ -1624,6 +1680,136 @@ class ContractDocumentTest(unittest.TestCase):
                     build_contract_document(
                         database, self._evidence_spec(max_characters=max_characters)
                     )
+
+    def test_evidence_side_must_belong_to_its_own_endpoint(self) -> None:
+        # FAIL-FIRST. A side was authenticated as a real section SOMEWHERE in
+        # the index, never as a section belonging to that side's endpoint. So a
+        # tampered candidate could carry an authentic passage from an unrelated
+        # -- including an EXCLUDED -- note, and it authenticated: the content is
+        # genuinely in the index, its citation resolves, its heading and
+        # passage match. Every check passed because every check asked the wrong
+        # question.
+        #
+        # The consequence is an exclusion breach, which is the project's
+        # first-order guarantee: the excluded note's citation and its passage
+        # text reached both the JSON and the rendered Markdown while
+        # `exclusions.enforced` still reported true.
+        import sqlite3
+
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        (vault / "Secret").mkdir(parents=True)
+        (vault / "Alpha.md").write_text(
+            "---\ntitle: Alpha\n---\n# Alpha\n\n## S\n\n"
+            "zephyr quadrata shared topic alpha.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Beta.md").write_text(
+            "---\ntitle: Beta\n---\n# Beta\n\n## S\n\n"
+            "zephyr quadrata shared topic beta.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Secret" / "Confidential.md").write_text(
+            "---\ntitle: Confidential\n---\n# Confidential\n\n## S\n\n"
+            "zephyr quadrata ZZTOPSECRET acquisition price.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            secret = connection.execute(
+                "SELECT n.relative_path p, s.heading h, s.line_start a, "
+                "s.line_end b, s.text t FROM sections s "
+                "JOIN notes n ON n.id = s.note_id "
+                "WHERE n.relative_path LIKE 'Secret/%'"
+            ).fetchone()
+            foreign_side = {
+                "citation": f"{secret['p']}:{secret['a']}-{secret['b']}",
+                "heading": secret["h"],
+                "passage": secret["t"],
+                "truncated": False,
+            }
+            edge = connection.execute(
+                "SELECT id, evidence_json FROM edges WHERE is_verified = 0 LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(edge, "the fixture must produce a candidate")
+            evidence = json.loads(edge["evidence_json"])
+            # The candidate's own envelope stays authentic; ONLY the source
+            # side is swapped for the excluded note's real evidence.
+            evidence["source_evidence"] = foreign_side
+            connection.execute(
+                "UPDATE edges SET evidence_json = ? WHERE id = ?",
+                (json.dumps(evidence), edge["id"]),
+            )
+
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "endpoint binding",
+                "retrieval": {
+                    "query": "zephyr quadrata",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 9000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": ["Secret/Confidential.md"],
+                    "globs": [],
+                    "tags": [],
+                    "directives": [],
+                },
+            }
+        )
+        with self.assertRaises(ValueError) as raised:
+            build_contract_document(database, spec)
+        # Content-free as ever.
+        message = str(raised.exception)
+        self.assertNotIn("ZZTOPSECRET", message)
+        self.assertNotIn("Confidential", message)
+
+    def test_one_endpoints_evidence_cannot_authenticate_the_other(self) -> None:
+        # The attribution lookup is memoized per build. If that cache were keyed
+        # by citation alone, the SAME citation asked about two different
+        # endpoints would return whichever answer was computed first: the source
+        # side's success would authenticate the target side, or the target's
+        # failure would reject a valid source. The key includes the endpoint for
+        # that reason, and this pins it.
+        #
+        # Both sides here cite the SOURCE note's section, with its genuine
+        # heading and passage. The source side is authentic; the target side
+        # cites a section that is not its own, and must be rejected.
+        import sqlite3
+
+        _vault, database = self._candidate_pair_index()
+        citation = self._any_indexed_citation(database)
+        side = self._indexed_side(database, citation)
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            edge = connection.execute(
+                "SELECT id, evidence_json FROM edges WHERE is_verified = 0 LIMIT 1"
+            ).fetchone()
+            evidence = json.loads(edge["evidence_json"])
+            evidence["source_evidence"] = dict(side)
+            evidence["target_evidence"] = dict(side)
+            connection.execute(
+                "UPDATE edges SET evidence_json = ? WHERE id = ?",
+                (json.dumps(evidence), edge["id"]),
+            )
+        with self.assertRaises(ValueError):
+            build_contract_document(database, self._evidence_spec())
 
     def test_excluded_endpoint_never_reaches_the_malformed_diagnostic(self) -> None:
         # An excluded edge is `continue`d BEFORE validation, so a malformed edge
@@ -1843,13 +2029,20 @@ class ContractDocumentTest(unittest.TestCase):
         # silently.
         import sqlite3
 
-        _vault, database = self._build_vault_index()
+        # A two-note vault, so the single candidate edge has one source note
+        # and the section chosen below belongs to it -- a side must cite a
+        # section of its own endpoint.
+        _vault, database = self._candidate_pair_index()
         with closing(sqlite3.connect(str(database))) as connection, connection:
             connection.execute("UPDATE sections SET line_end = line_start + 5")
             row = connection.execute(
                 """
                 SELECT n.relative_path, s.line_start, s.line_end
-                FROM sections s JOIN notes n ON n.id = s.note_id LIMIT 1
+                FROM sections s JOIN notes n ON n.id = s.note_id
+                WHERE n.id = (
+                    SELECT source_note_id FROM edges WHERE is_verified = 0 LIMIT 1
+                )
+                LIMIT 1
                 """
             ).fetchone()
         relative_path, line_start, line_end = row
@@ -1890,7 +2083,7 @@ class ContractDocumentTest(unittest.TestCase):
         # real citation and the export succeeded, rendered it, AND inventoried
         # the citation in provenance.citations, lending it more credibility
         # still.
-        _vault, database = self._build_vault_index()
+        _vault, database = self._candidate_pair_index()
         authentic = self._indexed_side(database, self._any_indexed_citation(database))
         forgeries = {
             "fabricated passage": {
@@ -1938,7 +2131,7 @@ class ContractDocumentTest(unittest.TestCase):
         # merely LOOKS truncated must still be rejected.
         import sqlite3
 
-        _vault, database = self._build_vault_index()
+        _vault, database = self._candidate_pair_index()
         long_text = ("zephyr quadrata shared topic " * 40).strip()
         self.assertGreater(len(long_text), MAX_PASSAGE_CHARACTERS)
         with closing(sqlite3.connect(str(database))) as connection, connection:
@@ -2035,7 +2228,7 @@ class ContractDocumentTest(unittest.TestCase):
                     with self.subTest(
                         truncated=truncate, side=side_name, dropped=dropped
                     ):
-                        _vault, database = self._build_vault_index()
+                        _vault, database = self._candidate_pair_index()
                         if truncate:
                             long_text = (
                                 "zephyr quadrata shared topic " * 40
@@ -2098,7 +2291,7 @@ class ContractDocumentTest(unittest.TestCase):
         # typing it as "a list" left a persisted edge free to claim any
         # vocabulary at all -- including terms chosen to make an unrelated pair
         # look related -- and it rendered exactly like a real candidate.
-        _vault, database = self._build_vault_index()
+        _vault, database = self._candidate_pair_index()
         envelope = self._authentic_candidate_envelope(database)
         authentic_side_citation = self._any_indexed_citation(database)
         side = self._indexed_side(database, authentic_side_citation)
@@ -2146,7 +2339,7 @@ class ContractDocumentTest(unittest.TestCase):
         # persisted edge that rewrites or drops it changes what the artifact
         # tells a receiving agent about how much the connection is worth, which
         # is a content change dressed as metadata.
-        _vault, database = self._build_vault_index()
+        _vault, database = self._candidate_pair_index()
         envelope = self._authentic_candidate_envelope(database)
         side = self._indexed_side(database, self._any_indexed_citation(database))
         forgeries = {
@@ -3048,7 +3241,7 @@ class ContractDocumentTest(unittest.TestCase):
         # rather than claiming the artifact was checked against physical vault
         # lines at export time. Pin the semantics so nobody "fixes" it into a
         # vault read without deciding to.
-        vault, database = self._build_vault_index()
+        vault, database = self._candidate_pair_index()
         authentic = self._indexed_side(database, self._any_indexed_citation(database))
         self._rewrite_edge_evidence(
             database, {"shared_terms": ["zephyr"], "source_evidence": authentic}
