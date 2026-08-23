@@ -95,60 +95,46 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-**The cycle-30 PASS has expired and this is a re-gate, not a new remediation
-round.** Cycle 30 passed with no findings, the milestone PR was opened — and the
-merge was refused by branch protection, for reasons the local gate could not
-see. The tree has changed since, so the PASS no longer covers it.
+Your re-gate Low is fixed. This is the final gate before the milestone merge.
 
-What the local gate missed, and why it matters to how you read this: the
-required checks on `main` include **Windows** and a **`viewer`** job, and the
-local suite runs neither. So "431 tests green" was true and insufficient. Two
-required checks were red:
+- **Low — the portability guard did not cover all three fixtures.** Precise and
+  correct: the AST end-to-end test duplicated the filename as a literal, which
+  sits outside `HostileFilenamePortabilityTest` — so reintroducing a reserved
+  character in that copy would again fail only on Windows, the exact blind spot
+  the guard exists to close. It also made the previous commit message's "shared
+  as one constant across the three tests" inaccurate; it was shared across two.
 
-- **`python (windows-latest, 3.11)` — 3 failures on this branch.** Three tests
-  build a vault note whose FILENAME is hostile Markdown,
-  `![pixel](x)  [click](javascript:alert(1)).md`. Windows forbids `:` in
-  filenames, so the file was never created under that name, `_resolve_note`
-  raised "Note not found", and the tests errored. They passed on macOS and
-  Linux, so this was invisible locally for the whole run.
+  The AST test now imports `HOSTILE_VAULT_FILENAME`, and the guard proves it in
+  both directions: the module's fixture EQUALS the shared constant, and no
+  hostile-filename literal reappears there — scanned as a filename shape (a
+  quoted string ending in `.md` carrying Markdown link syntax) so ordinary
+  sentinel assertions like `assert_sentinel_inert(self, markdown, "![pixel](x)")`
+  are not caught by it.
 
-  The fixture is now `![pixel](x)  [click](evil-payload).md`, shared as one
-  constant across the three tests. It keeps image syntax, link syntax, brackets,
-  parentheses and the double space, and drops only the colon. The tests are NOT
-  skipped on Windows — the property is cross-platform and now runs everywhere.
-  The `javascript:` scheme keeps its coverage where it needs no filesystem:
-  `JAVASCRIPT_LINK` as CONTENT in statements, connection kinds and directives.
+  Comparison is by VALUE, not identity: `unittest discover` imports these
+  modules under both `tests.x` and `x`, so the copies hold equal but distinct
+  string objects. Identity passed alone and failed in the suite until corrected.
 
-  A new `HostileFilenamePortabilityTest` guards both directions, because this
-  defect class is silent — a fixture that cannot exist on a platform does not
-  weaken its property, it stops testing it there. It asserts the fixture carries
-  no Windows-reserved character, no C0 control and no trailing space or dot,
-  AND that it still parses as live Markdown with both an Image and a Link token,
-  so inert rendering stays a real property rather than a tautology.
+  **Mutation-proven:** reverting the AST test to the copied colon-bearing
+  literal now fails LOCALLY, on macOS, instead of only on Windows CI. That is
+  the point — the guard converts a platform-specific failure into a local one.
 
-- **`viewer` — 9 npm advisories (3 moderate, 6 high), 1 reaching production.**
-  Pre-existing on `main` and unrelated to this branch: the branch never touched
-  `viewer/package.json` or its lockfile. Fixed in a separate maintenance PR from
-  `main` (#2, merged) so unrelated dependency work stayed out of the milestone
-  PR, and that `main` is merged into this branch. Both audits now report 0.
+Your other five suggestions are **filed as follow-up** rather than done here,
+deliberately: the line-ending matrix, a generalized fixture-portability guard,
+case-insensitive filesystem behaviour, real Windows junction coverage, and
+running the `viewer` job's Windows static-asset test on Windows. They are
+coverage work, nothing is known to be broken, and bundling them would age this
+verdict — which is exactly what happened to the cycle-30 PASS. The bead records
+your reasoning and orders them cheapest-first.
 
-Mutation-proven this round: rendering the citation live fails all three original
-tests on the new fixture; a harmless fixture fails the hostility guard;
-reintroducing the colon-bearing name fails the portability guard.
-
-Suite: **433 tests** with the parser, green under `-W error::ResourceWarning`;
-`compileall` clean. Runtime dependencies still empty. The full GitHub matrix is
-running against this same commit in parallel with your review.
+Suite: **434 tests** with the parser, green under `-W error::ResourceWarning`;
+`compileall` clean. Runtime dependencies still empty. Since your PASS there is
+still **no `src/` change** — the delta is a `main` merge carrying only viewer
+dependency updates, a test fixture, and guard tests.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. The delta since your PASS is: a `main` merge carrying only viewer dependency
-   changes, and a test-fixture change plus two guard tests. **No `src/` change.**
-   Confirm that reading, and say if anything in it touches product behaviour.
-3. The lesson I take is that a green local suite is not evidence about platforms
-   the local suite does not run. If you see other places where a fixture or an
-   assumption is platform-dependent — paths, line endings, filesystem
-   case-sensitivity, temp-directory semantics — name them, since CI covers
-   Windows and macOS and Linux but the local gate does not.
-4. Reassess every Critical and High from all thirty cycles and say which remain
-   closed.
+2. Confirm the no-`src/`-change reading still holds for this commit.
+3. If anything at any severity remains, name it and say whether it blocks.
+4. Reassess every Critical and High from all thirty-one cycles and say which
+   remain closed.
 <!-- CYCLE-CONTEXT-END -->
