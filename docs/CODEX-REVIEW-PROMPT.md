@@ -95,57 +95,73 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your cycle-24 finding is confirmed and reproduced exactly as you described:
-claimed line 1, claimed line 999999, and `######` in place of `##` all
-authenticate against an authentic indexed heading, while a claimed real body
-line is correctly rejected. Good catch on the route this project had just added.
+Both cycle-25 findings are fixed, including the one that was deferred. **No open
+bead blocks promotion.** Josh directed both to be closed architecturally rather
+than patched, and explicitly ruled out adding semantic-support inference.
 
-**The Medium is fixed; the High is deliberately deferred, and this cycle should
-judge that decision.**
+- **High — an operator-written gloss was labeled `cited_passage`**
+  (`recallweave-nv0`). Fixed by separating AUTHORSHIP from SUPPORT rather than
+  by adding a check. An evidence class now names the **origin** of the
+  statement, never the presence of a citation:
 
-- **Medium — the documentation over-claimed.** Fixed. `docs/task-contracts.md`
-  now separates the two cases plainly: a link in a section BODY is fully bound
-  (exact physical line, whole-section parse, link at that line, resolver with
-  uniqueness); a link on a HEADING line is **only partly bound**, and the
-  paragraph says exactly what is not bound — the coordinate and the heading
-  level — and why: `sections` records a body's `line_start` and `line_end` and
-  never the heading's own physical line or its `#` count. It also says what IS
-  still bound (heading text, link kind, link target, unique resolution), so a
-  heading link cannot be invented, only mis-coordinated. The CHANGELOG's blanket
-  "exact physical line" claim is corrected the same way, and a docs test pins
-  the disclosure so it cannot quietly disappear before the property is real.
+  - `cited_passage` may only describe source-derived passage text — the
+    statement IS the cited passage, equal by construction;
+  - operator-authored text stays `authored_by_operator` **even when cited**, and
+    the citation and passage travel beside it in their own fields as support. An
+    operator-authored item may therefore now carry a citation, which the docs
+    previously said was impossible.
 
-- **High — deferred as tracked follow-up (`recallweave-kob`, P0).** The
-  exporter cannot close this from the index as it stands. Three options were
-  weighed: bind only the derivable window (narrows, does not close); reject
-  heading-line authored edges outright (fully honest, but refuses the whole
-  export for a legitimate vault whose link sits on a heading — the false
-  rejection cycle 23 exposed, reinstated deliberately); or record the heading's
-  physical line and level in the index, which closes it properly but is a core
-  index schema change and a re-index for existing users. Josh chose to disclose
-  now and bind later, with the schema change tracked as its own P0. **Promotion
-  to `main` stays blocked until it lands** — that is not being waved through.
+  The human projection emits the supporting passage under its own trusted label
+  in its own fence. Omitting it, as before, implied an equivalence that does not
+  hold — the same defect as asserting one. `truncated` now describes the
+  STATEMENT and `passage_truncated` the supporting passage, so a shortened
+  passage is never left without a flag of its own.
 
-Suite: 412 tests with the parser, green under `-W error::ResourceWarning`;
-`compileall` clean. Runtime dependencies are still empty.
+  **No semantic-support inference was added, deliberately.** Whether a cited
+  passage supports an operator's assertion is not decidable at this layer, and a
+  model claiming to decide it would assert what it cannot check. Both texts are
+  shown, each attributed. `contract.py`, `docs/task-contracts.md` and
+  `ARCHITECTURE.md` all say so in those terms. Please judge whether that is the
+  right boundary and whether the three say it consistently.
 
-This is the last cycle of this session, so please make it a summary judgement
-rather than only a defect hunt:
+  `constraints[].passage` and `prior_decisions[].passage` moved from the
+  documented OMITTED set into the PROJECTED set, and two `passage_truncated`
+  fields joined the omitted set, so the exhaustive partition still holds.
 
-1. **Is deferring the heading-coordinate binding defensible**, given that it is
-   disclosed in the docs, tracked as a P0, and blocks promotion? If you think
-   one of the other two options should have been taken instead, say which and
-   why — that is directly actionable for the next session.
-2. **Is the documentation now TRUE?** That matters more than usual here, because
-   the disclosure paragraph is the thing standing in for the missing property.
-   Check `docs/task-contracts.md`, `ARCHITECTURE.md`, `PRIVACY.md` and
-   `CHANGELOG.md` against the code and name anything still over-claimed.
-3. **Is there a ninth level anywhere OTHER than the deferred one?** The last
-   several findings have all been in the connections path; retrieved context and
-   the operator-supplied constraint and decision citations have had far less
-   scrutiny this run.
-4. Reassess every Critical and High from all twenty-four cycles and say which
+- **High — a heading link's coordinate and level were unbound**
+  (`recallweave-kob`). No longer deferred. `sections` records `heading_line` and
+  `heading_level`, and the exporter **reconstructs the whole heading line from
+  indexed data** — markers and heading — requiring the quoted source text to
+  equal it at the claimed coordinate before parsing it for the link. Your three
+  probes (line 1, line 999999, `######` for `##`) are rejected, and so is the
+  case you named that neither of us had tested: two sections with the SAME
+  heading text at different coordinates no longer authenticate each other.
+
+  `SCHEMA_VERSION` is deliberately NOT bumped — it is the public receipt version
+  shared by every command's output and by `docs/json-output.md`, and moving it
+  to record an index column would change what a receipt promises. The builder
+  probes the capability directly and REFUSES an index predating it, asking for a
+  re-index rather than rejecting that index's genuine heading links with a
+  diagnostic pointing at the wrong thing. **Scrutinise this choice.**
+
+  The disclosure paragraph from cycle 24 is removed and its docs test inverted
+  to require its absence: leaving it would now understate the guarantee, which
+  is its own kind of untrue documentation.
+
+Eight mutations killed across the two fixes. Suite: **420 tests** with the
+parser, green under `-W error::ResourceWarning`; `compileall` clean. Runtime
+dependencies still empty.
+
+1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
+   nothing blocks promotion, say so explicitly.
+2. Judge the two architectural decisions above, not only their code: the
+   authorship/support split with no semantic inference, and the capability probe
+   in place of a version bump.
+3. The evidence model changed shape this cycle — a projected field set that
+   grew, a new canonical field, and an evidence class that can now carry a
+   citation. Look for anything that did not move with it.
+4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
+   `PRIVACY.md` and `CHANGELOG.md` against the code.
+5. Reassess every Critical and High from all twenty-five cycles and say which
    remain closed.
-5. State the push/promotion position plainly for the handoff: what this tree is
-   safe for, and what it is not.
 <!-- CYCLE-CONTEXT-END -->
