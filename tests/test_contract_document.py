@@ -2133,6 +2133,116 @@ class ContractDocumentTest(unittest.TestCase):
             build_contract_document(database, spec)
         self.assertIn("Ambiguous section heading", str(raised.exception))
 
+    def test_every_emitted_string_is_sanitized(self) -> None:
+        # The invariant, quantified over the DOCUMENT rather than over call
+        # sites. Sanitization has now been missed five separate times -- paths
+        # but not tags, sides but not endpoints, retrieved metadata but not
+        # index provenance -- because each fix covered the values a particular
+        # function touched instead of the class the rule is about. A per-field
+        # test repeats that mistake; this walks every string the builder emits
+        # and requires `sanitize(value) == value`, so a NEW emitted field is
+        # covered the moment it exists.
+        import sqlite3
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        (vault / "Nested").mkdir(parents=True)
+        bidi, zwsp, control = "\u202e", "\u200b", "\u0007"
+        # Hostile bytes in every vault-side surface at once: filename, title,
+        # frontmatter tag, heading, body, and a wikilink so an authored edge
+        # carries them too.
+        (vault / f"Al{bidi}pha.md").write_text(
+            f'---\ntitle: Ti{zwsp}tle\ntags: ["ta{bidi}g"]\n---\n'
+            f"# Al{zwsp}pha\n\n## He{control}ad\n\n"
+            f"zephyr quadrata bo{zwsp}dy. See [[Be{bidi}ta]] here.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Nested" / f"Be{bidi}ta.md").write_text(
+            f"---\ntitle: Be{control}ta\n---\n# Beta\n\n## S\n\n"
+            "zephyr quadrata shared topic beta.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        # Index provenance comes from `meta`, which a hand-edited index can
+        # fill with anything.
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute(
+                "UPDATE meta SET value = value || ? WHERE key = 'indexed_at'",
+                (zwsp,),
+            )
+        spec = TaskSpec.from_payload(
+            {
+                # task_id is already charset-restricted at spec parse.
+                "task_id": "task",
+                "objective": f"obj{bidi}ective",
+                "retrieval": {
+                    "query": "zephyr quadrata",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 50000,
+                },
+                "constraints": [
+                    {"text": f"con{zwsp}straint"},
+                    # NOTE-backed, so the item's relative_path and citation are
+                    # populated from a filename that carries a bidi override.
+                    # Without this the walk never reaches those fields and the
+                    # invariant looks satisfied because it was never asked.
+                    {"note": f"Al{bidi}pha.md"},
+                ],
+                "prior_decisions": [
+                    {"text": f"deci{control}sion"},
+                    {"note": f"Nested/Be{bidi}ta.md", "statement": "gloss"},
+                ],
+                "acceptance_criteria": [f"cri{zwsp}terion"],
+                "exclusions": {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                },
+            }
+        )
+        document = build_contract_document(database, spec)
+
+        offenders: list[str] = []
+
+        def walk(node, path: str) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    walk(value, f"{path}.{key}" if path else str(key))
+            elif isinstance(node, list):
+                for index, value in enumerate(node):
+                    walk(value, f"{path}[{index}]")
+            elif isinstance(node, str):
+                if sanitize(node) != node:
+                    offenders.append(f"{path}={node!r}")
+
+        walk(document, "")
+        self.assertEqual(
+            offenders,
+            [],
+            "every string the builder emits must already be sanitized; these "
+            f"are not: {offenders}",
+        )
+        # The walk must actually have reached the interesting places, or an
+        # empty result proves nothing.
+        self.assertTrue(document["retrieved_context"])
+        self.assertTrue(document["connections"])
+        self.assertTrue(document["provenance"]["index"]["indexed_at"])
+        self.assertTrue(
+            any(item["relative_path"] for item in document["constraints"]),
+            "a note-backed constraint must populate relative_path, or the walk "
+            "never reaches it",
+        )
+        self.assertTrue(
+            any(item["passage"] for item in document["prior_decisions"])
+        )
+
     def test_emitted_vault_metadata_is_sanitized(self) -> None:
         # A relative path, title or heading carrying bidi overrides or
         # zero-width characters survives JSON loading and can visually spoof a

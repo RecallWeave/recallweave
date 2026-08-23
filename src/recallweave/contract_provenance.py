@@ -2,8 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from .contract_text import sanitize
+
 
 def index_provenance(connection: Any) -> dict[str, Any]:
+    """Index provenance, with every emitted string SANITIZED.
+
+    These values come from the index's `meta` table, which a malformed or
+    hand-edited index can fill with anything. They cannot carry a vault passage
+    or change an evidence class, so this is completeness rather than a leak --
+    but the documented invariant is that EVERY string reaching the document is
+    sanitized, and an invariant with an exception is not one."""
     def meta_value(key: str) -> str:
         row = connection.execute(
             "SELECT value FROM meta WHERE key = ?", (key,)
@@ -12,7 +21,7 @@ def index_provenance(connection: Any) -> dict[str, Any]:
             raise ValueError(
                 f"Index is missing required meta key {key!r}; cannot state index provenance."
             )
-        return row["value"]
+        return sanitize(str(row["value"]))
 
     schema_version = meta_value("schema_version")
     indexed_at = meta_value("indexed_at")
