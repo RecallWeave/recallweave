@@ -271,6 +271,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.output,
                 output_format=args.format,
                 force=args.force,
+                # The same vault this command resolves its index against, so an
+                # in-vault destination is refused rather than silently making
+                # `vault_writes: 0` false.
+                vault=args.vault or Path.cwd(),
             ),
         }
         action = commands[args.command]

@@ -24,6 +24,18 @@
   omitting it, and `truncated` and `passage_truncated` say separately which
   text was shortened. Nothing infers whether a passage supports a statement;
   both are shown and each is attributed;
+- `contract` binds each connection evidence side to its own endpoint, closing
+  an exclusion breach: a tampered candidate could carry an authentic passage
+  from an excluded note into the artifact while `exclusions.enforced` still
+  reported true;
+- `contract` hardening from independent PR review: shared terms must be
+  distinct, a verification flag must be exactly 0 or 1, an ambiguous section
+  heading is refused rather than silently bound to the first match, emitted
+  vault metadata is sanitized like passage text, the objective is budgeted as
+  it is emitted, an excluded connection endpoint counts toward the dropped-note
+  total, a null item selector is reported through the structured error contract
+  instead of a traceback, and a destination inside the vault is refused so
+  `vault_writes: 0` stays true;
 - `contract` authenticates the persisted edge record, not only its evidence: a
   candidate must carry the candidate kind, an unset verification flag and a
   cosine score in range, and an authored link must carry a real link kind, a

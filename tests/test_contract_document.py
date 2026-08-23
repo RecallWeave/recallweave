@@ -1811,6 +1811,223 @@ class ContractDocumentTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_contract_document(database, self._evidence_spec())
 
+    def test_shared_terms_must_be_distinct(self) -> None:
+        # `["foo", "foo"]` claims two shared terms while asserting one. It
+        # satisfied the documented minimum here AND the index check, which
+        # compares against len(set(terms)), so a candidate could meet the
+        # "at least two informative shared terms" bar with a single term.
+        base = {
+            "method": INDEX_CANDIDATE_METHOD,
+            "explanation": INDEX_CANDIDATE_EXPLANATION,
+        }
+        for terms in (["foo", "foo"], ["a", "b", "a"]):
+            with self.subTest(terms=terms):
+                self.assertFalse(
+                    connection_evidence_is_well_formed(
+                        {
+                            "evidence_class": "discovery_candidate",
+                            "evidence": {**base, "shared_terms": terms},
+                        }
+                    ),
+                    "duplicate shared terms must be rejected",
+                )
+        self.assertTrue(
+            connection_evidence_is_well_formed(
+                {
+                    "evidence_class": "discovery_candidate",
+                    "evidence": {**base, "shared_terms": ["foo", "bar"]},
+                }
+            )
+        )
+
+    def test_a_verification_flag_outside_zero_or_one_is_rejected(self) -> None:
+        # The indexer writes only 0 or 1. bool() read anything else as
+        # verified, so a corrupt index -- SQLite check constraints can be
+        # bypassed -- exported an edge as an authored, verified relationship on
+        # a flag the producer cannot emit.
+        import sqlite3
+
+        _vault, database = self._vault_with(
+            "---\ntitle: Src\n---\n# Src\n\n## S\n\n"
+            "zephyr body. See [[Target]] here.\n"
+        )
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute("PRAGMA ignore_check_constraints = ON")
+            changed = connection.execute(
+                "UPDATE edges SET is_verified = 2 WHERE kind = 'wikilink'"
+            ).rowcount
+        self.assertGreater(changed, 0, "fixture must have an authored edge")
+        with self.assertRaises(ValueError) as raised:
+            build_contract_document(database, self._authored_spec())
+        self.assertRegex(str(raised.exception), r"edge \d+")
+
+    def test_an_excluded_connection_endpoint_counts_as_a_dropped_note(self) -> None:
+        # The connection path can exclude a note the retrieval path never
+        # returned, so it is the only place that drop is observed. Counting the
+        # edge but not the note left `suppressed.notes: 0` while an excluded
+        # note had in fact been dropped from the projection.
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        (vault / "Secret").mkdir(parents=True)
+        (vault / "Public.md").write_text(
+            "---\ntitle: Public\n---\n# Public\n\n## S\n\n"
+            "zephyr quadrata public body here.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Secret" / "Hidden.md").write_text(
+            "---\ntitle: Hidden\n---\n# Hidden\n\n## S\n\n"
+            "zephyr quadrata hidden body here.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "dropped notes",
+                "retrieval": {
+                    "query": "public",
+                    "limit": 1,
+                    "include_candidates": True,
+                    "max_characters": 9000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": ["Secret/Hidden.md"],
+                    "globs": [],
+                    "tags": [],
+                    "directives": [],
+                },
+            }
+        )
+        document = build_contract_document(database, spec)
+        suppressed = document["exclusions"]["suppressed"]
+        self.assertGreater(
+            suppressed["connections"], 0, "an edge must have been suppressed"
+        )
+        self.assertGreater(
+            suppressed["notes"],
+            0,
+            "the excluded endpoint is a note dropped from the projection and "
+            "must be counted",
+        )
+
+    def test_the_objective_is_budgeted_as_it_is_emitted(self) -> None:
+        # Charging the raw objective while emitting sanitize(...) rejected a
+        # one-character emitted objective under a budget of 1, and overreported
+        # characters_used whenever sanitizing removed anything.
+        _vault, database = self._candidate_pair_index()
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "x\u200b",
+                "retrieval": {"query": "zephyr", "limit": 8, "max_characters": 1},
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                },
+            }
+        )
+        document = build_contract_document(database, spec)
+        self.assertEqual(document["task"]["objective"], "x")
+        self.assertGreaterEqual(document["budget"]["characters_used"], 1)
+        self.assertLessEqual(
+            document["budget"]["characters_used"],
+            document["budget"]["character_budget"],
+        )
+
+    def test_an_ambiguous_section_heading_is_rejected(self) -> None:
+        # A spec has no occurrence syntax, so when two sections share a heading
+        # the operator cannot ask for the second. Silently taking the first
+        # returned a valid-looking citation to a passage they did not choose.
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "Dup.md").write_text(
+            "---\ntitle: Dup\n---\n# Dup\n\n## S\n\nfirst body zephyr.\n\n"
+            "## s\n\nsecond body zephyr.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "ambiguous heading",
+                "retrieval": {"query": "zephyr", "limit": 8, "max_characters": 9000},
+                "constraints": [{"note": "Dup.md", "heading": "S"}],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                },
+            }
+        )
+        with self.assertRaises(ValueError) as raised:
+            build_contract_document(database, spec)
+        self.assertIn("Ambiguous section heading", str(raised.exception))
+
+    def test_emitted_vault_metadata_is_sanitized(self) -> None:
+        # A relative path, title or heading carrying bidi overrides or
+        # zero-width characters survives JSON loading and can visually spoof a
+        # path or heading for a downstream agent. The passage was sanitized;
+        # these were copied through raw, while the docs claimed otherwise.
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        bidi, zwsp = "\u202e", "\u200b"
+        (vault / f"Norm{bidi}al.md").write_text(
+            f"---\ntitle: Ti{zwsp}tle\n---\n# H\n\n## He{bidi}ad\n\n"
+            "zephyr quadrata body here.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "metadata",
+                "retrieval": {"query": "zephyr", "limit": 8, "max_characters": 9000},
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                },
+            }
+        )
+        document = build_contract_document(database, spec)
+        self.assertTrue(document["retrieved_context"])
+        for item in document["retrieved_context"]:
+            for field in (
+                "relative_path", "title", "heading", "citation", "passage"
+            ):
+                with self.subTest(field=field):
+                    self.assertNotIn(bidi, item[field])
+                    self.assertNotIn(zwsp, item[field])
+
     def test_excluded_endpoint_never_reaches_the_malformed_diagnostic(self) -> None:
         # An excluded edge is `continue`d BEFORE validation, so a malformed edge
         # whose endpoint the operator excluded must not be able to surface that

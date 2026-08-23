@@ -46,6 +46,40 @@ def valid_payload() -> dict:
 
 
 class TaskSpecParsingTest(unittest.TestCase):
+    def test_null_item_selectors_are_rejected_with_a_structured_error(self) -> None:
+        # The discriminator is key PRESENCE, so `{"text": null}` selects the
+        # text branch. Skipping validation when the value was None produced a
+        # SourceRef with BOTH fields unset, and contract construction later
+        # called _resolve_note(None) and raised an uncaught AttributeError --
+        # the CLI printed a traceback instead of its structured error response,
+        # which breaks the output contract rather than reporting a bad spec.
+        for field in ("text", "note"):
+            for value in (None, "", 7):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(ValueError) as raised:
+                        TaskSpec.from_payload(
+                            {
+                                "objective": "o",
+                                "retrieval": {
+                                    "query": "q",
+                                    "limit": 1,
+                                    "max_characters": 100,
+                                },
+                                "constraints": [{field: value}],
+                                "prior_decisions": [],
+                                "acceptance_criteria": [],
+                                "exclusions": {
+                                    "paths": [],
+                                    "globs": [],
+                                    "tags": [],
+                                    "directives": [],
+                                },
+                            }
+                        )
+                    self.assertIn(
+                        f"constraints[0].{field}", str(raised.exception)
+                    )
+
     def test_valid_full_spec_round_trips(self) -> None:
         spec = TaskSpec.from_payload(valid_payload())
         self.assertEqual(spec.objective, "Refresh the growth atlas with current notes.")

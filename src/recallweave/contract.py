@@ -166,11 +166,19 @@ def connection_evidence_is_well_formed(connection: dict[str, Any]) -> bool:
         # element-level rules live here; whether the terms are genuinely shared
         # by the two notes needs the index and is checked by
         # _shared_terms_are_indexed().
-        if len(shared_terms) < MIN_SHARED_TERMS:
-            return False
         for term in shared_terms:
             if not isinstance(term, str) or not term:
                 return False
+        # DISTINCT terms, and the minimum applies to them. The indexer emits
+        # `sorted(set(...))`, so it never repeats a term; a payload like
+        # ["foo", "foo"] claims two shared terms while asserting only one, and
+        # it satisfied both the length check here and the index check below
+        # (which compares against len(set(terms))). Rejecting the duplicate is
+        # what makes the documented minimum mean two distinct terms.
+        if len(set(shared_terms)) != len(shared_terms):
+            return False
+        if len(shared_terms) < MIN_SHARED_TERMS:
+            return False
     for member in ("method", "explanation"):
         if member in evidence and not isinstance(evidence[member], str):
             return False
@@ -730,9 +738,16 @@ def _resolve_item(
     note_row = connection.execute(
         "SELECT relative_path FROM notes WHERE id = ?", (note_id,)
     ).fetchone()
-    relative_path = str(note_row["relative_path"])
+    # The RAW path is what exclusion matches against, and the sanitized one is
+    # what the document emits. Sanitizing before the exclusion check would let a
+    # path carrying a zero-width character stop matching an operator's exclusion
+    # of that exact raw path -- a weaker boundary, in exchange for tidier
+    # output. Matching sees the vault's bytes; the artifact carries the cleaned
+    # form, as it does for passages.
+    raw_relative_path = str(note_row["relative_path"])
+    relative_path = sanitize(raw_relative_path)
     excluded, reason = _note_excluded(
-        exclusions, relative_path, _tags_for(connection, note_id)
+        exclusions, raw_relative_path, _tags_for(connection, note_id)
     )
     if excluded:
         raise ValueError(
@@ -748,14 +763,30 @@ def _resolve_item(
     if not sections:
         raise ValueError(f"Note has no sections: {ref.note!r}")
     if ref.heading is not None:
-        chosen = next(
-            (s for s in sections if str(s["heading"]).casefold() == ref.heading.casefold()),
-            None,
-        )
-        if chosen is None:
+        matches = [
+            s
+            for s in sections
+            if str(s["heading"]).casefold() == ref.heading.casefold()
+        ]
+        if not matches:
             raise ValueError(
                 f"Section heading not found: {ref.heading!r} in note {ref.note!r}."
             )
+        # A spec has no occurrence or line-number syntax, so when two sections
+        # share a heading -- identically, or differing only by case -- there is
+        # no way for the operator to ask for the second one. Silently taking the
+        # first handed back a valid-looking citation to a passage they did not
+        # choose, with nothing in the artifact to show a choice had been made.
+        # Ambiguity the caller cannot resolve is an error, not a default.
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous section heading {ref.heading!r} in note "
+                f"{ref.note!r}: it matches {len(matches)} sections and the "
+                "spec has no way to choose between them. Give the sections "
+                "distinct headings, or select the note without a heading to "
+                "take its first section."
+            )
+        chosen = matches[0]
     else:
         chosen = sections[0]
 
@@ -825,7 +856,13 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
         # criteria statements, and exclusion directives. Structural metadata
         # (paths, citations, matched terms, kinds, scores, schema strings) is
         # not counted.
-        operator_cost = len(spec.objective)
+        # The objective is charged as it will be EMITTED. Charging the raw
+        # string while emitting sanitize(...) meant a one-character emitted
+        # objective such as "x\u200b" was rejected under a budget of 1, and a
+        # successful document overreported characters_used by whatever
+        # sanitizing removed. Sanitize once, then account and emit from it.
+        objective = sanitize(spec.objective)
+        operator_cost = len(objective)
         operator_cost += sum(len(item["statement"]) for item in constraints)
         operator_cost += sum(len(item["statement"]) for item in prior_decisions)
         operator_cost += sum(len(item["statement"]) for item in acceptance_criteria)
@@ -894,19 +931,28 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                     passage = passage[: max(0, remaining - 1)].rstrip() + "\u2026"
                     budget_truncated = True
                 note_id = int(hit["note_id"])
+                # Vault-derived METADATA is sanitized like the passage. A
+                # relative path, title or heading carrying bidi overrides or
+                # zero-width characters survives JSON loading and can visually
+                # spoof a path or a heading for a downstream agent, and the
+                # documented contract invariant says emitted strings are
+                # sanitized -- it said so while these three were copied through
+                # raw.
                 retrieved_context.append(
                     {
-                        "relative_path": hit["relative_path"],
-                        "title": hit["title"],
-                        "heading": hit["heading"],
+                        "relative_path": sanitize(str(hit["relative_path"])),
+                        "title": sanitize(str(hit["title"])),
+                        "heading": sanitize(str(hit["heading"])),
                         "line_start": hit["line_start"],
                         "line_end": hit["line_end"],
-                        "citation": hit["citation"],
+                        "citation": sanitize(str(hit["citation"])),
                         "passage": passage,
                         "truncated": truncated,
-                        "matched_terms": hit["matched_terms"],
-                        "status": hit["status"],
-                        "domain": hit["domain"],
+                        "matched_terms": [
+                            sanitize(str(term)) for term in hit["matched_terms"]
+                        ],
+                        "status": None if hit["status"] is None else sanitize(str(hit["status"])),
+                        "domain": None if hit["domain"] is None else sanitize(str(hit["domain"])),
                         "evidence_class": "lexical_match",
                         "verified": False,
                     }
@@ -951,8 +997,34 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                 )
                 if source_excluded or target_excluded:
                     suppressed_connections += 1
+                    # An endpoint excluded HERE is a note dropped from the
+                    # projection, and `suppressed.notes` documents the unique
+                    # count of those. Counting the edge but not the note left a
+                    # receipt reporting `notes: 0` while an excluded note had in
+                    # fact been dropped -- the connection path can exclude a
+                    # note the retrieval path never returned, so it is the only
+                    # place that drop is observed.
+                    if source_excluded:
+                        dropped_notes.add(int(row["source_note_id"]))
+                    if target_excluded:
+                        dropped_notes.add(int(row["target_note_id"]))
                     continue
-                verified = bool(row["is_verified"])
+                # The indexer writes only 0 or 1. A corrupt or hand-edited
+                # index -- SQLite check constraints can be bypassed -- could
+                # hold another integer, and bool() would silently read it as
+                # verified. Accepting a value the producer cannot emit is
+                # exactly the assumption the envelope gate exists to remove.
+                raw_verified = row["is_verified"]
+                if isinstance(raw_verified, bool) or raw_verified not in (0, 1):
+                    raise ValueError(
+                        "unauthenticated connection in the index for edge "
+                        f"{row['id']}: its verification flag is not one of the "
+                        "values this indexer writes, so its evidence class "
+                        "cannot be trusted. Re-index the vault. The edge is "
+                        "identified by its database id rather than by note "
+                        "path so this diagnostic carries no vault content."
+                    )
+                verified = bool(raw_verified)
                 # Authenticate the edge RECORD before its payload. The payload
                 # checks below say "this evidence is real"; this says "this edge
                 # is one the indexer could have written", which is what makes the
@@ -1138,7 +1210,7 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "task": {
             "id": sanitize(spec.task_id) if spec.task_id is not None else None,
-            "objective": sanitize(spec.objective),
+            "objective": objective,
         },
         "retrieved_context": retrieved_context,
         "connections": connections,

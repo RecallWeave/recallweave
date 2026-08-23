@@ -208,14 +208,20 @@ class TaskSpec:
                 raise ValueError(
                     f"{name}[{index}] must have exactly one of 'text' or 'note'."
                 )
+            # The discriminator above is key PRESENCE, so `{"text": null}`
+            # selects the text branch. Skipping validation when the value is
+            # None then produced a SourceRef with BOTH fields unset, and
+            # contract construction later called _resolve_note(None) and raised
+            # an uncaught AttributeError -- the CLI printed a traceback instead
+            # of its structured error response, which is a break in the output
+            # contract rather than a bad spec being reported. The SELECTED key's
+            # value is validated unconditionally.
             text = item.get("text")
-            if text is not None:
-                if not isinstance(text, str) or len(text) < 1:
-                    raise ValueError(f"{name}[{index}].text must be a non-empty string.")
             note = item.get("note")
-            if note is not None:
-                if not isinstance(note, str) or len(note) < 1:
-                    raise ValueError(f"{name}[{index}].note must be a non-empty string.")
+            if has_text and (not isinstance(text, str) or len(text) < 1):
+                raise ValueError(f"{name}[{index}].text must be a non-empty string.")
+            if has_note and (not isinstance(note, str) or len(note) < 1):
+                raise ValueError(f"{name}[{index}].note must be a non-empty string.")
             heading = item.get("heading")
             if heading is not None and not isinstance(heading, str):
                 raise ValueError(f"{name}[{index}].heading must be a string.")

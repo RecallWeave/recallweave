@@ -316,6 +316,51 @@ class ContractCliTest(unittest.TestCase):
         # Still actionable: the message names the edge by its database id.
         self.assertRegex(error["message"], r"edge \d+")
 
+    def test_cli_refuses_a_destination_inside_the_vault(self) -> None:
+        # Writing the artifact into the vault IS a write to the vault, yet both
+        # the receipt and the embedded document assert `vault_writes: 0`. The
+        # document is serialized before it is written, so it cannot describe its
+        # own destination -- reporting 1 would leave the artifact carrying a
+        # false claim about itself. Refusing keeps every existing claim true,
+        # and matches how `index` already treats an in-vault database.
+        output = self.vault / "contract.json"
+        exit_code, out, err = self.run_cli(
+            "contract",
+            str(self.spec_path),
+            "--database",
+            str(self.database),
+            "--vault",
+            str(self.vault),
+            "--output",
+            str(output),
+        )
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(out, "")
+        error = json.loads(err)
+        self.assertEqual(error["operation"], "contract")
+        self.assertIn("inside the vault", error["message"])
+        self.assertIn("vault_writes", error["message"])
+        self.assertFalse(
+            output.exists(), "nothing may be written to the refused destination"
+        )
+
+    def test_cli_allows_a_destination_outside_the_vault(self) -> None:
+        # The refusal must be about the VAULT, not about writing at all.
+        output = self.root / "outside-contract.json"
+        exit_code, out, _ = self.run_cli(
+            "contract",
+            str(self.spec_path),
+            "--database",
+            str(self.database),
+            "--vault",
+            str(self.vault),
+            "--output",
+            str(output),
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(output.is_file())
+        self.assertEqual(json.loads(out)["vault_writes"], 0)
+
     def test_cli_force_two_phase_replacement_retains_backup(self) -> None:
         output = self.root / "contract.json"
         output.write_text("approved old output", encoding="utf-8")

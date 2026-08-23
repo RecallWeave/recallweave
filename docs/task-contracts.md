@@ -24,6 +24,24 @@ It separates the operator's assertions (the objective, constraints, and prior
 decisions) from the vault's source material (retrieved passages) and records
 which evidence class each item belongs to.
 
+A section selector must be unambiguous. A spec has no occurrence or line-number
+syntax, so when two sections of a note share a heading — identically or
+differing only by case — there is no way to ask for the second, and the export
+fails rather than silently binding to the first and returning a valid-looking
+citation to a passage the operator did not choose.
+
+Vault-derived **metadata** is sanitized like passage text: relative paths,
+titles, headings, citations, matched terms, status and domain. Bidi overrides
+and zero-width characters survive JSON loading and can visually spoof a path or
+a heading for a downstream agent. Exclusion matching still runs against the
+**raw** path, so sanitizing cannot weaken an operator's exclusion of a path that
+contains such a character.
+
+A contract artifact may not be written **inside the vault**. The receipt and the
+embedded document both assert `vault_writes: 0`, and the document is serialized
+before it is written, so it cannot describe its own destination — refusing keeps
+both claims true, as `index` already does for an in-vault database.
+
 The operator authors the spec. RecallWeave resolves its citations, retrieves
 lexically matched passages, verifies that every citation resolves to a real
 section of the **indexed snapshot** — and, for evidence it did not mint itself,
@@ -522,8 +540,10 @@ well-formedness test:
   `target_evidence` are **optional** — each side is present only when that note
   resolves a cited passage.
 
-  `shared_terms` must be a list of at least **two** non-empty strings, and every
-  term must be one that **both** endpoint notes actually carry in the index. The
+  `shared_terms` must be a list of at least **two** non-empty and **distinct**
+  strings, and every term must be one that **both** endpoint notes actually
+  carry in the index. The indexer emits a sorted set, so it never repeats a
+  term; `["foo", "foo"]` claims two while asserting one. The
   indexer refuses to create a candidate from fewer than two shared terms, and
   ARCHITECTURE.md promises "at least two informative shared terms", so a
   candidate claiming fewer, or claiming vocabulary the notes do not share, is
@@ -590,6 +610,18 @@ applicability tables are:
 - an **authored link** carries a real link kind (`wikilink` or
   `markdown_link`), `is_verified = 1`, `score = 1.0`, and a link that
   **re-derives from the index**.
+
+The verification flag must be exactly `0` or `1` — the only values the indexer
+writes. A corrupt index can hold another integer, since SQLite check constraints
+can be bypassed, and reading it as a truthy boolean would accept a value the
+producer cannot emit.
+
+Each evidence side must cite a section of **its own endpoint**: `source_evidence`
+of the source note, `target_evidence` of the target note. Resolving a citation
+against the whole index authenticated a section that merely existed somewhere,
+which let a tampered candidate carry an authentic passage from an unrelated —
+including an **excluded** — note into the artifact while `exclusions.enforced`
+still reported true.
 
 Re-derivation means the binding, not the parts, and how much can be bound
 depends on where the link is.

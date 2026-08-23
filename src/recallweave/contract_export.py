@@ -47,6 +47,7 @@ def export_contract(
     *,
     output_format: str = "json",
     force: bool = False,
+    vault: Path | None = None,
 ) -> dict[str, Any]:
     if output_format not in ("json", "markdown"):
         raise ValueError(
@@ -64,6 +65,25 @@ def export_contract(
         return receipt
 
     output = Path(os.path.abspath(output.expanduser()))
+    # An artifact written INSIDE the vault is a write to the vault, and both
+    # this receipt and the embedded document assert `vault_writes: 0`. Reporting
+    # 1 instead would leave the artifact itself carrying a false claim -- it is
+    # serialized before it is written, so it cannot describe its own
+    # destination. Refusing keeps every existing claim true, and matches how
+    # `index` already treats an in-vault database.
+    #
+    # It is also a footgun in its own right: a contract quoting the vault,
+    # stored in the vault, is re-indexed on the next run and starts quoting
+    # itself.
+    if vault is not None:
+        resolved_vault = Path(os.path.abspath(vault.expanduser()))
+        if resolved_vault in output.parents or output == resolved_vault:
+            raise ValueError(
+                "Refusing to write a contract artifact inside the vault "
+                f"({output}). The receipt and the document both assert "
+                "vault_writes: 0, which would be false. Choose --output "
+                "outside the vault."
+            )
     guard = prepare_destination(output, database, force=force, label="Contract output")
     verify_destination(output, database, guard, label="Contract output")
 
