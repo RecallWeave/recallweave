@@ -28,6 +28,8 @@ from recallweave.contract_markdown import render_contract_markdown
 from recallweave.contract_spec import TaskSpec
 from recallweave.index import build_index
 
+from tests.test_contract_markdown_injection import HOSTILE_VAULT_FILENAME
+
 try:
     import mistletoe
     from mistletoe.block_token import (
@@ -815,11 +817,12 @@ class EndToEndHostileVaultFilenameTest(unittest.TestCase):
         self.vault = self.root / "vault"
         self.vault.mkdir()
         self.database = self.root / "index.sqlite"
-        # See HOSTILE_VAULT_FILENAME in test_contract_markdown_injection: a
-        # filename that is hostile Markdown while remaining legal on every
-        # platform CI runs. The `:` the old fixture carried is forbidden in
-        # Windows filenames, so the note was never created there.
-        self.hostile_name = "![pixel](x)  [click](evil-payload).md"
+        # IMPORTED, not copied. This is the third test that failed on Windows,
+        # and a duplicated literal here would sit outside
+        # HostileFilenamePortabilityTest -- so reintroducing a Windows-reserved
+        # character in this copy would again fail only on Windows, which is the
+        # exact blind spot that guard exists to close.
+        self.hostile_name = HOSTILE_VAULT_FILENAME
         note = self.vault / self.hostile_name
         note.write_text(
             "---\ntitle: Hostile\n---\n# Hostile\n\n## S\n\n"
@@ -874,7 +877,7 @@ class EndToEndHostileVaultFilenameTest(unittest.TestCase):
         # fenced content and never parsed as a live Link/Image.
         parsed = assert_parser_inertness(self, markdown)
         assert_sentinel_inert(self, markdown, "![pixel](x)")
-        assert_sentinel_inert(self, markdown, "[click](evil-payload)")
+        assert_sentinel_inert(self, markdown, HOSTILE_VAULT_FILENAME[:-3])
         assert_heading_sequence_identical(
             self,
             render_contract_markdown(_benign_document()),

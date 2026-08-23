@@ -1303,6 +1303,42 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
             self.assertNotIn(chr(codepoint), HOSTILE_VAULT_FILENAME)
         self.assertFalse(HOSTILE_VAULT_FILENAME.endswith((" ", ".")))
 
+    def test_every_hostile_filename_fixture_uses_the_shared_constant(self) -> None:
+        # The guard is only worth having if it covers EVERY fixture. The AST
+        # end-to-end test is the third test that failed on Windows, and it lives
+        # in another module; a literal copied there would sit outside this
+        # guard, so reintroducing a reserved character in that copy would again
+        # fail only on Windows. Assert it imports the same constant rather than
+        # trusting that it does.
+        from tests import test_contract_markdown_ast as ast_module
+
+        # Compared by VALUE, not identity: `unittest discover` imports these
+        # modules under both `tests.x` and `x`, so the two copies hold equal but
+        # distinct string objects. Identity would fail for a reason that has
+        # nothing to do with the property.
+        self.assertEqual(
+            ast_module.HOSTILE_VAULT_FILENAME,
+            HOSTILE_VAULT_FILENAME,
+            "the AST end-to-end test must use the shared fixture, not copy "
+            "it -- a copy is exactly how this defect reached Windows",
+        )
+        # And no hostile-filename LITERAL may reappear there. Scanned as a
+        # filename shape -- a quoted string ending in `.md` that carries
+        # Markdown link syntax -- so ordinary sentinel assertions like
+        # `assert_sentinel_inert(self, markdown, "![pixel](x)")`, which are not
+        # filenames, are not caught by it.
+        import re
+
+        source = Path(ast_module.__file__).read_text(encoding="utf-8")
+        literals = re.findall(r'"([^"\n]*\.md)"', source)
+        hostile = [name for name in literals if "](" in name]
+        self.assertEqual(
+            hostile,
+            [],
+            "the AST test carries a hostile-filename literal; it must use "
+            "HOSTILE_VAULT_FILENAME so this guard covers it",
+        )
+
     def test_hostile_filename_still_carries_live_markdown_syntax(self) -> None:
         # The other half: legal everywhere is worthless if the fixture stopped
         # being hostile. It must still parse as LIVE Markdown on its own, so
