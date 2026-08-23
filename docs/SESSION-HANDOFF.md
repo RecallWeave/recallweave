@@ -18,7 +18,10 @@ This is a durable capability, not a demo.
 
 **Phase: PROMOTED to a milestone PR, awaiting human merge.**
 
-- Integration branch: `foundry/task-contracts` — the durable remote checkpoint.
+- Integration branch: `foundry/steward` — the durable remote checkpoint, cut
+  from `main` after PR #1 merged. `foundry/task-contracts` is HISTORICAL: it is
+  the implementation lineage behind that PR and must never be merged into
+  current work.
 - Suite green with the CommonMark parser and again under
   `-W error::ResourceWarning`; `compileall` clean; runtime dependencies still
   empty (`mistletoe` remains test-only). For the current count and verdict read
@@ -29,7 +32,7 @@ This is a durable capability, not a demo.
   `main`. For the run of verdicts read `.codex-reviews/review-*.md` in order;
   restating a count here only creates something else to go stale.
 - The review gate is satisfied and Josh approved promotion. The milestone PR
-  from `foundry/task-contracts` to `main` is open, and
+  from `foundry/task-contracts` to `main` was merged, and
   `CHECKPOINT_NOT_APPROVED.md` was deleted in the promotion commit that opened
   it. **The merge itself is still Josh's** — no automation may merge it, mark
   it auto-mergeable, or make it ready on his behalf.
@@ -72,7 +75,7 @@ will repeat work already paid for.
     (Josh's decision). A candidate is checked to be *shaped and evidenced like*
     one the indexer produces, not to *be* one it produced. The docs say so.
 12. **Git cadence** (see CLAUDE.md/AGENTS.md): `main` is protected;
-    `foundry/task-contracts` auto-pushes as a checkpoint whenever the suite is
+    the active integration branch auto-pushes as a checkpoint whenever the suite is
     green and the tree is clean. A failing review does NOT block the checkpoint
     push; it DOES block promotion, merge, release, deploy and milestone PR.
 13. **Codex is the independent adversarial reviewer and must never be used as
@@ -148,7 +151,8 @@ All integrated, green, and each mutation-proven against the pre-fix tree:
 1. **The milestone PR is open and awaiting Josh's merge.** Do not merge it,
    enable auto-merge, or push to `main`. That is the whole point of the
    cadence's promotion split.
-2. **If the PR needs changes**, push them to `foundry/task-contracts` and
+2. **If a milestone PR needs changes**, push them to the active integration
+   branch and
    **re-run the gate**: update the block between `<!-- CYCLE-CONTEXT-START -->`
    and `<!-- CYCLE-CONTEXT-END -->` in `docs/CODEX-REVIEW-PROMPT.md`, then
    `./scripts/codex-review.sh`. A PASS ages the moment the tree changes.
