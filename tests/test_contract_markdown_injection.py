@@ -200,6 +200,25 @@ def _parse_document(markdown: str):
     return mistletoe.Document(markdown.splitlines(keepends=True))
 
 
+# A vault filename that is hostile MARKDOWN while remaining a legal filename on
+# every platform CI runs. It keeps the surface that matters -- image syntax,
+# link syntax, brackets, parentheses and the double space that can end a line --
+# and drops the `:` that Windows forbids in a filename.
+#
+# The property under test is that a filename carrying Markdown syntax cannot
+# produce LIVE Markdown in the artifact, and that holds regardless of the URL
+# scheme inside the link: the renderer fences the whole citation, so nothing in
+# it is ever parsed as a link at all. The earlier fixture used
+# `[click](javascript:alert(1)).md`, which cannot exist on Windows -- the file
+# was never created under that name, the note was not found, and three tests
+# errored there while passing on macOS and Linux.
+#
+# The `javascript:` scheme keeps its own coverage, in CONTENT rather than in a
+# path, where no filesystem is involved and every platform can carry it: see
+# JAVASCRIPT_LINK below, which is driven through operator statements,
+# connection kinds and exclusion directives.
+HOSTILE_VAULT_FILENAME = "![pixel](x)  [click](evil-payload).md"
+
 def _code_fence_contents(parsed) -> list[str]:
     """Every CodeFence token's content, i.e. the whole untrusted channel. The
     parser reports fence content with its trailing newline; that is stripped so
@@ -1258,6 +1277,44 @@ class EscapedDisciplineTest(unittest.TestCase):
             _join(_literal("a"), "raw untrusted")
 
 
+class HostileFilenamePortabilityTest(unittest.TestCase):
+    """The hostile-filename fixture must be creatable on every platform CI runs.
+
+    A fixture that cannot exist on one platform does not weaken the property it
+    tests -- it silently stops testing it there. Three tests errored on Windows
+    for three cycles because the fixture carried a `:`, which Windows forbids in
+    a filename: the file was never created under that name, the note was not
+    found, and the failure looked like a product defect rather than a fixture
+    one. This guard fails at the fixture instead."""
+
+    # Windows reserves these in filenames; POSIX only reserves `/` and NUL.
+    WINDOWS_RESERVED = '<>:"/\\|?*'
+
+    def test_hostile_filename_is_creatable_on_every_platform(self) -> None:
+        for character in self.WINDOWS_RESERVED:
+            self.assertNotIn(
+                character,
+                HOSTILE_VAULT_FILENAME,
+                f"{character!r} is reserved in Windows filenames, so this "
+                "fixture cannot be created there and its tests would error "
+                "rather than run",
+            )
+        for codepoint in range(0x00, 0x20):
+            self.assertNotIn(chr(codepoint), HOSTILE_VAULT_FILENAME)
+        self.assertFalse(HOSTILE_VAULT_FILENAME.endswith((" ", ".")))
+
+    def test_hostile_filename_still_carries_live_markdown_syntax(self) -> None:
+        # The other half: legal everywhere is worthless if the fixture stopped
+        # being hostile. It must still parse as LIVE Markdown on its own, so
+        # that rendering it inertly is a real property and not a tautology.
+        if not _MISTLETOE_AVAILABLE:
+            self.skipTest("requires the test extra (mistletoe)")
+        parsed = _parse_document(HOSTILE_VAULT_FILENAME)
+        kinds = {type(token).__name__ for token in _walk_tokens(parsed)}
+        self.assertIn("Image", kinds, "fixture lost its image syntax")
+        self.assertIn("Link", kinds, "fixture lost its link syntax")
+
+
 class ContractVaultInjectionTest(unittest.TestCase):
     """Routes fed from hostile vault text, including end-to-end through argv."""
 
@@ -1405,7 +1462,7 @@ class ContractVaultInjectionTest(unittest.TestCase):
         root = Path(temp.name)
         vault = root / "vault"
         vault.mkdir()
-        hostile_name = "![pixel](x)  [click](javascript:alert(1)).md"
+        hostile_name = HOSTILE_VAULT_FILENAME
         note = vault / hostile_name
         note.write_text(
             "---\ntitle: Hostile\n---\n# Hostile\n\n## S\n\n"
@@ -1428,10 +1485,12 @@ class ContractVaultInjectionTest(unittest.TestCase):
         )
         document = build_contract_document(database, spec)
         citation = document["constraints"][0]["citation"]
-        self.assertIn("javascript:alert(1)", citation)
+        self.assertIn("[click](evil-payload)", citation)
         self.assertIn("![pixel](x)", citation)
         rendered = render_contract_markdown(document)
-        self.assertNotIn("[click](javascript:alert(1))", "\n".join(_non_fence_lines(rendered)))
+        self.assertNotIn(
+            "[click](evil-payload)", "\n".join(_non_fence_lines(rendered))
+        )
         _assert_no_live_inline(self, rendered)
         assert_structure_invariant(self, rendered)
 
@@ -1443,7 +1502,7 @@ class ContractVaultInjectionTest(unittest.TestCase):
         root = Path(temp.name)
         vault = root / "vault"
         vault.mkdir()
-        hostile_name = "![pixel](x)  [click](javascript:alert(1)).md"
+        hostile_name = HOSTILE_VAULT_FILENAME
         note = vault / hostile_name
         note.write_text(
             "---\ntitle: Hostile\n---\n# Hostile\n\n## S\n\n"
@@ -1466,9 +1525,11 @@ class ContractVaultInjectionTest(unittest.TestCase):
         )
         document = build_contract_document(database, spec)
         citation = document["prior_decisions"][0]["citation"]
-        self.assertIn("javascript:alert(1)", citation)
+        self.assertIn("[click](evil-payload)", citation)
         rendered = render_contract_markdown(document)
-        self.assertNotIn("[click](javascript:alert(1))", "\n".join(_non_fence_lines(rendered)))
+        self.assertNotIn(
+            "[click](evil-payload)", "\n".join(_non_fence_lines(rendered))
+        )
         _assert_no_live_inline(self, rendered)
         assert_structure_invariant(self, rendered)
 

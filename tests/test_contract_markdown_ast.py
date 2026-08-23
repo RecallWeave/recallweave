@@ -815,7 +815,11 @@ class EndToEndHostileVaultFilenameTest(unittest.TestCase):
         self.vault = self.root / "vault"
         self.vault.mkdir()
         self.database = self.root / "index.sqlite"
-        self.hostile_name = "![pixel](x)  [click](javascript:alert(1)).md"
+        # See HOSTILE_VAULT_FILENAME in test_contract_markdown_injection: a
+        # filename that is hostile Markdown while remaining legal on every
+        # platform CI runs. The `:` the old fixture carried is forbidden in
+        # Windows filenames, so the note was never created there.
+        self.hostile_name = "![pixel](x)  [click](evil-payload).md"
         note = self.vault / self.hostile_name
         note.write_text(
             "---\ntitle: Hostile\n---\n# Hostile\n\n## S\n\n"
@@ -870,7 +874,7 @@ class EndToEndHostileVaultFilenameTest(unittest.TestCase):
         # fenced content and never parsed as a live Link/Image.
         parsed = assert_parser_inertness(self, markdown)
         assert_sentinel_inert(self, markdown, "![pixel](x)")
-        assert_sentinel_inert(self, markdown, "[click](javascript:alert(1))")
+        assert_sentinel_inert(self, markdown, "[click](evil-payload)")
         assert_heading_sequence_identical(
             self,
             render_contract_markdown(_benign_document()),
