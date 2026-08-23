@@ -19,7 +19,7 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: POST-PROMOTION STEWARDSHIP. No work in flight.**
+**Phase: POST-PROMOTION STEWARDSHIP — cycle 20 FAIL; remediation queued.**
 
 - Integration branch: **`foundry/steward`**, cut from `main` after PR #1 merged.
 - `foundry/task-contracts` is **HISTORICAL** — the implementation lineage behind
@@ -105,8 +105,7 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 1. **Stale P0 epics closed.** `recallweave-9ew` and `recallweave-vzb` — all
    children shipped in PR #1.
-2. **`recallweave-z1a` remains deferred** until post-stewardship triage (P1 bug,
-   not blocking checkpoint durability).
+2. **`recallweave-z1a` closed and integrated** (`2696bb9`, 2026-08-23).
 3. **Context-health gap closed.** `rw_supervisor.py` now probes
    `ntm status --json` for `context_tokens` and enforces the 100K/130K/140K
    bands (rotate refuses dirty worktrees; dispatch withheld from checkpoint+).
@@ -115,10 +114,17 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- **Active bead:** `recallweave-z1a` (P1, undeferred 2026-08-23) — connection cap
-  after exclusions; reject note-only fields on text items. OWNS declared; supervisor
-  will dispatch on the next tick.
-- **Worker assignments:** pending dispatch (all eight lanes idle).
+- **Cycle 20 adversarial gate:** **FAIL** — `.codex-reviews/review-20260823T221453Z.md`
+  (High: exclusion SQL parameter explosion from z1a; text-item validation OK).
+- **Phase 1 (ready now):** `recallweave-ur0` — fix exclusion query strategy; OWNS
+  declared; supervisor will dispatch.
+- **Phase 2 (deferred +4h, blocks on ur0):** `recallweave-jqq` — per-region
+  sanitizer mutation audits. Undefer after ur0 closes + cycle-21 PASS.
+- **Phase 3 (deferred +4h, blocks on jqq):** `recallweave-3ea` — endpoint-binding
+  and candidate canonical-form mutation audits.
+- **Phase 4 (milestone, human-gated):** promotion PR from `foundry/steward` →
+  `main` after PASS + Josh merge approval. Not automated.
+- **Worker assignments:** pending dispatch of `recallweave-ur0`.
 
 ## 7. Known failure modes and traps
 
@@ -179,8 +185,8 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 - **Running.** launchd `com.particle.rw-supervisor`, `StartInterval` 300s.
   `~/.particle-supervisor/PAUSED` is absent. Context-health probe active
   (`ntm status --json` → 100K/130K/140K bands).
-- It is idle **by design**: no open dispatchable beads; `z1a` is deferred. This
-  is not a wedged swarm.
+- It is idle **by design**: no dispatchable open beads; phase-2/3 beads are
+  deferred pending cycle-20 PASS.
 - Pause with `touch ~/.particle-supervisor/PAUSED`; resume with `rm -f` on it.
   Note `--dry-run` is gated behind the PAUSED check.
 - **The supervisor owns the routine loop** — integrate, gate, rotate, nudge,
@@ -189,18 +195,12 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 9. Review state
 
-- Adversarial gate: **PASS**, `.codex-reviews/review-20260823T024349Z.md`.
-- Both merged PRs passed all ten required checks.
-- **A PASS ages the moment the tree changes.** To re-run: update the block
-  between `<!-- CYCLE-CONTEXT-START -->` and `<!-- CYCLE-CONTEXT-END -->` in
-  `docs/CODEX-REVIEW-PROMPT.md`, then `./scripts/codex-review.sh`.
-- Suite: **461 tests, OK, 1 skipped.** The skip is `test_junction_parent_refused`
-  ('junctions are a Windows construct') — correctly platform-guarded, and it does
-  run on the Windows CI legs.
-- Note: commits `9f0db73`, `7467b7d`, `ab9bda9`, `d4960a6` have landed on
-  `foundry/steward` since that PASS. They are docs/checkpoint/beads-export
-  changes, but the gate has not re-run over them. **Re-run the gate before any
-  future promotion** — do not carry the old PASS forward.
+- Adversarial gate: **FAIL**, `.codex-reviews/review-20260823T221453Z.md` (cycle 20).
+  One new High: z1a SQL exclusion uses 2× excluded-note placeholders and exceeds
+  `SQLITE_LIMIT_VARIABLE_NUMBER` at ~125k excluded notes. Prior PASS
+  `review-20260823T024349Z.md` is superseded.
+- Promotion blocked until remediation (`recallweave-ur0`) lands and cycle 21
+  re-review returns PASS.
 
 ## 10. Do NOT replan or reconsider
 
@@ -226,10 +226,10 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Tree clean | **yes** — 0 dirty paths, including `.beads/` |
 | Unpushed commits | **no** — `HEAD` == `origin/foundry/steward` |
 | Unintegrated worker commits | **no** — all 8 lanes 0 ahead, 0 uncommitted |
-| `foundry/steward` vs `origin/main` | 5 ahead, 0 behind |
-| Supervisor | **running**, tick 283, all lanes idle |
-| Latest verdict | PASS, but 4 commits newer than it |
-| Beads authoritative | **yes** — 0 open, 1 deferred, 0 blockers |
+| `foundry/steward` vs `origin/main` | 12 ahead, 0 behind |
+| Supervisor | **running**, all lanes idle |
+| Latest verdict | FAIL cycle 20 (`review-20260823T221453Z`); ur0 remediation ready |
+| Beads authoritative | **yes** — 1 open (ur0), 2 deferred (jqq, 3ea), 0 blockers |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
