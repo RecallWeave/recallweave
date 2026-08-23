@@ -10,6 +10,7 @@ from __future__ import annotations
 # heading/list nodes), which is the strongest check the stdlib permits. This is
 # an accepted, documented deviation, not an oversight.
 
+import ast
 import copy
 import json
 import os
@@ -1277,9 +1278,42 @@ class EscapedDisciplineTest(unittest.TestCase):
             _join(_literal("a"), "raw untrusted")
 
 
+def _vault_write_fixture_names() -> list[str]:
+    """Every vault-note fixture filename the test suite actually writes, found
+    by scanning test source for ``write``/``write_text``/``write_bytes`` calls
+    whose first argument is a ``.md`` string. This is deliberately scoped to
+    real WRITES (not every ``.md`` literal): assertion fragments, citation
+    strings, docs references, and Windows-style path-normalization literals
+    (``RESTRICTED\\\\PRIVATE\\\\DEEP.md``) are not fixtures and are not
+    checked. Any future fixture that reintroduces a Windows-reserved character
+    is caught here, on every platform, instead of erroring only on Windows."""
+    root = Path(__file__).resolve().parents[1]
+    names: list[str] = []
+    for path in sorted((root / "tests").glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in ("write", "write_text", "write_bytes"):
+                continue
+            if not node.args:
+                continue
+            arg = node.args[0]
+            if (
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value.endswith(".md")
+                and arg.value != ".md"
+            ):
+                names.append(arg.value)
+    return names
+
+
 class HostileFilenamePortabilityTest(unittest.TestCase):
     """The hostile-filename fixture must be creatable on every platform CI runs.
-
     A fixture that cannot exist on one platform does not weaken the property it
     tests -- it silently stops testing it there. Three tests errored on Windows
     for three cycles because the fixture carried a `:`, which Windows forbids in
@@ -1386,6 +1420,35 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
         kinds = {type(token).__name__ for token in _walk_tokens(parsed)}
         self.assertIn("Image", kinds, "fixture lost its image syntax")
         self.assertIn("Link", kinds, "fixture lost its link syntax")
+
+    def test_every_vault_write_fixture_is_platform_portable(self) -> None:
+        # Generalize the hostile-filename guard to EVERY fixture the suite
+        # writes: a fixture that cannot exist on Windows does not weaken the
+        # property it tests — it silently stops testing it there. Scan all
+        # vault-write fixture names and check each PATH COMPONENT against the
+        # Windows reserved set (excluding `/` and `\`, which are separators),
+        # the C0 control characters, and a trailing space or dot.
+        names = _vault_write_fixture_names()
+        self.assertGreater(len(names), 10, "scan must cover the suite's fixtures")
+        for name in names:
+            components = re.split(r"[\\/]", name)
+            for component in components:
+                with self.subTest(fixture=name, component=component):
+                    for character in self.WINDOWS_RESERVED.replace("/", "").replace("\\", ""):
+                        self.assertNotIn(
+                            character,
+                            component,
+                            f"{character!r} is reserved in Windows filenames, so "
+                            f"fixture {name!r} cannot be created there and its "
+                            "tests would error rather than run",
+                        )
+                    for codepoint in range(0x00, 0x20):
+                        self.assertNotIn(chr(codepoint), component)
+                    self.assertFalse(
+                        component.endswith((" ", ".")),
+                        f"component {component!r} of fixture {name!r} ends in a "
+                        "space or dot, which Windows strips from filenames",
+                    )
 
 
 class ContractVaultInjectionTest(unittest.TestCase):

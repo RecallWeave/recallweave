@@ -51,6 +51,45 @@ class RecallWeaveTest(unittest.TestCase):
         self.assertEqual(receipt["notes_indexed"], 1)
         self.assertEqual(receipt["skipped"]["not_allowlisted"], 6)
 
+    def test_path_matching_is_case_insensitive(self) -> None:
+        # Decided behaviour: note resolution and exclusion matching both key off
+        # casefolded paths, so a link or exclusion written with a different case
+        # than the on-disk note still resolves/matches. This is the decision this
+        # project pins (paths are treated case-insensitively) so it does not
+        # drift on the case-sensitivity of the host filesystem.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "Alpha.md").write_text("# Alpha\n\nbody.\n", encoding="utf-8")
+        (vault / "Beta.md").write_text(
+            "# Beta\n\nSee [[alpha]].\n", encoding="utf-8"
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        with connect(database, readonly=True) as connection:
+            unresolved = connection.execute(
+                "SELECT COUNT(*) FROM unresolved_links"
+            ).fetchone()[0]
+            resolved = connection.execute(
+                "SELECT COUNT(*) FROM edges WHERE is_verified = 1"
+            ).fetchone()[0]
+        # A case-variant link [[alpha]] must resolve to Alpha.md.
+        self.assertEqual(unresolved, 0, "a case-variant link must resolve")
+        self.assertEqual(resolved, 1, "the case-variant link must index an edge")
+
+        # A case-variant exclusion must match: an uppercase glob excludes the
+        # on-disk Alpha.md (exclude_globs are casefolded).
+        database2 = root / "index2.sqlite"
+        receipt = build_index(
+            vault,
+            database2,
+            policy=IndexPolicy(exclude_globs=["ALPHA.MD"]),
+            minimum_candidate_score=0.0,
+        )
+        self.assertEqual(receipt["notes_indexed"], 1, "only Beta.md remains")
+
     def test_verified_and_candidate_edges_are_separate(self) -> None:
         with connect(self.database, readonly=True) as connection:
             verified = connection.execute(

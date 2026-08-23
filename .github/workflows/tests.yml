@@ -26,7 +26,13 @@ jobs:
       - run: python -m unittest discover -s tests -v
 
   viewer:
-    runs-on: ubuntu-latest
+    # The "production server delivers every rendered client asset" test is
+    # about Windows asset serving, so run it where that platform is exercised,
+    # not only on Linux.
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     defaults:
       run:

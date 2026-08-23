@@ -1311,6 +1311,53 @@ class ContractDocumentTest(unittest.TestCase):
         second_copy["provenance"].pop("generated_at")
         self.assertEqual(first_copy, second_copy)
 
+    def test_line_ending_matrix_byte_identical_output(self) -> None:
+        # The documented deterministic output holds across line endings: LF,
+        # CRLF, and bare-CR source files must produce byte-identical contract
+        # output, because the parser splits on every line-boundary variant and
+        # the renderer normalizes CRLF/CR to LF for fence safety. Index two
+        # equivalent vaults written with different line endings and compare the
+        # built document byte-for-byte after removing generated_at. This is the
+        # normalization the local gate can observe, so it is pinned here.
+        def build_with(newline: str) -> dict:
+            if not hasattr(self, "_kept_tmp"):
+                self._kept_tmp = []
+            temp = tempfile.TemporaryDirectory()
+            self._kept_tmp.append(temp)
+            root = Path(temp.name)
+            vault = root / "vault"
+            vault.mkdir()
+            notes = {
+                "Alpha.md": (
+                    "---\ntitle: Alpha\n---\n# Alpha\n\n## S\n\n"
+                    "zephyr quadrata shared topic alpha.\n"
+                ),
+                "Beta.md": (
+                    "---\ntitle: Beta\n---\n# Beta\n\n## S\n\n"
+                    "zephyr quadrata shared topic beta.\n"
+                ),
+            }
+            for name, text in notes.items():
+                (vault / name).write_text(
+                    text.replace("\n", newline), encoding="utf-8", newline=""
+                )
+            database = root / "index.sqlite"
+            build_index(vault, database, minimum_candidate_score=0.0)
+            document = build_contract_document(database, self._evidence_spec())
+            document["provenance"].pop("generated_at")
+            document["provenance"]["index"].pop("indexed_at")
+            return document
+
+        baseline = build_with("\n")
+        for newline in ("\r\n", "\r"):
+            with self.subTest(newline=repr(newline)):
+                variant = build_with(newline)
+                self.assertEqual(
+                    variant,
+                    baseline,
+                    f"line ending {newline!r} changed the deterministic output",
+                )
+
     def test_missing_section_heading_raises_valueerror(self) -> None:
         spec = self._full_spec(
             constraints=[
