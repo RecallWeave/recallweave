@@ -27,8 +27,18 @@ def _normalize(value: str) -> str:
     return sanitize(value).replace("\\", "/").casefold()
 
 
-def _clean_tag(value: str) -> str:
-    return value[1:] if value.startswith("#") else value
+def _normalize_tag(value: str) -> str:
+    """Normalize a tag for comparison, SANITIZED like every other vault-side
+    value.
+
+    Tags reach the index straight from frontmatter and are stored unsanitized,
+    so this is the same silent-exclusion class as paths: a note tagged
+    `private<ZWSP>` did not match a clean `private` selector, while the
+    selector was accepted, emitted as `private`, and the artifact reported
+    `enforced: true`. The first fix normalized paths and globs and left tags on
+    a separate code path -- half a class is not a fix."""
+    value = sanitize(value)
+    return (value[1:] if value.startswith("#") else value).casefold()
 
 
 def _validate(name: str, values: Any) -> list[str]:
@@ -60,7 +70,7 @@ class ExclusionSet:
         self.directives = _validate("directives", self.directives)
         self.paths = [_normalize(path) for path in self.paths]
         self.globs = [_normalize(glob) for glob in self.globs]
-        self.tags = [_clean_tag(tag).casefold() for tag in self.tags]
+        self.tags = [_normalize_tag(tag) for tag in self.tags]
         for glob in self.globs:
             try:
                 re.compile(fnmatch.translate(glob))
@@ -85,7 +95,7 @@ class ExclusionSet:
         return False, None
 
     def excludes_tags(self, tags: list[str]) -> tuple[bool, str | None]:
-        probe = {_clean_tag(str(tag)).casefold() for tag in tags}
+        probe = {_normalize_tag(str(tag)) for tag in tags}
         if probe.intersection(self.tags):
             return True, "excluded_tag"
         return False, None

@@ -284,19 +284,27 @@ def _indexed_side_evidence(
         if dash and start_text.isdigit() and end_text.isdigit():
             start, end = int(start_text), int(end_text)
             if 1 <= start <= end:
+                # The citation's path is compared SANITIZED on both sides.
+                # _edge_evidence sanitizes the emitted citation, so a note whose
+                # filename carries an invisible character has a citation that no
+                # longer equals its raw `relative_path` -- comparing raw
+                # rejected a genuine index. This is the same normalization
+                # boundary as everywhere else: authenticate against what the
+                # index holds, in the form the artifact carries it.
                 row = connection.execute(
                     """
-                    SELECT s.heading, s.text
+                    SELECT s.heading, s.text, n.relative_path
                     FROM sections s
                     JOIN notes n ON n.id = s.note_id
                     WHERE n.id = ?
-                      AND n.relative_path = ?
                       AND s.line_start = ?
                       AND s.line_end = ?
                     LIMIT 1
                     """,
-                    (note_id, path, start, end),
+                    (note_id, start, end),
                 ).fetchone()
+                if row is not None and sanitize(str(row["relative_path"])) != path:
+                    row = None
                 if row is not None:
                     text = str(row["text"])
                     truncated = len(text) > MAX_PASSAGE_CHARACTERS
@@ -1075,8 +1083,13 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                     )
                 evidence = _edge_evidence(str(row["evidence_json"]))
                 candidate = {
-                    "source": row["source_path"],
-                    "target": row["target_path"],
+                    # Endpoint paths are emitted vault metadata and are
+                    # sanitized like every other emitted string. Markdown
+                    # fencing stops them becoming live markup but does not
+                    # remove a bidi override, which can still visually spoof an
+                    # endpoint for a reader.
+                    "source": sanitize(str(row["source_path"])),
+                    "target": sanitize(str(row["target_path"])),
                     "kind": row["kind"],
                     "verified": verified,
                     "score": row["score"],

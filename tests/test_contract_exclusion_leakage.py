@@ -155,6 +155,131 @@ class ContractExclusionLeakageTest(unittest.TestCase):
         markdown = md_out.read_bytes()
         return document, markdown, json_out
 
+    def test_a_clean_selector_matches_every_sanitized_vault_side_value(self) -> None:
+        # ONE invariant, applied to EVERY matching class: a clean selector must
+        # match a vault-side value that sanitization would change. The first fix
+        # normalized paths and globs and left tags on a separate code path, so a
+        # note tagged `private<ZWSP>` slipped a clean `private` exclusion while
+        # the artifact reported enforced: true. A per-class test would have
+        # missed that the same way the fix did; this one is table-driven so a
+        # new selector class has to be added here to be covered.
+        import tempfile
+
+        cases = {
+            "path": ("paths", "Restricted/Secret.md"),
+            "glob": ("globs", "Restricted/*"),
+            "tag": ("tags", "private"),
+        }
+        for label, (field_name, selector) in cases.items():
+            for invisible in ("\u200b", "\u202e"):
+                with self.subTest(selector=label, char=repr(invisible)):
+                    temp = tempfile.TemporaryDirectory()
+                    self.addCleanup(temp.cleanup)
+                    root = Path(temp.name)
+                    vault = root / "vault"
+                    (vault / "Restricted").mkdir(parents=True)
+                    (vault / "Public.md").write_text(
+                        "---\ntitle: P\n---\n# P\n\n## S\n\nzephyr public body.\n",
+                        encoding="utf-8",
+                        newline="",
+                    )
+                    # The vault side carries the invisible character; for the
+                    # tag case it is in the frontmatter, for the others in the
+                    # path itself.
+                    if label == "tag":
+                        secret = vault / "Restricted" / "Secret.md"
+                        secret.write_text(
+                            f'---\ntitle: S\ntags: ["private{invisible}"]\n---\n'
+                            "# S\n\n## S\n\nzephyr ZZSECRETBODY here.\n",
+                            encoding="utf-8",
+                            newline="",
+                        )
+                    else:
+                        secret = vault / "Restricted" / f"{invisible}Secret.md"
+                        secret.write_text(
+                            "---\ntitle: S\n---\n# S\n\n## S\n\n"
+                            "zephyr ZZSECRETBODY here.\n",
+                            encoding="utf-8",
+                            newline="",
+                        )
+                    database = root / "index.sqlite"
+                    build_index(vault, database, minimum_candidate_score=0.0)
+                    exclusions = {
+                        "paths": [], "globs": [], "tags": [], "directives": []
+                    }
+                    exclusions[field_name] = [selector]
+                    spec = TaskSpec.from_payload(
+                        {
+                            "objective": "invisible vault-side value",
+                            "retrieval": {
+                                "query": "zephyr",
+                                "limit": 8,
+                                "include_candidates": True,
+                                "max_characters": 9000,
+                            },
+                            "constraints": [],
+                            "prior_decisions": [],
+                            "acceptance_criteria": [],
+                            "exclusions": exclusions,
+                        }
+                    )
+                    document = build_contract_document(database, spec)
+                    blob = json.dumps(document)
+                    self.assertNotIn("ZZSECRETBODY", blob)
+                    self.assertTrue(document["exclusions"]["enforced"])
+
+    def test_connection_endpoints_are_sanitized(self) -> None:
+        # Endpoint paths are emitted vault metadata. Markdown fencing stops them
+        # becoming live markup but does not remove a bidi override, which can
+        # still visually spoof an endpoint for a reader -- and the docs say
+        # every emitted string is sanitized.
+        import tempfile
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        bidi, zwsp = "\u202e", "\u200b"
+        (vault / f"Al{bidi}pha.md").write_text(
+            "---\ntitle: Alpha\n---\n# Alpha\n\n## S\n\n"
+            "zephyr quadrata shared topic alpha.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / f"Be{zwsp}ta.md").write_text(
+            "---\ntitle: Beta\n---\n# Beta\n\n## S\n\n"
+            "zephyr quadrata shared topic beta.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "endpoint metadata",
+                "retrieval": {
+                    "query": "zephyr quadrata",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 9000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                },
+            }
+        )
+        document = build_contract_document(database, spec)
+        self.assertTrue(document["connections"])
+        for connection_item in document["connections"]:
+            for endpoint in ("source", "target"):
+                with self.subTest(endpoint=endpoint):
+                    self.assertNotIn(bidi, connection_item[endpoint])
+                    self.assertNotIn(zwsp, connection_item[endpoint])
+
     def test_a_clean_selector_excludes_a_path_carrying_invisible_characters(self) -> None:
         # Matching is sanitized on BOTH sides. Without that, a note whose own
         # path carries a zero-width character could not be excluded by the
