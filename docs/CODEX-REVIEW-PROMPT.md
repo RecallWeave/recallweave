@@ -95,73 +95,54 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both cycle-25 findings are fixed, including the one that was deferred. **No open
-bead blocks promotion.** Josh directed both to be closed architecturally rather
-than patched, and explicitly ruled out adding semantic-support inference.
+Both cycle-26 Mediums are fixed, and all five of your suggested tests are in the
+suite. **No open bead blocks promotion.**
 
-- **High — an operator-written gloss was labeled `cited_passage`**
-  (`recallweave-nv0`). Fixed by separating AUTHORSHIP from SUPPORT rather than
-  by adding a check. An evidence class now names the **origin** of the
-  statement, never the presence of a citation:
+- **Medium — a link in a bodyless heading could not be authenticated.**
+  Confirmed and reproduced exactly as you derived it from the control flow, so
+  your read-only diagnosis was right without a fixture. A note ending in
+  `## Related [[Target]]` produced a genuine authored edge that the exporter
+  then rejected for want of a coordinate: sections are BODY-DRIVEN and drop a
+  heading with nothing beneath it, while links are extracted from every heading
+  line. Failing closed, but on real indexer-produced data — the second time this
+  route has traded a bypass for a false rejection.
 
-  - `cited_passage` may only describe source-derived passage text — the
-    statement IS the cited passage, equal by construction;
-  - operator-authored text stays `authored_by_operator` **even when cited**, and
-    the citation and passage travel beside it in their own fields as support. An
-    operator-authored item may therefore now carry a citation, which the docs
-    previously said was impossible.
+  Heading coordinates now live in their own `note_headings` table, recording
+  every heading line's position, `#` level and text independently of whether
+  anything follows it. `sections` is restored to its previous shape, so the
+  change ADDS a table rather than reinterpreting an existing one, and the
+  capability probe looks for that table. Tests cover a terminal bodyless
+  heading, one followed only by blank lines, and one between two bodied
+  sections — each first asserting the INDEXER really produces the edge.
 
-  The human projection emits the supporting passage under its own trusted label
-  in its own fence. Omitting it, as before, implied an equivalence that does not
-  hold — the same defect as asserting one. `truncated` now describes the
-  STATEMENT and `passage_truncated` the supporting passage, so a shortened
-  passage is never left without a flag of its own.
+  Your last suggested test led somewhere useful: distinguishing format
+  capability from per-row data pointed at fenced heading-looking lines. Those
+  are excluded (`_heading_positions` skips anything inside a fence), and that is
+  now pinned by a test forging an edge that cites a `## Fake [[Target]]` line
+  inside a fence — the heading-route counterpart of the fenced-body-link case.
 
-  **No semantic-support inference was added, deliberately.** Whether a cited
-  passage supports an operator's assertion is not decidable at this layer, and a
-  model claiming to decide it would assert what it cannot check. Both texts are
-  shown, each attributed. `contract.py`, `docs/task-contracts.md` and
-  `ARCHITECTURE.md` all say so in those terms. Please judge whether that is the
-  right boundary and whether the three say it consistently.
+- **Medium — the CHANGELOG contradicted itself.** Correct, and you were right
+  that it is worse than saying nothing in an evidence-integrity entry. The
+  obsolete half ("the coordinate and heading level are not" bound, "which the
+  docs disclose") is gone, and a docs test asserts it cannot come back.
 
-  `constraints[].passage` and `prior_decisions[].passage` moved from the
-  documented OMITTED set into the PROJECTED set, and two `passage_truncated`
-  fields joined the omitted set, so the exhaustive partition still holds.
+Three mutations killed: deriving headings from sections again, recording fenced
+headings, and unbinding the bodyless coordinate.
 
-- **High — a heading link's coordinate and level were unbound**
-  (`recallweave-kob`). No longer deferred. `sections` records `heading_line` and
-  `heading_level`, and the exporter **reconstructs the whole heading line from
-  indexed data** — markers and heading — requiring the quoted source text to
-  equal it at the claimed coordinate before parsing it for the link. Your three
-  probes (line 1, line 999999, `######` for `##`) are rejected, and so is the
-  case you named that neither of us had tested: two sections with the SAME
-  heading text at different coordinates no longer authenticate each other.
-
-  `SCHEMA_VERSION` is deliberately NOT bumped — it is the public receipt version
-  shared by every command's output and by `docs/json-output.md`, and moving it
-  to record an index column would change what a receipt promises. The builder
-  probes the capability directly and REFUSES an index predating it, asking for a
-  re-index rather than rejecting that index's genuine heading links with a
-  diagnostic pointing at the wrong thing. **Scrutinise this choice.**
-
-  The disclosure paragraph from cycle 24 is removed and its docs test inverted
-  to require its absence: leaving it would now understate the guarantee, which
-  is its own kind of untrue documentation.
-
-Eight mutations killed across the two fixes. Suite: **420 tests** with the
-parser, green under `-W error::ResourceWarning`; `compileall` clean. Runtime
-dependencies still empty.
+Suite: **423 tests** with the parser, green under `-W error::ResourceWarning`;
+`compileall` clean. Runtime dependencies still empty.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
-   nothing blocks promotion, say so explicitly.
-2. Judge the two architectural decisions above, not only their code: the
-   authorship/support split with no semantic inference, and the capability probe
-   in place of a version bump.
-3. The evidence model changed shape this cycle — a projected field set that
-   grew, a new canonical field, and an evidence class that can now carry a
-   citation. Look for anything that did not move with it.
+   nothing blocks promotion, say so explicitly and without qualification.
+2. Judge `note_headings`: is a second table the right shape, and is it complete?
+   It is populated from `_heading_positions`, the same source `_sections` uses,
+   so the two cannot disagree about what a heading is — but say if you see a
+   note shape where they would.
+3. This route has now produced a bypass and two false rejections across three
+   cycles. If there is a shape that still authenticates wrongly, or a genuine
+   edge that still fails, name it.
 4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
    `PRIVACY.md` and `CHANGELOG.md` against the code.
-5. Reassess every Critical and High from all twenty-five cycles and say which
+5. Reassess every Critical and High from all twenty-six cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
