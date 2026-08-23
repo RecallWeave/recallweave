@@ -19,8 +19,12 @@
   declared-versus-inspected privacy conflicts made explicit;
 - configurable neutral social metadata, same-origin isolation headers,
   SHA-256-hashed inline scripts, and a zero-advisory ESLint 10 toolchain;
-- Windows production previews serve their hashed Atlas assets through Vinext
-  0.0.53's normalized static-file paths, guarded by an end-to-end asset test;
+- Windows production previews serve their hashed Atlas assets through Vinext's
+  normalized static-file paths, guarded by an end-to-end asset test;
+- Atlas viewer dependencies patched to a zero-advisory audit, dev tree included:
+  `@cloudflare/vite-plugin`, `wrangler` and `vinext` moved to versions that
+  clear the `undici`, `miniflare` and `image-size` advisories, with `nanoid`,
+  `brace-expansion` and `fast-uri` taken to in-range fixed versions;
 - corrected landmarks, skip navigation, bounded live announcements, visible
   programmatic focus, roving keyboard navigation, and a clipboard fallback;
 - V3 review follow-up adds an ESLint 10 accessibility gate, rejects citations
