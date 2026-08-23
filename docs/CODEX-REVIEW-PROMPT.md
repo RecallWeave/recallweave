@@ -95,63 +95,47 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-**A different reviewer found what this gate did not.** The GitHub PR-review bot
-raised 19 findings on #1, including three P1s, and one of them was the most
-serious defect in the whole effort. This gate had returned a clean PASS on
-essentially this tree. That is worth stating plainly, because it means the
-local-tree review and the diff review see different things.
+Both findings are fixed, and the High was the same class I had already fixed
+once — for half of it.
 
-The P1 that matters most — **an exclusion breach**. A connection evidence side
-was authenticated as a real section SOMEWHERE in the index, never as a section
-belonging to that side's endpoint. Reproduced: with only `source_evidence`
-swapped for the real citation, heading and passage of a note EXCLUDED by path,
-the export succeeded and the excluded note's citation **and its passage text**
-reached both the JSON and the rendered Markdown, while `exclusions.enforced`
-still reported `true`. Every check passed because every check asked the wrong
-question. Lookups are now scoped to the endpoint, and the memo key includes it.
+- **High — tag exclusions bypassed sanitization.** Correct, and the source path
+  you traced was exact: raw frontmatter tag → raw `note_tags.tag` → unsanitized
+  comparison. Tags were normalized by a separate code path that never called
+  `sanitize()`, so a note tagged `private<ZWSP>` slipped a clean `private`
+  exclusion while the selector was accepted, emitted as `private`, and the
+  artifact reported `enforced: true`. Paths, globs and tags now share one
+  sanitizing normalizer.
 
-The other two P1s were also exclusion integrity, both failing SILENTLY while
-reporting the boundary held:
+  Your suggested table-driven test is exactly the right shape and is why I took
+  it: **one invariant** — a clean selector matches a vault-side value that
+  sanitization would change — applied to path, glob and tag, with both a
+  zero-width space and a bidi override. A per-class test would have missed the
+  tag omission the same way the fix did, so a new selector class now has to be
+  added to the table to be covered at all.
 
-- exclusion selectors were matched RAW but emitted SANITIZED, so
-  `Restricted/<ZWSP>Secret.md` failed to match `Restricted/Secret.md` while the
-  artifact displayed the exclusion as applied. Matching now sanitizes both
-  sides, and selectors that sanitization would change are rejected;
-- `json.loads` keeps the LAST duplicate key, so a spec visibly carrying a
-  restrictive exclusion could be overridden by a later `"exclusions"` key. The
-  spec is now decoded strictly.
+- **Medium — connection endpoints bypassed the metadata sanitizer.** Fixed.
 
-Sixteen further findings are fixed: in-vault destinations refused, duplicate and
-over-length shared terms rejected, self-referential edges rejected, persisted
-candidate strings required to be canonical (a normalization COLLISION let
-`shared<ZWSP>` authenticate as the genuine term `shared`), verification flags
-restricted to 0/1, ambiguous section headings refused, emitted vault metadata
-sanitized, the objective budgeted as emitted, excluded connection endpoints
-counted as dropped notes, exclusion names counted toward the disclosure profile,
-null item selectors reported through the structured error contract, directory
-destinations refused even under `--force`, and a false documented receipt shape
-corrected.
+  Fixing it surfaced something neither of us named, and it is the more
+  interesting half: `_edge_evidence` sanitizes the emitted citation, so a note
+  whose FILENAME carries an invisible character has a citation that no longer
+  equals its raw `relative_path` — and attribution compared them raw. A genuine
+  vault with such a filename could not export at all. The citation path is now
+  compared sanitized on both sides.
 
-Two are FILED rather than fixed (`recallweave-z1a`): the connection cap is
-applied before exclusions (under-inclusion, not a leak), and a text item
-silently discards note-only fields (rejecting is right but is a compatibility
-change). Both need an owner decision.
+Two mutations killed. Suite: **456 tests** with the parser, green under
+`-W error::ResourceWarning`; `compileall` clean.
 
-Every finding was reproduced before being acted on, and every fix is
-mutation-proven. Two tests had to be strengthened because they passed for the
-wrong reason — the self-edge case needed a FULLY authentic self-edge, since the
-endpoint binding rejected the naive version first.
-
-Suite: **454 tests** with the parser, green under `-W error::ResourceWarning`;
-`compileall` clean. Runtime dependencies still empty.
+On your question about what this gate would need to catch the exclusion breach:
+the pattern in the last three rounds is that a rule gets applied to the values a
+function happens to touch rather than to a CLASS of values. Paths but not tags;
+sides but not their endpoints; emitted but not authenticated. A useful lens here
+would be to ask, for any normalization or authentication rule, **which set is it
+quantified over, and what else is in that set** — rather than checking the call
+sites the diff shows.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. The endpoint-binding fix is the one to attack hardest. Is a side now bound to
-   its endpoint everywhere it is read, and can any other path reach an excluded
-   note's content — retrieved context, constraint resolution, provenance
-   citations?
-3. Given this gate missed the exclusion breach, say what you would need to see
-   differently to catch that class here rather than in diff review.
-4. Reassess every Critical and High across all cycles and say which remain
+2. Apply that lens once here: for each of `sanitize`, endpoint binding, and the
+   canonical-form requirement, is there a member of its class still uncovered?
+3. Reassess every Critical and High across all cycles and say which remain
    closed.
 <!-- CYCLE-CONTEXT-END -->

@@ -35,8 +35,11 @@ titles, headings, citations, matched terms, status and domain. Bidi overrides
 and zero-width characters survive JSON loading and can visually spoof a path or
 a heading for a downstream agent.
 
-Exclusion matching sanitizes **both sides**, and an exclusion selector that
-sanitization would change is **rejected**. Those two rules go together: a
+Exclusion matching sanitizes **both sides** — for paths, globs **and tags
+alike** — and an exclusion selector that sanitization would change is
+**rejected**. Tags reach the index straight from frontmatter and are stored
+raw, so a note tagged `private<ZWSP>` would otherwise slip a clean `private`
+exclusion while the artifact reported `enforced: true`. Those two rules go together: a
 selector must be exactly what the contract matches AND what it displays.
 Matching raw while displaying sanitized let a selector like
 `Restricted/<ZWSP>Secret.md` fail to match `Restricted/Secret.md` while the
