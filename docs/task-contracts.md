@@ -553,9 +553,20 @@ well-formedness test:
   `target_evidence` are **optional** — each side is present only when that note
   resolves a cited passage.
 
-  `shared_terms` must be a list of at least **two** non-empty and **distinct**
+  `shared_terms` must be a list of **two to eight** non-empty and **distinct**
   strings, and every term must be one that **both** endpoint notes actually
-  carry in the index. The indexer emits a sorted set, so it never repeats a
+  carry in the index. The indexer keeps the top eight ranked terms, so a longer
+  list is a payload it could not have written even when every term is genuinely
+  shared. An edge's two endpoints must also be **distinct notes**: the indexer
+  skips a link to itself and builds candidates from distinct notes, so a
+  self-connection is one it can never create.
+
+  The persisted `shared_terms`, `method` and `explanation` must already be in
+  **sanitized form**. `_edge_evidence` sanitizes on the way out, and
+  authenticating the sanitized copy let normalization COLLIDE — a persisted
+  term of `common<ZWSP>` became the genuine indexed term `common` before the
+  index check ran. A field that is authenticated has to be compared as the
+  index holds it, not as a normalized version of it. The indexer emits a sorted set, so it never repeats a
   term; `["foo", "foo"]` claims two while asserting one. The
   indexer refuses to create a candidate from fewer than two shared terms, and
   ARCHITECTURE.md promises "at least two informative shared terms", so a
@@ -861,9 +872,15 @@ Receipt fields:
 
 With `--output`, `output` is the absolute destination path and
 `replacement_mode` is `"non_replacing"` or `"two_phase_recoverable"` as in
-`export-viewer`; `replacement_backup` is `null` or the retained-backup path. The
-receipt then contains the same fields above plus `"contract": {document}` when
-`format=json`, or `"markdown": "..."` when `format=markdown`.
+`export-viewer`; `replacement_backup` is `null` or the retained-backup path.
+The receipt then carries the fields above and **no artifact body**: the
+document went to the file, so neither `contract` nor `markdown` is present. A
+caller reading one of those fields after a successful file export would find it
+missing. Read the artifact from `output`.
+
+The destination must be a regular file or must not exist. An existing
+destination that is a directory is refused even under `--force`, which
+authorizes replacing an artifact rather than relocating a tree.
 
 With no `--output`, `output` is `null` and `replacement_mode` is `null`. The
 receipt still carries the document: `"contract": {document}` for

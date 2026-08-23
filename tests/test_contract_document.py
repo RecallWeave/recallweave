@@ -1811,6 +1811,156 @@ class ContractDocumentTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_contract_document(database, self._evidence_spec())
 
+    def test_shared_terms_are_capped_at_what_the_indexer_emits(self) -> None:
+        # The indexer keeps the top eight ranked terms. A longer list is a
+        # payload it could not have written -- and every term can still be
+        # genuinely shared, which is what let the oversized list satisfy the
+        # index check and pass the fail-closed gate.
+        base = {
+            "method": INDEX_CANDIDATE_METHOD,
+            "explanation": INDEX_CANDIDATE_EXPLANATION,
+        }
+        for count, expected in ((2, True), (8, True), (9, False), (12, False)):
+            with self.subTest(terms=count):
+                self.assertEqual(
+                    connection_evidence_is_well_formed(
+                        {
+                            "evidence_class": "discovery_candidate",
+                            "evidence": {
+                                **base,
+                                "shared_terms": [f"t{i}" for i in range(count)],
+                            },
+                        }
+                    ),
+                    expected,
+                )
+
+    def test_a_self_referential_edge_is_rejected(self) -> None:
+        # The indexer skips a link to itself and builds candidates from distinct
+        # notes, so a self-connection is one it can never create. It otherwise
+        # passed both classes: a self-edge's shared terms trivially satisfy the
+        # "both endpoints carry it" check against the single note.
+        import sqlite3
+
+        _vault, database = self._candidate_pair_index()
+        # Make the self-edge otherwise FULLY authentic: both endpoints are the
+        # source note, and both evidence sides cite that note's own section. Any
+        # other rule -- endpoint binding, attribution, shared terms -- is
+        # therefore satisfied, so only the distinct-endpoints rule can reject
+        # it. Without this the endpoint binding rejected it first and the test
+        # proved nothing about self-edges.
+        envelope = self._authentic_candidate_envelope(database)
+        side = self._indexed_side(database, self._any_indexed_citation(database))
+        self._rewrite_edge_evidence(
+            database,
+            {**envelope, "source_evidence": side, "target_evidence": side},
+            exact=True,
+        )
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute(
+                "UPDATE edges SET target_note_id = source_note_id"
+            )
+        with self.assertRaises(ValueError) as raised:
+            build_contract_document(database, self._evidence_spec())
+        self.assertRegex(str(raised.exception), r"edge \d+")
+
+    def test_authenticated_candidate_strings_must_be_canonical(self) -> None:
+        # _edge_evidence sanitizes on the way out, so authenticating the
+        # SANITIZED copy let normalization collide: a persisted term of
+        # "shared\u200b" became the genuine indexed term "shared" before the
+        # index check ran, and bytes the indexer could never have written passed
+        # the fail-closed gate. `method` and `explanation` collide the same way
+        # against their constants.
+        import sqlite3
+
+        _vault, database = self._candidate_pair_index()
+        envelope = self._authentic_candidate_envelope(database)
+        genuine = envelope["shared_terms"][0]
+        side = self._indexed_side(database, self._any_indexed_citation(database))
+        collisions = {
+            "term with a zero-width character": {
+                **envelope,
+                "shared_terms": [genuine + "\u200b", *envelope["shared_terms"][1:]],
+            },
+            "method with a zero-width character": {
+                **envelope,
+                "method": INDEX_CANDIDATE_METHOD + "\u200b",
+            },
+            "explanation with a bidi override": {
+                **envelope,
+                "explanation": INDEX_CANDIDATE_EXPLANATION + "\u202e",
+            },
+        }
+        for label, forged in collisions.items():
+            with self.subTest(collision=label):
+                self._rewrite_edge_evidence(
+                    database, {**forged, "source_evidence": side}, exact=True
+                )
+                with self.assertRaises(ValueError):
+                    build_contract_document(database, self._evidence_spec())
+        # The canonical envelope still exports.
+        self._rewrite_edge_evidence(
+            database, {**envelope, "source_evidence": side}, exact=True
+        )
+        self.assertTrue(
+            build_contract_document(database, self._evidence_spec())["connections"]
+        )
+
+    def test_exclusion_metadata_counts_toward_the_disclosure_profile(self) -> None:
+        # Exclusion paths and tags are EMITTED, and a path like
+        # "Clients/Acme/Acquisition.md" is sensitive whether it appears as
+        # evidence or as an exclusion. Reporting `empty_contract` with
+        # `includes_paths_titles_tags: false` let a broker classify an artifact
+        # carrying those names as empty.
+        import tempfile
+
+        if not hasattr(self, "_kept_tmp"):
+            self._kept_tmp = []
+        temp = tempfile.TemporaryDirectory()
+        self._kept_tmp.append(temp)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "Only.md").write_text(
+            "---\ntitle: O\n---\n# O\n\n## S\n\nnothing relevant here.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        for field_name, value in (
+            ("paths", "Clients/Acme/Acquisition.md"),
+            ("tags", "confidential"),
+        ):
+            with self.subTest(exclusion=field_name):
+                exclusions = {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                }
+                exclusions[field_name] = [value]
+                spec = TaskSpec.from_payload(
+                    {
+                        "objective": "disclosure",
+                        "retrieval": {
+                            "query": "zzzznomatch",
+                            "limit": 8,
+                            "max_characters": 9000,
+                        },
+                        "constraints": [],
+                        "prior_decisions": [],
+                        "acceptance_criteria": [],
+                        "exclusions": exclusions,
+                    }
+                )
+                document = build_contract_document(database, spec)
+                self.assertIn(value, json.dumps(document))
+                self.assertTrue(
+                    document["disclosure"]["includes_paths_titles_tags"],
+                    "an emitted exclusion name is metadata the artifact carries",
+                )
+                self.assertNotEqual(
+                    document["disclosure"]["profile"], "empty_contract"
+                )
+
     def test_shared_terms_must_be_distinct(self) -> None:
         # `["foo", "foo"]` claims two shared terms while asserting one. It
         # satisfied the documented minimum here AND the index check, which

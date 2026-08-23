@@ -28,6 +28,15 @@
   an exclusion breach: a tampered candidate could carry an authentic passage
   from an excluded note into the artifact while `exclusions.enforced` still
   reported true;
+- `contract` further hardens candidate authentication: shared terms are capped
+  at the eight the indexer emits, an edge's endpoints must be distinct notes,
+  and the persisted terms, method and explanation must already be in sanitized
+  form so normalization cannot collide a tampered value onto a genuine one.
+  Exclusion paths and tags now count toward the disclosure profile, since they
+  are emitted and are exactly the vault-derived names that flag describes. A
+  destination that exists and is not a regular file is refused even under
+  `--force`, which authorizes replacing an artifact rather than relocating a
+  directory tree;
 - `contract` closes two exclusion-integrity holes: an exclusion selector
   carrying an invisible character was matched raw but displayed sanitized, so
   the artifact could report an exclusion that never applied — matching now

@@ -316,6 +316,61 @@ class ContractCliTest(unittest.TestCase):
         # Still actionable: the message names the edge by its database id.
         self.assertRegex(error["message"], r"edge \d+")
 
+    def test_cli_refuses_a_directory_destination_even_with_force(self) -> None:
+        # The replacement path renames whatever is at the destination into a
+        # hidden backup, so a mistyped destination naming a DIRECTORY relocated
+        # an entire tree and installed the artifact at its former path. --force
+        # authorizes replacing an artifact, not moving a directory.
+        destination = self.root / "not-a-file"
+        destination.mkdir()
+        (destination / "keepme.txt").write_text("important", encoding="utf-8")
+        for force in (False, True):
+            with self.subTest(force=force):
+                argv = [
+                    "contract",
+                    str(self.spec_path),
+                    "--database",
+                    str(self.database),
+                    "--output",
+                    str(destination),
+                ]
+                if force:
+                    argv.append("--force")
+                exit_code, out, err = self.run_cli(*argv)
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(out, "")
+                self.assertIn("not a regular file", json.loads(err)["message"])
+                # The tree is untouched.
+                self.assertTrue(destination.is_dir())
+                self.assertEqual(
+                    (destination / "keepme.txt").read_text(encoding="utf-8"),
+                    "important",
+                )
+
+    def test_cli_file_output_receipt_carries_no_artifact_body(self) -> None:
+        # Documented shape: with --output the document goes to the file and the
+        # receipt carries NEITHER `contract` nor `markdown`. The docs promised
+        # the field, so a caller following them would read a missing key after a
+        # successful export.
+        for output_format, absent in (("json", "contract"), ("markdown", "markdown")):
+            with self.subTest(format=output_format):
+                output = self.root / f"receipt-{output_format}.out"
+                exit_code, out, _ = self.run_cli(
+                    "contract",
+                    str(self.spec_path),
+                    "--database",
+                    str(self.database),
+                    "--format",
+                    output_format,
+                    "--output",
+                    str(output),
+                )
+                self.assertEqual(exit_code, 0)
+                receipt = json.loads(out)
+                self.assertNotIn(absent, receipt)
+                self.assertEqual(receipt["output"], str(output))
+                self.assertTrue(output.is_file())
+
     def test_cli_refuses_a_destination_inside_the_vault(self) -> None:
         # Writing the artifact into the vault IS a write to the vault, yet both
         # the receipt and the embedded document assert `vault_writes: 0`. The

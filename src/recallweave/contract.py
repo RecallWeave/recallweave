@@ -119,6 +119,12 @@ INDEX_CANDIDATE_EXPLANATION = (
 # not something this indexer produced.
 MIN_SHARED_TERMS = 2
 
+# The indexer ranks shared terms and keeps the top eight (`ranked_terms[:8]`),
+# so a candidate claiming more than eight is a payload it could not have
+# written -- even when every term is genuinely shared, which is what made the
+# oversized list pass the index check.
+MAX_SHARED_TERMS = 8
+
 # The substantive side leaf. A PRESENT side must carry `passage` — the actual
 # cited content — so a partial side (citation- or heading-only), a truncated-
 # only side, or an empty side cannot masquerade as an absent one. This is the
@@ -177,7 +183,7 @@ def connection_evidence_is_well_formed(connection: dict[str, Any]) -> bool:
         # what makes the documented minimum mean two distinct terms.
         if len(set(shared_terms)) != len(shared_terms):
             return False
-        if len(shared_terms) < MIN_SHARED_TERMS:
+        if not MIN_SHARED_TERMS <= len(shared_terms) <= MAX_SHARED_TERMS:
             return False
     for member in ("method", "explanation"):
         if member in evidence and not isinstance(evidence[member], str):
@@ -340,8 +346,19 @@ def _shared_terms_are_indexed(
     return row is not None and int(row[0]) == len(set(terms))
 
 
-def _persisted_terms_are_all_strings(raw: str) -> bool:
-    """True iff the PERSISTED shared_terms list contains only strings.
+def _persisted_candidate_strings_are_canonical(raw: str) -> bool:
+    """True iff the PERSISTED candidate strings are already in sanitized form.
+
+    _edge_evidence sanitizes shared terms, `method` and `explanation` on the way
+    out. Authenticating the sanitized copy let normalization COLLIDE: a
+    persisted term of "common\u200b" became the genuine indexed term "common"
+    before the index check ran, so bytes the indexer could never have written
+    passed the fail-closed gate. `method` and `explanation` collide the same way
+    against their constants.
+
+    Fields that are AUTHENTICATED must therefore already equal their sanitized
+    form -- the check has to see what the index holds, not a normalized version
+    of it. Sanitizing remains right for everything that is merely EMITTED.
 
     _edge_evidence sanitizes by dropping non-string elements, which is right for
     the emitted shape but means corruption can arrive as silent normalization:
@@ -355,11 +372,19 @@ def _persisted_terms_are_all_strings(raw: str) -> bool:
     if not isinstance(parsed, dict):
         return False
     terms = parsed.get("shared_terms")
-    if terms is None:
-        return True
-    if not isinstance(terms, list):
-        return False
-    return all(isinstance(term, str) for term in terms)
+    if terms is not None:
+        if not isinstance(terms, list):
+            return False
+        if not all(isinstance(term, str) for term in terms):
+            return False
+        if any(sanitize(term) != term for term in terms):
+            return False
+    for member in ("method", "explanation"):
+        value = parsed.get(member)
+        if value is not None:
+            if not isinstance(value, str) or sanitize(value) != value:
+                return False
+    return True
 
 
 class _SourceNote:
@@ -565,6 +590,13 @@ def _edge_envelope_is_authentic(connection, row) -> bool:
     duplicate index.py's TF-IDF and its bounded top-per-note selection inside the
     exporter, and make export time scale with index size. The docs say so
     plainly rather than implying a guarantee the exporter does not give."""
+    # An edge from a note to itself is one the indexer never creates: link
+    # insertion skips `target_id == source_id`, and candidate pairs are built
+    # from distinct notes. A hand-edited self-edge otherwise passed both classes
+    # -- its shared terms trivially satisfy the "both endpoints carry it" check
+    # against the single note, and an authored self-link can re-derive.
+    if int(row["source_note_id"]) == int(row["target_note_id"]):
+        return False
     score = row["score"]
     if isinstance(score, bool) or not isinstance(score, (int, float)):
         return False
@@ -1130,7 +1162,7 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                 # must be one both endpoint notes actually carry, or the edge is
                 # asserting a shared vocabulary the index does not support.
                 if candidate["evidence_class"] == "discovery_candidate":
-                    if not _persisted_terms_are_all_strings(
+                    if not _persisted_candidate_strings_are_canonical(
                         str(row["evidence_json"])
                     ) or not _shared_terms_are_indexed(
                         connection,
@@ -1188,8 +1220,19 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
             item["passage"] and len(item["passage"]) > 0
             for item in constraints + prior_decisions
         )
-        has_metadata = bool(retrieved_context) or any(
-            item["relative_path"] for item in constraints + prior_decisions
+        # Exclusion paths and tags are EMITTED, in both the canonical JSON and
+        # the Markdown, and they are exactly the kind of vault-derived name the
+        # metadata flag describes -- a path like "Clients/Acme/Acquisition.md"
+        # is sensitive whether it appears as evidence or as an exclusion. A
+        # contract with no retrieved or cited items but a populated exclusion
+        # list was reported as `empty_contract` with
+        # `includes_paths_titles_tags: false`, so a broker could classify an
+        # artifact carrying those names as empty.
+        has_exclusion_metadata = bool(spec.exclusion_paths or spec.exclusion_tags)
+        has_metadata = (
+            bool(retrieved_context)
+            or any(item["relative_path"] for item in constraints + prior_decisions)
+            or has_exclusion_metadata
         )
         if has_passage:
             profile = "task_scoped_bounded_passages"

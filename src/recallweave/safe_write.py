@@ -77,6 +77,16 @@ def prepare_destination(
         raise ValueError(f"{label} parent is not a directory: {output.parent}")
 
     output_existed = output.exists()
+    if output_existed and not output.is_file():
+        # An existing destination that is not a regular file is refused even
+        # under --force. The replacement path renames whatever is there into a
+        # hidden backup, so a mistyped destination naming a DIRECTORY relocated
+        # an entire tree and installed the artifact at its former path. --force
+        # authorizes replacing an artifact, not moving a directory.
+        raise ValueError(
+            f"{label} exists and is not a regular file: {output}. Refusing to "
+            "replace it; choose a destination that is a file or does not exist."
+        )
     if output_existed and not force:
         raise ValueError(
             f"{label} already exists: {output}. Pass --force to replace it."
