@@ -238,6 +238,22 @@ class TaskSpec:
                 raise ValueError(
                     f"{name}[{index}] must have exactly one of 'text' or 'note'."
                 )
+            # `heading` and `statement` apply only to note selectors; on a text
+            # item they would be silently discarded by _resolve_item's text
+            # branch (recallweave-z1a). Reject them so an operator-authored
+            # qualification is never accepted and thrown away.
+            if has_text:
+                note_only = [
+                    field
+                    for field in ("heading", "statement")
+                    if field in item
+                ]
+                if note_only:
+                    raise ValueError(
+                        f"{name}[{index}].{'/'.join(note_only)} is only valid "
+                        f"when 'note' is set; a 'text' item cannot carry "
+                        f"{' or '.join(note_only)}."
+                    )
             # The discriminator above is key PRESENCE, so `{"text": null}`
             # selects the text branch. Skipping validation when the value is
             # None then produced a SourceRef with BOTH fields unset, and

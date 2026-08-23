@@ -209,7 +209,10 @@ Each item carries `source`, `target`, `kind`, `verified`, `score`, `evidence`,
 and `evidence_class`. `evidence_class` is `"authored_link"` for authored,
 verified edges or `"discovery_candidate"` for unverified lexical candidates.
 Candidate edges appear only when `include_candidates` is set in the spec; the
-list is bounded at 200 rows, same as `query`. `score` is the value the **index
+list is bounded at 200 rows, same as `query`. The cap is applied **after**
+exclusion filtering: edges whose source or target is excluded do not consume
+the 200-row bound, so a run of higher-ranked excluded edges cannot starve an
+allowed lower-ranked connection that ranks beyond the cap. `score` is the value the **index
 persisted**, checked to be finite and in range but **not** recomputed at export
 time, so it is a score the index claims rather than one the artifact
 authenticates — see [the edge record](#the-edge-record-itself-is-authenticated). The `evidence` members are

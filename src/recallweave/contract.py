@@ -755,6 +755,63 @@ def _note_excluded(
     return exclusions.excludes_tags(tags)
 
 
+def _excluded_note_ids(connection, exclusions: ExclusionSet) -> set[int]:
+    """Every note id this exclusion set excludes (by path, glob, or tag), using
+    the same `_note_excluded` decision the connection loop applies per endpoint.
+    This lets the edge fetch push exclusion into SQL so its row cap applies to
+    allowed edges only (recallweave-z1a)."""
+    tags_by_note: dict[int, list[str]] = defaultdict(list)
+    for row in connection.execute("SELECT note_id, tag FROM note_tags"):
+        tags_by_note[int(row["note_id"])].append(str(row["tag"]))
+    excluded: set[int] = set()
+    for row in connection.execute("SELECT id, relative_path FROM notes"):
+        note_id = int(row["id"])
+        is_excluded, _ = _note_excluded(
+            exclusions, str(row["relative_path"]), tags_by_note.get(note_id, [])
+        )
+        if is_excluded:
+            excluded.add(note_id)
+    return excluded
+
+
+def _excluded_edge_counts(
+    connection,
+    seed_ids: list[int],
+    excluded_note_ids: set[int],
+    include_candidates: bool,
+) -> tuple[int, set[int]]:
+    """Count the edges touching any seed note that have an excluded endpoint,
+    and collect the excluded endpoint ids, so the connection loop can report
+    `suppressed.connections` and `suppressed.notes` even though the excluded
+    edges are filtered out of the fetched rows by the SQL exclusion clause."""
+    if not seed_ids or not excluded_note_ids:
+        return 0, set()
+    seed_placeholders = ",".join("?" for _ in seed_ids)
+    excluded_placeholders = ",".join("?" for _ in excluded_note_ids)
+    candidate_clause = "" if include_candidates else "AND e.is_verified = 1"
+    rows = connection.execute(
+        f"""
+        SELECT e.source_note_id, e.target_note_id
+        FROM edges e
+        WHERE (e.source_note_id IN ({seed_placeholders})
+               OR e.target_note_id IN ({seed_placeholders}))
+        {candidate_clause}
+        AND (e.source_note_id IN ({excluded_placeholders})
+             OR e.target_note_id IN ({excluded_placeholders}))
+        """,
+        [*seed_ids, *seed_ids, *excluded_note_ids, *excluded_note_ids],
+    ).fetchall()
+    dropped: set[int] = set()
+    for row in rows:
+        source = int(row["source_note_id"])
+        target = int(row["target_note_id"])
+        if source in excluded_note_ids:
+            dropped.add(source)
+        if target in excluded_note_ids:
+            dropped.add(target)
+    return len(rows), dropped
+
+
 def _resolve_item(
     connection,
     exclusions: ExclusionSet,
@@ -1016,8 +1073,25 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                 "a contract."
             )
         if seed_ids:
+            # Push exclusion into the edge fetch so its row cap applies to
+            # ALLOWED edges only: a run of higher-ranked excluded edges must not
+            # consume the whole cap and starve an allowed lower-ranked edge
+            # (recallweave-z1a). The excluded edges are counted separately below
+            # so `suppressed.connections` / `suppressed.notes` still report them.
+            excluded_note_ids = _excluded_note_ids(connection, exclusions)
+            conn_suppressed, conn_dropped = _excluded_edge_counts(
+                connection,
+                seed_ids,
+                excluded_note_ids,
+                spec.include_candidates,
+            )
+            suppressed_connections += conn_suppressed
+            dropped_notes |= conn_dropped
             edge_rows = _edge_rows(
-                connection, seed_ids, include_candidates=spec.include_candidates
+                connection,
+                seed_ids,
+                include_candidates=spec.include_candidates,
+                excluded_note_ids=excluded_note_ids,
             )
             endpoint_ids = list(
                 {int(row["source_note_id"]) for row in edge_rows}
@@ -1025,30 +1099,9 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
             )
             endpoint_tags = _tags_map(connection, endpoint_ids)
             for row in edge_rows:
-                source_excluded, _ = _note_excluded(
-                    exclusions,
-                    row["source_path"],
-                    endpoint_tags.get(int(row["source_note_id"]), []),
-                )
-                target_excluded, _ = _note_excluded(
-                    exclusions,
-                    row["target_path"],
-                    endpoint_tags.get(int(row["target_note_id"]), []),
-                )
-                if source_excluded or target_excluded:
-                    suppressed_connections += 1
-                    # An endpoint excluded HERE is a note dropped from the
-                    # projection, and `suppressed.notes` documents the unique
-                    # count of those. Counting the edge but not the note left a
-                    # receipt reporting `notes: 0` while an excluded note had in
-                    # fact been dropped -- the connection path can exclude a
-                    # note the retrieval path never returned, so it is the only
-                    # place that drop is observed.
-                    if source_excluded:
-                        dropped_notes.add(int(row["source_note_id"]))
-                    if target_excluded:
-                        dropped_notes.add(int(row["target_note_id"]))
-                    continue
+                # Every fetched edge is now an allowed one (excluded edges were
+                # filtered in SQL), so no per-endpoint exclusion check is needed
+                # here; the suppressed counts came from _excluded_edge_counts.
                 # The indexer writes only 0 or 1. A corrupt or hand-edited
                 # index -- SQLite check constraints can be bypassed -- could
                 # hold another integer, and bool() would silently read it as
