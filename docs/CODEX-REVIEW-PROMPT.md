@@ -95,54 +95,52 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both cycle-26 Mediums are fixed, and all five of your suggested tests are in the
-suite. **No open bead blocks promotion.**
+All three cycle-27 findings are fixed, and all seven of your suggested tests are
+in the suite. **No open bead blocks promotion.**
 
-- **Medium — a link in a bodyless heading could not be authenticated.**
-  Confirmed and reproduced exactly as you derived it from the control flow, so
-  your read-only diagnosis was right without a fixture. A note ending in
-  `## Related [[Target]]` produced a genuine authored edge that the exporter
-  then rejected for want of a coordinate: sections are BODY-DRIVEN and drop a
-  heading with nothing beneath it, while links are extracted from every heading
-  line. Failing closed, but on real indexer-produced data — the second time this
-  route has traded a bypass for a false rejection.
+- **Medium — non-canonical separator whitespace rejected a genuine heading
+  link.** Confirmed exactly, including that it disproved the "complete physical
+  line is reconstructed" claim. `note_headings` now stores the heading line
+  EXACTLY as it appears — the same value the parser puts in `LinkEvidence.text`
+  — and the exporter compares against that instead of rebuilding it from level
+  and text. Storing beats reconstructing here: any canonical rebuild is a guess
+  about formatting the source already settled, which is what made
+  `##  Related` and `##<tab>Related` unrepresentable.
 
-  Heading coordinates now live in their own `note_headings` table, recording
-  every heading line's position, `#` level and text independently of whether
-  anything follows it. `sections` is restored to its previous shape, so the
-  change ADDS a table rather than reinterpreting an existing one, and the
-  capability probe looks for that table. Tests cover a terminal bodyless
-  heading, one followed only by blank lines, and one between two bodied
-  sections — each first asserting the INDEXER really produces the edge.
+  Tests cover two spaces and a tab, for wikilinks and Markdown links, on bodied
+  and bodyless headings — eight shapes, each first asserting the INDEXER really
+  produces the edge. The mutation you asked for (reconstructing with canonical
+  whitespace) fails, from both the query side and the parser side.
 
-  Your last suggested test led somewhere useful: distinguishing format
-  capability from per-row data pointed at fenced heading-looking lines. Those
-  are excluded (`_heading_positions` skips anything inside a fence), and that is
-  now pinned by a test forging an edge that cites a `## Fake [[Target]]` line
-  inside a fence — the heading-route counterpart of the fenced-body-link case.
+- **Medium — the spec-input section contradicted the authorship model.**
+  Correct, and it was the sharper of the two doc findings: a reader who read
+  only the input spec would come away with the classification
+  `recallweave-nv0` removed. It now states that the evidence class depends on
+  whether the gloss is present, and links to the detailed section.
 
-- **Medium — the CHANGELOG contradicted itself.** Correct, and you were right
-  that it is worse than saying nothing in an evidence-integrity entry. The
-  obsolete half ("the coordinate and heading level are not" bound, "which the
-  docs disclose") is gone, and a docs test asserts it cannot come back.
+- **Low — a heading-binding sentence named the removed `sections.heading`
+  route.** Fixed; it names `note_headings.source_text`.
 
-Three mutations killed: deriving headings from sections again, recording fenced
-headings, and unbinding the bodyless coordinate.
+Both documentation fixes are pinned by tests asserting the obsolete wording
+cannot return, and three mutations were killed.
 
-Suite: **423 tests** with the parser, green under `-W error::ResourceWarning`;
+Suite: **425 tests** with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies still empty.
+
+This route has now produced one bypass and three false rejections across four
+cycles, every one of them a case where the exporter's idea of a heading was
+narrower than the parser's. The binding no longer derives, reconstructs or
+normalizes anything: it compares stored bytes.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
    nothing blocks promotion, say so explicitly and without qualification.
-2. Judge `note_headings`: is a second table the right shape, and is it complete?
-   It is populated from `_heading_positions`, the same source `_sections` uses,
-   so the two cannot disagree about what a heading is — but say if you see a
-   note shape where they would.
-3. This route has now produced a bypass and two false rejections across three
-   cycles. If there is a shape that still authenticates wrongly, or a genuine
-   edge that still fails, name it.
-4. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
-   `PRIVACY.md` and `CHANGELOG.md` against the code.
-5. Reassess every Critical and High from all twenty-six cycles and say which
+2. If you can find a fifth shape on this route — a heading the parser links from
+   whose stored line the exporter would not match, or a stored line that could
+   be matched by evidence the indexer would not have produced — name it. If you
+   believe the route is now closed, say why.
+3. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
+   `PRIVACY.md` and `CHANGELOG.md` against the code. Two of the last three
+   findings were documentation that had drifted behind the implementation.
+4. Reassess every Critical and High from all twenty-seven cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
