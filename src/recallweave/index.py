@@ -60,9 +60,14 @@ CREATE TABLE sections (
     heading TEXT NOT NULL,
     line_start INTEGER NOT NULL,
     line_end INTEGER NOT NULL,
+    text TEXT NOT NULL
+);
+CREATE TABLE note_headings (
+    note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    line INTEGER NOT NULL,
+    level INTEGER NOT NULL,
     text TEXT NOT NULL,
-    heading_line INTEGER,
-    heading_level INTEGER
+    PRIMARY KEY(note_id, line)
 );
 CREATE INDEX idx_sections_note ON sections(note_id);
 CREATE TABLE terms (
@@ -247,24 +252,26 @@ def _insert_notes(connection: sqlite3.Connection, notes: list[Note]) -> dict[str
             if note_id not in lookup[normalized]:
                 lookup[normalized].append(note_id)
 
+        # Every heading line, whether or not it has a body. Sections are
+        # body-driven and drop a bodyless heading, but links are extracted from
+        # every heading line, so an authored edge can point at one
+        # (recallweave-kob).
+        connection.executemany(
+            "INSERT OR IGNORE INTO note_headings(note_id, line, level, text) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                (note_id, heading.line, heading.level, heading.text)
+                for heading in note.headings
+            ],
+        )
+
         for section in note.sections:
             section_cursor = connection.execute(
                 """
-                INSERT INTO sections(
-                    note_id, heading, line_start, line_end, text,
-                    heading_line, heading_level
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sections(note_id, heading, line_start, line_end, text)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (
-                    note_id,
-                    section.heading,
-                    section.line_start,
-                    section.line_end,
-                    section.text,
-                    section.heading_line,
-                    section.heading_level,
-                ),
+                (note_id, section.heading, section.line_start, section.line_end, section.text),
             )
             section_id = int(section_cursor.lastrowid)
             counts = Counter(tokenize(f"{section.heading} {section.text}"))

@@ -384,7 +384,7 @@ def _matching_links_in_section_body(connection, row, persisted):
 
 
 def _index_records_heading_coordinates(connection) -> bool:
-    """True iff this index records each heading's own line and level.
+    """True iff this index records every heading's own line and level.
 
     Added for recallweave-kob. An index written before that cannot bind a
     heading link's coordinate, and silently treating its heading links as
@@ -393,11 +393,10 @@ def _index_records_heading_coordinates(connection) -> bool:
     a version number, because `SCHEMA_VERSION` is the public receipt version
     shared by every command's output and does not move when an index column is
     added."""
-    columns = {
-        str(column["name"])
-        for column in connection.execute("PRAGMA table_info(sections)")
-    }
-    return {"heading_line", "heading_level"} <= columns
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'note_headings'"
+    ).fetchone()
+    return row is not None
 
 
 def _matching_links_in_heading(connection, row, persisted):
@@ -409,26 +408,26 @@ def _matching_links_in_heading(connection, row, persisted):
     parser's fence state is not at issue on this route.
 
     The heading is matched on its COORDINATE, its LEVEL and its text together.
-    Binding the text alone was not enough (recallweave-kob): the index used to
-    record a body's line range and never the heading's own line or `#` count, so
-    an authentic indexed heading authenticated a false `line`, a different
-    marker count, or -- worst -- the coordinate of a DIFFERENT section carrying
-    the same heading text. `sections.heading_line` and `sections.heading_level`
-    exist for exactly this, and the whole heading line is reconstructed from
-    indexed data before it is compared, so the quoted text is not merely
-    *consistent with* the index but equal to what the index says that line is."""
+    Binding the text alone was not enough (recallweave-kob): an authentic
+    indexed heading authenticated a false `line`, a different marker count, or
+    -- worst -- the coordinate of a DIFFERENT section carrying the same heading
+    text. The `note_headings` table exists for exactly this, and the whole
+    heading line is reconstructed from indexed data before it is compared, so
+    the quoted text is not merely *consistent with* the index but equal to what
+    the index says that line is.
+
+    Headings are read from `note_headings` rather than from `sections` because
+    sections are BODY-DRIVEN: a heading with nothing beneath it produces no
+    section, while links are extracted from every heading line. Hanging the
+    coordinate off `sections` rejected those genuine edges."""
     heading_row = connection.execute(
-        """
-        SELECT heading, heading_level FROM sections
-        WHERE note_id = ? AND heading_line = ?
-        LIMIT 1
-        """,
+        "SELECT level, text FROM note_headings WHERE note_id = ? AND line = ?",
         (int(row["source_note_id"]), persisted["line"]),
     ).fetchone()
-    if heading_row is None or heading_row["heading_level"] is None:
+    if heading_row is None:
         return []
     indexed_line = (
-        "#" * int(heading_row["heading_level"]) + " " + str(heading_row["heading"])
+        "#" * int(heading_row["level"]) + " " + str(heading_row["text"])
     )
     if persisted["source_text"] != indexed_line:
         return []

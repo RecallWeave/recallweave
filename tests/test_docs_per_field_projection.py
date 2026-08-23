@@ -110,6 +110,14 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         self.assertNotIn("only partly bound, and this is a known gap", text)
         self.assertIn("A link on a heading line is fully bound too", text)
         self.assertIn("reconstructs the whole heading line from indexed data", text)
+        # The CHANGELOG carried BOTH the old disclosure and the new guarantee
+        # in one entry for a moment (cycle 26). A changelog that contradicts
+        # itself about an evidence-integrity property is worse than one that
+        # says nothing, so assert the obsolete half is gone.
+        changelog = _norm(_text("CHANGELOG.md"))
+        self.assertNotIn("the coordinate and heading level are not", changelog)
+        self.assertNotIn("which the docs disclose", changelog)
+        self.assertIn("A link on a heading line is bound the same way", changelog)
 
     def test_changelog_documents_per_field_projection(self) -> None:
         text = _norm(_text("CHANGELOG.md"))

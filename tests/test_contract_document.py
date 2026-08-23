@@ -2622,6 +2622,121 @@ class ContractDocumentTest(unittest.TestCase):
             build_contract_document(database, self._authored_spec())["connections"]
         )
 
+    def test_a_link_in_a_bodyless_heading_still_exports(self) -> None:
+        # Sections are BODY-DRIVEN: a heading with nothing beneath it produces
+        # no section. Links are extracted from EVERY heading line, so such a
+        # heading can still produce a genuine authored edge. Hanging the
+        # coordinate off `sections` therefore rejected indexer-produced
+        # evidence -- failing closed, but on real data, which is its own defect.
+        bodies = {
+            "terminal heading with no body": (
+                "---\ntitle: Src\n---\n# Src\n\n## Body\n\n"
+                "zephyr searchable body\n\n## Related [[Target]]\n"
+            ),
+            "heading followed only by blank lines": (
+                "---\ntitle: Src\n---\n# Src\n\n## Body\n\n"
+                "zephyr searchable body\n\n## Related [[Target]]\n\n\n"
+            ),
+            "bodyless linked heading between two bodied sections": (
+                "---\ntitle: Src\n---\n# Src\n\n## Body\n\n"
+                "zephyr searchable body\n\n## Related [[Target]]\n\n"
+                "## After\n\nzephyr trailing body\n"
+            ),
+        }
+        import sqlite3
+
+        for label, body in bodies.items():
+            with self.subTest(shape=label):
+                _vault, database = self._vault_with(body)
+                with closing(
+                    sqlite3.connect(str(database))
+                ) as connection, connection:
+                    connection.row_factory = sqlite3.Row
+                    authored = connection.execute(
+                        "SELECT COUNT(*) AS n FROM edges WHERE is_verified = 1"
+                    ).fetchone()["n"]
+                self.assertEqual(
+                    authored,
+                    1,
+                    "the INDEXER must create the edge from the bodyless "
+                    "heading, or this test is not testing what it claims",
+                )
+                document = build_contract_document(
+                    database, self._authored_spec()
+                )
+                self.assertIn(
+                    "authored_link",
+                    {
+                        item["evidence_class"]
+                        for item in document["connections"]
+                    },
+                    "a genuine edge from a bodyless heading must export",
+                )
+
+    def test_a_heading_inside_a_fence_is_not_a_heading(self) -> None:
+        # A heading-looking line inside a code fence is not a heading: the
+        # indexer never treats it as one, so it must not reach `note_headings`
+        # and must not be able to authenticate a heading link. This is the
+        # heading-route counterpart of the fenced-body-link case -- the route
+        # that carries a link ON the heading line, rather than beneath it.
+        import sqlite3
+
+        _vault, database = self._vault_with(
+            "---\ntitle: Src\n---\n# Src\n\n## Body\n\n"
+            "```\n## Fake [[Target]]\n```\n\nzephyr searchable body\n"
+        )
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) AS n FROM edges WHERE is_verified = 1"
+                ).fetchone()["n"],
+                0,
+                "the INDEXER must ignore a heading inside a fence",
+            )
+            fenced = connection.execute(
+                "SELECT COUNT(*) AS n FROM note_headings WHERE text LIKE 'Fake%'"
+            ).fetchone()["n"]
+        self.assertEqual(
+            fenced, 0, "a fenced heading must never be recorded as a heading"
+        )
+        self._forge_authored_edge(
+            database,
+            {
+                "line": 9,
+                "source_text": "## Fake [[Target]]",
+                "target_text": "Target",
+            },
+        )
+        with self.assertRaises(ValueError):
+            build_contract_document(database, self._authored_spec())
+
+    def test_a_bodyless_heading_coordinate_is_still_bound(self) -> None:
+        # The bodyless route must not be a softer route. The same coordinate
+        # and level binding applies to a heading the index records without a
+        # section beneath it.
+        _vault, database = self._vault_with(
+            "---\ntitle: Src\n---\n# Src\n\n## Body\n\n"
+            "zephyr searchable body\n\n## Related [[Target]]\n"
+        )
+        authentic = {
+            "line": 10,
+            "source_text": "## Related [[Target]]",
+            "target_text": "Target",
+        }
+        self._forge_authored_edge(database, dict(authentic))
+        self.assertTrue(
+            build_contract_document(database, self._authored_spec())["connections"]
+        )
+        for label, forged in {
+            "wrong line": {**authentic, "line": 6},
+            "wrong level": {**authentic, "source_text": "#### Related [[Target]]"},
+        }.items():
+            with self.subTest(forgery=label):
+                self._forge_authored_edge(database, dict(forged))
+                with self.assertRaises(ValueError):
+                    build_contract_document(database, self._authored_spec())
+
     def test_an_index_without_heading_coordinates_is_refused(self) -> None:
         # An index written before heading coordinates were recorded cannot have
         # a heading link's coordinate bound. Silently treating its heading links
@@ -2637,8 +2752,7 @@ class ContractDocumentTest(unittest.TestCase):
             build_contract_document(database, self._authored_spec())["connections"]
         )
         with closing(sqlite3.connect(str(database))) as connection, connection:
-            connection.execute("ALTER TABLE sections DROP COLUMN heading_line")
-            connection.execute("ALTER TABLE sections DROP COLUMN heading_level")
+            connection.execute("DROP TABLE note_headings")
         with self.assertRaises(ValueError) as raised:
             build_contract_document(database, self._authored_spec())
         message = str(raised.exception)

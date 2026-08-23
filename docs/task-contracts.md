@@ -607,12 +607,17 @@ a fenced link and a real one, and a claim quoting the fenced line must not
 borrow the real link's authenticity.
 
 **A link on a heading line is fully bound too.** The indexer also finds links on
-heading lines, which are in no section's text. The index records each heading's
-own physical line and `#` level (`sections.heading_line`,
-`sections.heading_level`) alongside its text, so the exporter **reconstructs the
-whole heading line from indexed data** — the markers and the heading — and
-requires the quoted source text to equal it, at the claimed coordinate, before
-parsing it for the link.
+heading lines, which are in no section's text. The index records every heading's
+own physical line and `#` level in `note_headings`, so the exporter
+**reconstructs the whole heading line from indexed data** — the markers and the
+heading — and requires the quoted source text to equal it, at the claimed
+coordinate, before parsing it for the link.
+
+Headings live in their own table rather than on `sections` because sections are
+**body-driven**: a heading with nothing beneath it produces no section, while
+links are extracted from every heading line. Hanging the coordinate off
+`sections` rejected genuine edges from bodyless headings — failing closed, but
+on real data, which is its own defect.
 
 Binding the heading TEXT alone was not enough. Without the coordinate an
 authentic indexed heading authenticated a false `line`; without the level, `##`

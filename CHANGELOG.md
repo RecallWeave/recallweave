@@ -28,18 +28,18 @@
   candidate must carry the candidate kind, an unset verification flag and a
   cosine score in range, and an authored link must carry a real link kind, a
   set verification flag, a unit score, and a link that re-derives from the
-  index — for a link in a section body, the exact physical line read back from
-  the indexed section, parsed with the indexer's own link extractor and
-  resolved with its own resolver, uniqueness included; for a link on a heading
-  line the text, kind, target and resolution are bound but the coordinate and
-  heading level are not, which the docs disclose — so a hand-written row can no
-  longer export as an authored, verified relationship. A link on a heading line
-  is bound the same way: the index records each heading's own physical line and
-  `#` level, the exporter reconstructs the heading line from indexed data and
-  requires the quoted text to equal it at the claimed coordinate, and an index
-  written before those were recorded is refused with a request to re-index. Candidate existence, ranking and `score` are
-  deliberately not recomputed: a candidate's score is persisted and
-  range-checked, not authenticated, and the docs say so;
+  index. For a link in a section body that means the exact physical line read
+  back from the indexed section, parsed with the indexer's own link extractor
+  and resolved with its own resolver, uniqueness included. A link on a heading
+  line is bound the same way: the index records every heading's own physical
+  line and `#` level — including a heading with no body beneath it, which
+  produces no section but can still carry a link — the exporter reconstructs
+  the heading line from indexed data and requires the quoted text to equal it
+  at the claimed coordinate, and an index written before those were recorded is
+  refused with a request to re-index. So a hand-written row can no longer
+  export as an authored, verified relationship. Candidate existence, ranking
+  and `score` are deliberately not recomputed: a candidate's score is persisted
+  and range-checked, not authenticated, and the docs say so;
 - `contract` authenticates a discovery candidate's own evidence, not only its
   passages: `shared_terms` must be at least two non-empty strings that both
   endpoint notes actually carry in the index, and `method` and `explanation`

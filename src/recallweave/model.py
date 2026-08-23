@@ -11,14 +11,23 @@ class Section:
     line_start: int
     line_end: int
     text: str
-    # The heading's OWN physical line and `#` count, distinct from the body's
-    # line_start/line_end. Both are None for the synthetic "Overview" section a
-    # note gets when its body starts before any heading: there is no heading
-    # line, so nothing can be attributed to one. Recorded because a link can sit
-    # ON a heading line, and without these an authored edge citing such a link
-    # could not have its coordinate bound (recallweave-kob).
-    heading_line: int | None = None
-    heading_level: int | None = None
+
+
+@dataclass(slots=True)
+class HeadingRef:
+    """A heading line as it physically appears, independent of whether it has a
+    body beneath it.
+
+    Sections are body-driven: a heading with nothing under it produces no
+    Section at all. Links, however, are extracted from EVERY heading line, so a
+    bodyless heading can still produce an authored edge. Recording headings
+    separately is what lets such an edge have its coordinate bound; hanging the
+    coordinate off Section rejected those genuine edges instead
+    (recallweave-kob)."""
+
+    line: int
+    level: int
+    text: str
 
 
 @dataclass(slots=True)
@@ -43,6 +52,7 @@ class Note:
     modified_at: str
     content_hash: str
     sections: list[Section] = field(default_factory=list)
+    headings: list[HeadingRef] = field(default_factory=list)
     links: list[LinkEvidence] = field(default_factory=list)
     frontmatter: dict[str, Any] = field(default_factory=dict)
     frontmatter_valid: bool = True
