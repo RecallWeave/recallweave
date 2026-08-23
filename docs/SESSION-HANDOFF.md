@@ -16,7 +16,7 @@ This is a durable capability, not a demo.
 
 ## 2. Current checkpoint / phase
 
-**Phase: review gate SATISFIED, awaiting human merge approval.**
+**Phase: PROMOTED to a milestone PR, awaiting human merge.**
 
 - Integration branch: `foundry/task-contracts` — the durable remote checkpoint.
 - Suite green with the CommonMark parser and again under
@@ -28,10 +28,11 @@ This is a durable capability, not a demo.
   severity, and the reviewer states the tree is safe to merge into protected
   `main`. For the run of verdicts read `.codex-reviews/review-*.md` in order;
   restating a count here only creates something else to go stale.
-- The review gate is satisfied. What remains is **explicit human merge
-  approval**. Nothing has been promoted; no PR exists; the
-  `CHECKPOINT_NOT_APPROVED.md` marker is still in place and is deleted as part
-  of the promotion commit, not before.
+- The review gate is satisfied and Josh approved promotion. The milestone PR
+  from `foundry/task-contracts` to `main` is open, and
+  `CHECKPOINT_NOT_APPROVED.md` was deleted in the promotion commit that opened
+  it. **The merge itself is still Josh's** — no automation may merge it, mark
+  it auto-mergeable, or make it ready on his behalf.
 
 ## 3. Architecture decisions already approved — DO NOT REOPEN
 
@@ -100,10 +101,9 @@ Both P0 beads that blocked promotion at the previous handoff are closed:
   by recording every heading in `note_headings` (line, level and the exact
   stripped source line) and comparing stored bytes.
 
-What remains between this branch and `main` is **Josh's approval**, not a
-known defect and no longer a review verdict. Cycle 30 returned a clean PASS
-and recorded the implementation as complete, with every Critical and High from
-cycles 1-29 closed.
+What remains between this branch and `main` is **the merge itself**. Cycle 30
+returned a clean PASS and recorded the implementation as complete, with every
+Critical and High from cycles 1-29 closed, and Josh approved promotion.
 
 ## 5. What was completed (cycles 14-28)
 
@@ -145,18 +145,18 @@ All integrated, green, and each mutation-proven against the pre-fix tree:
 
 ## 6. Exact next actions, in order
 
-1. **Ask Josh whether to open the milestone PR.** The review gate is satisfied;
-   the merge is his call and nothing else is blocking. Do not open a PR, mark
-   one ready, or merge without him saying so — see the Git Cadence.
-2. **If he approves promotion:** open the milestone PR from
-   `foundry/task-contracts` to `main`, and delete `CHECKPOINT_NOT_APPROVED.md`
-   as part of the promotion commit. Its presence is the machine-checkable
-   signal that the branch is not approved, so it goes at promotion and not
-   before.
-3. **If work continues on this branch instead**, re-run the gate after any
-   change: update the block between `<!-- CYCLE-CONTEXT-START -->` and
-   `<!-- CYCLE-CONTEXT-END -->` in `docs/CODEX-REVIEW-PROMPT.md`, then
+1. **The milestone PR is open and awaiting Josh's merge.** Do not merge it,
+   enable auto-merge, or push to `main`. That is the whole point of the
+   cadence's promotion split.
+2. **If the PR needs changes**, push them to `foundry/task-contracts` and
+   **re-run the gate**: update the block between `<!-- CYCLE-CONTEXT-START -->`
+   and `<!-- CYCLE-CONTEXT-END -->` in `docs/CODEX-REVIEW-PROMPT.md`, then
    `./scripts/codex-review.sh`. A PASS ages the moment the tree changes.
+3. **Keep the launchd supervisor PAUSED while the PR is open.** It rewrites
+   `CHECKPOINT_NOT_APPROVED.md` before every push and refuses to push an
+   unmarked branch, so resuming it would recreate the marker the promotion
+   commit deleted. Resume it (`rm -f ~/.particle-supervisor/PAUSED`) only after
+   the merge, or after deciding the branch is a checkpoint again.
 4. **Reproduce every finding before acting on it.** This repeatedly caught
    architect error and several times showed a finding was larger or narrower
    than reported. Never file a bead from an unverified claim.
