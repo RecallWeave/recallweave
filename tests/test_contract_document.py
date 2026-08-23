@@ -2673,6 +2673,55 @@ class ContractDocumentTest(unittest.TestCase):
                     "a genuine edge from a bodyless heading must export",
                 )
 
+    def test_heading_links_with_noncanonical_separators_still_export(self) -> None:
+        # FAIL-FIRST (recallweave-kob follow-up). HEADING_RE accepts ANY run of
+        # whitespace between the markers and the text, so `##  Related` and
+        # `##\tRelated` are genuine headings the indexer links from. Storing
+        # only the level and the normalized text and RECONSTRUCTING the line
+        # with a single space made those edges unrepresentable: the persisted
+        # evidence keeps the real stripped line, so equality failed and a
+        # genuine edge was rejected. Third false rejection on this route.
+        import sqlite3
+
+        variants = {
+            "two spaces, wikilink": "##  Related [[Target]]",
+            "tab, wikilink": "##\tRelated [[Target]]",
+            "two spaces, markdown link": "##  Related [Target](Target.md)",
+            "tab, markdown link": "##\tRelated [Target](Target.md)",
+        }
+        for label, heading in variants.items():
+            for bodyless in (False, True):
+                with self.subTest(heading=label, bodyless=bodyless):
+                    tail = "" if bodyless else "\n\nzephyr trailing body\n"
+                    _vault, database = self._vault_with(
+                        "---\ntitle: Src\n---\n# Src\n\n## Body\n\n"
+                        f"zephyr searchable body\n\n{heading}{tail or chr(10)}"
+                    )
+                    with closing(
+                        sqlite3.connect(str(database))
+                    ) as connection, connection:
+                        connection.row_factory = sqlite3.Row
+                        authored = connection.execute(
+                            "SELECT COUNT(*) AS n FROM edges WHERE is_verified = 1"
+                        ).fetchone()["n"]
+                    self.assertEqual(
+                        authored,
+                        1,
+                        "the INDEXER must link from this heading, or the test "
+                        "is not testing what it claims",
+                    )
+                    document = build_contract_document(
+                        database, self._authored_spec()
+                    )
+                    self.assertIn(
+                        "authored_link",
+                        {
+                            item["evidence_class"]
+                            for item in document["connections"]
+                        },
+                        f"a genuine edge from {heading!r} must export",
+                    )
+
     def test_a_heading_inside_a_fence_is_not_a_heading(self) -> None:
         # A heading-looking line inside a code fence is not a heading: the
         # indexer never treats it as one, so it must not reach `note_headings`

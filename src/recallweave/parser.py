@@ -329,7 +329,12 @@ def _heading_refs(lines: list[str], body_start: int) -> list[HeadingRef]:
         match = HEADING_RE.match(lines[index])
         if match:
             refs.append(
-                HeadingRef(line=index + 1, level=len(match.group(1)), text=text)
+                HeadingRef(
+                    line=index + 1,
+                    level=len(match.group(1)),
+                    text=text,
+                    source_text=lines[index].strip(),
+                )
             )
     return refs
 

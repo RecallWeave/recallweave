@@ -98,10 +98,16 @@ Each `constraints` or `prior_decisions` item is exactly one of two shapes:
 
 - `{ "text": "operator statement" }` — an operator assertion with evidence
   class `authored_by_operator`.
-- `{ "note": "...", "heading": "...", "statement": "..." }` — a cited passage
-  with evidence class `cited_passage`. `heading` is optional; when omitted the
-  first section is used. `statement` is an optional operator gloss of at most
-  500 characters.
+- `{ "note": "...", "heading": "...", "statement": "..." }` — a note selector.
+  `heading` is optional; when omitted the first section is used. `statement` is
+  an optional operator gloss of at most 500 characters.
+
+  The **evidence class depends on whether that gloss is present**, because a
+  class names the origin of the statement and not the presence of a citation:
+  with no `statement` the item's statement IS the cited passage and the class is
+  `cited_passage`; with a `statement` the operator wrote the words, so the class
+  stays `authored_by_operator` and the citation and passage travel beside it as
+  support. See [`constraints` and `prior_decisions`](#constraints-and-prior_decisions).
 
 Both `text` and `note` present, or neither, is an error.
 
@@ -608,10 +614,16 @@ borrow the real link's authenticity.
 
 **A link on a heading line is fully bound too.** The indexer also finds links on
 heading lines, which are in no section's text. The index records every heading's
-own physical line and `#` level in `note_headings`, so the exporter
-**reconstructs the whole heading line from indexed data** — the markers and the
-heading — and requires the quoted source text to equal it, at the claimed
+own physical line, `#` level and **exact stripped source line** in
+`note_headings`, so the exporter takes the whole heading line **from indexed
+data** and requires the quoted source text to equal it, at the claimed
 coordinate, before parsing it for the link.
+
+The line is stored rather than rebuilt from the level and the heading text.
+Headings accept any run of whitespace after the markers, so `##  Related` and
+`##&#9;Related` are genuine headings that a canonical one-space reconstruction
+does not reproduce — rebuilding rejected those genuine edges instead of binding
+them.
 
 Headings live in their own table rather than on `sections` because sections are
 **body-driven**: a heading with nothing beneath it produces no section, while
@@ -637,8 +649,8 @@ independently — that the quoted text appeared somewhere in the covering
 section, and that the target name resolved — and never that the line contained
 a link at all, so a line reading "This line contains no link at all."
 authenticated a verified relationship. Nothing here reads the vault: a body link is parsed from
-the section already stored in `sections.text`, and a heading link from text
-bound to `sections.heading`.
+the section already stored in `sections.text`, and a heading link from the line
+stored in `note_headings.source_text`.
 
 An authored edge's persisted `line` / `source_text` / `target_text` are **not
 projected** — `_edge_evidence` whitelists them away, which is why an

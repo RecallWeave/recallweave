@@ -109,7 +109,10 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         text = _norm(_text("docs/task-contracts.md"))
         self.assertNotIn("only partly bound, and this is a known gap", text)
         self.assertIn("A link on a heading line is fully bound too", text)
-        self.assertIn("reconstructs the whole heading line from indexed data", text)
+        self.assertIn("takes the whole heading line **from indexed data**", text)
+        # No current heading-binding claim may name the removed storage route.
+        self.assertNotIn("bound to `sections.heading`", text)
+        self.assertIn("note_headings.source_text", text)
         # The CHANGELOG carried BOTH the old disclosure and the new guarantee
         # in one entry for a moment (cycle 26). A changelog that contradicts
         # itself about an evidence-integrity property is worse than one that
@@ -118,6 +121,23 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         self.assertNotIn("the coordinate and heading level are not", changelog)
         self.assertNotIn("which the docs disclose", changelog)
         self.assertIn("A link on a heading line is bound the same way", changelog)
+
+    def test_spec_item_docs_classify_a_glossed_selector_as_operator_authored(self) -> None:
+        # The spec-input section described every note selector as producing
+        # `cited_passage`, contradicting the authorship model the rest of the
+        # document (and the code) follows. A reader who only reads the input
+        # spec would come away with the classification that recallweave-nv0
+        # removed (cycle 27).
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertNotIn(
+            'a cited passage with evidence class `cited_passage`. `heading` is '
+            "optional",
+            text,
+        )
+        self.assertIn(
+            "evidence class depends on whether that gloss is present", text
+        )
+        self.assertIn("the class stays `authored_by_operator`", text)
 
     def test_changelog_documents_per_field_projection(self) -> None:
         text = _norm(_text("CHANGELOG.md"))

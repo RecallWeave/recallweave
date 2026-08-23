@@ -67,6 +67,7 @@ CREATE TABLE note_headings (
     line INTEGER NOT NULL,
     level INTEGER NOT NULL,
     text TEXT NOT NULL,
+    source_text TEXT NOT NULL,
     PRIMARY KEY(note_id, line)
 );
 CREATE INDEX idx_sections_note ON sections(note_id);
@@ -257,10 +258,16 @@ def _insert_notes(connection: sqlite3.Connection, notes: list[Note]) -> dict[str
         # every heading line, so an authored edge can point at one
         # (recallweave-kob).
         connection.executemany(
-            "INSERT OR IGNORE INTO note_headings(note_id, line, level, text) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO note_headings("
+            "note_id, line, level, text, source_text) VALUES (?, ?, ?, ?, ?)",
             [
-                (note_id, heading.line, heading.level, heading.text)
+                (
+                    note_id,
+                    heading.line,
+                    heading.level,
+                    heading.text,
+                    heading.source_text,
+                )
                 for heading in note.headings
             ],
         )

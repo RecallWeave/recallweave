@@ -411,24 +411,27 @@ def _matching_links_in_heading(connection, row, persisted):
     Binding the text alone was not enough (recallweave-kob): an authentic
     indexed heading authenticated a false `line`, a different marker count, or
     -- worst -- the coordinate of a DIFFERENT section carrying the same heading
-    text. The `note_headings` table exists for exactly this, and the whole
-    heading line is reconstructed from indexed data before it is compared, so
-    the quoted text is not merely *consistent with* the index but equal to what
-    the index says that line is.
+    text. The `note_headings` table exists for exactly this, and it stores the
+    heading line EXACTLY as it appears, so the quoted text is not merely
+    *consistent with* the index but equal to what the index says that line is.
+
+    The line is stored rather than rebuilt from the level and the heading text.
+    HEADING_RE accepts any run of whitespace after the markers, so `##  Related`
+    and `##\tRelated` are genuine headings that a canonical one-space
+    reconstruction does not reproduce -- rebuilding rejected those genuine edges
+    instead of binding them.
 
     Headings are read from `note_headings` rather than from `sections` because
     sections are BODY-DRIVEN: a heading with nothing beneath it produces no
     section, while links are extracted from every heading line. Hanging the
     coordinate off `sections` rejected those genuine edges."""
     heading_row = connection.execute(
-        "SELECT level, text FROM note_headings WHERE note_id = ? AND line = ?",
+        "SELECT source_text FROM note_headings WHERE note_id = ? AND line = ?",
         (int(row["source_note_id"]), persisted["line"]),
     ).fetchone()
     if heading_row is None:
         return []
-    indexed_line = (
-        "#" * int(heading_row["level"]) + " " + str(heading_row["text"])
-    )
+    indexed_line = str(heading_row["source_text"])
     if persisted["source_text"] != indexed_line:
         return []
     return [

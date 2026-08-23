@@ -28,6 +28,13 @@ class HeadingRef:
     line: int
     level: int
     text: str
+    # The heading line exactly as it appears, stripped -- the same value the
+    # parser puts in LinkEvidence.text for a link on this line. Stored rather
+    # than reconstructed from `level` and `text`, because HEADING_RE accepts any
+    # run of whitespace after the markers: `##  Related` and `##\tRelated` are
+    # genuine headings that no canonical reconstruction reproduces, and
+    # rebuilding the line rejected those genuine edges (recallweave-kob).
+    source_text: str
 
 
 @dataclass(slots=True)
