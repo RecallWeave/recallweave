@@ -95,52 +95,55 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-All three cycle-27 findings are fixed, and all seven of your suggested tests are
+All three cycle-28 findings are fixed, and all five of your suggested tests are
 in the suite. **No open bead blocks promotion.**
 
-- **Medium — non-canonical separator whitespace rejected a genuine heading
-  link.** Confirmed exactly, including that it disproved the "complete physical
-  line is reconstructed" claim. `note_headings` now stores the heading line
-  EXACTLY as it appears — the same value the parser puts in `LinkEvidence.text`
-  — and the exporter compares against that instead of rebuilding it from level
-  and text. Storing beats reconstructing here: any canonical rebuild is a guess
-  about formatting the source already settled, which is what made
-  `##  Related` and `##<tab>Related` unrepresentable.
+Every finding in the last two cycles has been documentation lagging the
+implementation, so the fixes this round are aimed at that class rather than only
+at the three instances.
 
-  Tests cover two spaces and a tab, for wikilinks and Markdown links, on bodied
-  and bodyless headings — eight shapes, each first asserting the INDEXER really
-  produces the edge. The mutation you asked for (reconstructing with canonical
-  whitespace) fails, from both the query side and the parser side.
+- **Medium — the "Evidence classes" reference restated the removed model.**
+  Correct, and it was the sharpest place for it to be wrong: a reference is
+  where a consumer looks the answer up, and two other sections of the same
+  document already described it correctly. It now says a class names WHO WROTE
+  the statement, that a `note` selector produces EITHER class depending on the
+  gloss, and links to the detailed section.
 
-- **Medium — the spec-input section contradicted the authorship model.**
-  Correct, and it was the sharper of the two doc findings: a reader who read
-  only the input spec would come away with the classification
-  `recallweave-nv0` removed. It now states that the evidence class depends on
-  whether the gloss is present, and links to the detailed section.
+- **Medium — the CHANGELOG claimed the heading line is reconstructed.**
+  Correct, and you were right that this is a positive false statement rather
+  than imprecise wording: reconstruction is the defect that rejected
+  `##  Related` and `##<tab>Related`. It now says the exporter compares directly
+  against `note_headings.source_text` and why.
 
-- **Low — a heading-binding sentence named the removed `sections.heading`
-  route.** Fixed; it names `note_headings.source_text`.
+- **Low — the session handoff presented obsolete promotion state as current.**
+  Fixed, and made self-checking rather than merely corrected: the handoff now
+  carries a machine-checkable `**Blocking beads:**` line validated against the
+  committed Beads export, so a stale blocker list FAILS THE SUITE instead of
+  misleading the next session, and it no longer restates volatile counts at all
+  — it points at `.codex-reviews/`. Your suggestion offered either a freshness
+  check or removing volatile status; both seemed right, for different parts.
 
-Both documentation fixes are pinned by tests asserting the obsolete wording
-cannot return, and three mutations were killed.
+- Your last two test suggestions are in: the stored heading line is asserted to
+  equal the bytes the parser links from **directly**, not inferred from a
+  successful export (which would keep passing if both sides drifted the same
+  way), and trailing whitespace is pinned so "exact stripped source line" is a
+  contract both sides deliberately share.
 
-Suite: **425 tests** with the parser, green under `-W error::ResourceWarning`;
+Five mutations killed, including two proving the handoff check catches a stale
+blocker list and a bead that does not exist.
+
+Suite: **429 tests** with the parser, green under `-W error::ResourceWarning`;
 `compileall` clean. Runtime dependencies still empty.
-
-This route has now produced one bypass and three false rejections across four
-cycles, every one of them a case where the exporter's idea of a heading was
-narrower than the parser's. The binding no longer derives, reconstructs or
-normalizes anything: it compares stored bytes.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
    nothing blocks promotion, say so explicitly and without qualification.
-2. If you can find a fifth shape on this route — a heading the parser links from
-   whose stored line the exporter would not match, or a stored line that could
-   be matched by evidence the indexer would not have produced — name it. If you
-   believe the route is now closed, say why.
-3. Check every positive claim in `docs/task-contracts.md`, `ARCHITECTURE.md`,
-   `PRIVACY.md` and `CHANGELOG.md` against the code. Two of the last three
-   findings were documentation that had drifted behind the implementation.
-4. Reassess every Critical and High from all twenty-seven cycles and say which
+2. The last two cycles found only documentation drift. Sweep the docs against
+   the code once more and say whether any positive claim remains unverifiable —
+   `docs/task-contracts.md`, `ARCHITECTURE.md`, `PRIVACY.md`, `CHANGELOG.md`,
+   `README.md` and `docs/SESSION-HANDOFF.md`.
+3. If a finding is documentation-only and the code is sound, say so explicitly
+   in the verdict line rather than only in the finding, so the promotion
+   decision is not confused with an integrity question.
+4. Reassess every Critical and High from all twenty-eight cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
