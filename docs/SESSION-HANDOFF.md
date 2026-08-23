@@ -115,10 +115,10 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- **Active beads: none.** Nothing claimed, nothing in progress.
-- Deferred: `recallweave-z1a` (P1, until 2026-11-20).
-- **Worker assignments: none.** All eight lanes `oc_1`..`oc_8` are idle, with
-  zero unintegrated commits and zero uncommitted paths.
+- **Active bead:** `recallweave-z1a` (P1, undeferred 2026-08-23) — connection cap
+  after exclusions; reject note-only fields on text items. OWNS declared; supervisor
+  will dispatch on the next tick.
+- **Worker assignments:** pending dispatch (all eight lanes idle).
 
 ## 7. Known failure modes and traps
 
