@@ -95,56 +95,60 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Both cycle-29 findings are fixed, and all four of your suggested tests are in
-the suite. **No open bead blocks promotion.** Thank you for stating the
-documentation-only distinction in the verdict line — that is what the promotion
-decision needs.
+**The cycle-30 PASS has expired and this is a re-gate, not a new remediation
+round.** Cycle 30 passed with no findings, the milestone PR was opened — and the
+merge was refused by branch protection, for reasons the local gate could not
+see. The tree has changed since, so the PASS no longer covers it.
 
-Both findings were about checks this session added, not about the contract
-implementation, which is the healthiest place for the remaining findings to be.
+What the local gate missed, and why it matters to how you read this: the
+required checks on `main` include **Windows** and a **`viewer`** job, and the
+local suite runs neither. So "431 tests green" was true and insufficient. Two
+required checks were red:
 
-- **Medium — the handoff's blocker check validated the wrong direction.**
-  Exactly right, and the framing was the useful part: it checked what the
-  handoff SAYS rather than what is TRUE. It rejected declared beads that were
-  closed or unknown but never computed the actual open blocking set, so
-  `Blocking beads: none` would have survived a real blocker being filed.
+- **`python (windows-latest, 3.11)` — 3 failures on this branch.** Three tests
+  build a vault note whose FILENAME is hostile Markdown,
+  `![pixel](x)  [click](javascript:alert(1)).md`. Windows forbids `:` in
+  filenames, so the file was never created under that name, `_resolve_note`
+  raised "Note not found", and the tests errored. They passed on macOS and
+  Linux, so this was invisible locally for the whole run.
 
-  The declared set must now EQUAL the set of open beads labelled `blocker` or
-  `needs-human` — the same definition the Git Cadence uses to decide whether the
-  branch may be pushed — so a MISSING entry fails as loudly as a stale one. A
-  second test drives the mechanism against a synthetic export carrying an open
-  blocker, so it is proven to fail in the direction that matters rather than
-  only against today's data.
+  The fixture is now `![pixel](x)  [click](evil-payload).md`, shared as one
+  constant across the three tests. It keeps image syntax, link syntax, brackets,
+  parentheses and the double space, and drops only the colon. The tests are NOT
+  skipped on Windows — the property is cross-platform and now runs everywhere.
+  The `javascript:` scheme keeps its coverage where it needs no filesystem:
+  `JAVASCRIPT_LINK` as CONTENT in statements, connection kinds and directives.
 
-- **Low — the handoff overcounted consecutive PASS WITH FIXES verdicts.**
-  Correct. The count is removed rather than corrected: it is exactly the
-  volatile history that goes stale faster than the document is rewritten, and
-  `.codex-reviews/` already holds the ordered record.
+  A new `HostileFilenamePortabilityTest` guards both directions, because this
+  defect class is silent — a fixture that cannot exist on a platform does not
+  weaken its property, it stops testing it there. It asserts the fixture carries
+  no Windows-reserved character, no C0 control and no trailing space or dot,
+  AND that it still parses as live Markdown with both an Image and a Link token,
+  so inert rendering stays a real property rather than a tautology.
 
-- **Your fourth suggestion is done and was the most valuable.** The
-  evidence-class documentation has been wrong in three separate places across
-  three cycles, and a phrase-presence test would have kept passing every time.
-  Both documented `note`-selector shapes and the `text` shape are now driven
-  through the public builder and checked against the class and support fields
-  the docs promise. A docs test that only greps for wording proves the sentence
-  exists, not that it is true.
+- **`viewer` — 9 npm advisories (3 moderate, 6 high), 1 reaching production.**
+  Pre-existing on `main` and unrelated to this branch: the branch never touched
+  `viewer/package.json` or its lockfile. Fixed in a separate maintenance PR from
+  `main` (#2, merged) so unrelated dependency work stayed out of the milestone
+  PR, and that `main` is merged into this branch. Both audits now report 0.
 
-Two mutations killed: over-declaring a blocker in the handoff, and
-misclassifying a glossed selector (which the behaviour-anchored docs test now
-catches).
+Mutation-proven this round: rendering the citation live fails all three original
+tests on the new fixture; a harmless fixture fails the hostility guard;
+reintroducing the colon-bearing name fails the portability guard.
 
-Suite: **431 tests** with the parser, green under `-W error::ResourceWarning`;
-`compileall` clean. Runtime dependencies still empty.
+Suite: **433 tests** with the parser, green under `-W error::ResourceWarning`;
+`compileall` clean. Runtime dependencies still empty. The full GitHub matrix is
+running against this same commit in parallel with your review.
 
-1. **Say plainly whether this tree is safe to MERGE into protected `main`.** If
-   nothing blocks promotion, say so explicitly and without qualification. If the
-   only remaining findings are documentation-only or test-hygiene, say whether
-   they block promotion or merely warrant follow-up — the two have different
-   consequences and the distinction is yours to draw.
-2. Three consecutive cycles have found only documentation or test-integrity
-   issues, and cycle 29 found no unverifiable implementation claim in the docs
-   sweep. If you believe the contract implementation is done, say so.
-3. If there is any remaining finding at ANY severity, name it and its class.
-4. Reassess every Critical and High from all twenty-nine cycles and say which
-   remain closed.
+1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
+2. The delta since your PASS is: a `main` merge carrying only viewer dependency
+   changes, and a test-fixture change plus two guard tests. **No `src/` change.**
+   Confirm that reading, and say if anything in it touches product behaviour.
+3. The lesson I take is that a green local suite is not evidence about platforms
+   the local suite does not run. If you see other places where a fixture or an
+   assumption is platform-dependent — paths, line endings, filesystem
+   case-sensitivity, temp-directory semantics — name them, since CI covers
+   Windows and macOS and Linux but the local gate does not.
+4. Reassess every Critical and High from all thirty cycles and say which remain
+   closed.
 <!-- CYCLE-CONTEXT-END -->
