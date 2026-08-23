@@ -32,10 +32,12 @@
   back from the indexed section, parsed with the indexer's own link extractor
   and resolved with its own resolver, uniqueness included. A link on a heading
   line is bound the same way: the index records every heading's own physical
-  line and `#` level — including a heading with no body beneath it, which
-  produces no section but can still carry a link — the exporter reconstructs
-  the heading line from indexed data and requires the quoted text to equal it
-  at the claimed coordinate, and an index written before those were recorded is
+  line, `#` level and **exact stripped source line** — including a heading with
+  no body beneath it, which produces no section but can still carry a link —
+  the exporter compares the quoted text directly against
+  `note_headings.source_text` at the claimed coordinate rather than rebuilding
+  the line, since any canonical rebuild is a guess about formatting the source
+  already settled, and an index written before those were recorded is
   refused with a request to re-index. So a hand-written row can no longer
   export as an authored, verified relationship. Candidate existence, ranking
   and `score` are deliberately not recomputed: a candidate's score is persisted

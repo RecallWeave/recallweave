@@ -139,6 +139,84 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         )
         self.assertIn("the class stays `authored_by_operator`", text)
 
+    def test_evidence_class_reference_covers_both_note_selector_shapes(self) -> None:
+        # The dedicated "Evidence classes" reference is where a consumer looks
+        # up what a class means, and it still said `cited_passage` applies to
+        # `note` items -- the exact evidence-integrity error recallweave-nv0
+        # removed, restated as a reference claim while two other sections of the
+        # same document described it correctly (cycle 28). A reference that
+        # contradicts the body is worse than a missing one.
+        text = _norm(_text("docs/task-contracts.md"))
+        self.assertNotIn(
+            "`cited_passage` — the operator cited a vault passage (`note` items)",
+            text,
+        )
+        self.assertIn("A class names **who wrote the statement**", text)
+        self.assertIn("a `note` item carrying a `statement` gloss", text)
+        self.assertIn("a `note` item with no `statement` gloss", text)
+        self.assertIn("a `note` selector produces either class", text)
+
+    def test_changelog_does_not_claim_the_heading_line_is_reconstructed(self) -> None:
+        # Reconstruction was the DEFECT that rejected `##  Related` and
+        # `##<tab>Related`. A changelog claiming the obsolete algorithm is still
+        # in use is a positive false statement about an evidence-integrity
+        # property, not merely imprecise wording (cycle 28).
+        text = _norm(_text("CHANGELOG.md"))
+        self.assertNotIn("reconstructs the heading line", text)
+        self.assertIn("note_headings.source_text", text)
+        self.assertIn("rather than rebuilding", text)
+
+    def test_session_handoff_does_not_name_closed_beads_as_blockers(self) -> None:
+        # The handoff instructs the next session to treat it as durable
+        # resumption state, so a stale blocker list sends that session into
+        # remediation work that is already done (cycle 28). Check it against the
+        # committed passive Beads export rather than against a hand-maintained
+        # copy of the same facts.
+        import json
+
+        handoff = _text("docs/SESSION-HANDOFF.md")
+        export = ROOT / ".beads" / "issues.jsonl"
+        if not export.is_file():
+            self.skipTest("no passive Beads export in this checkout")
+        closed = set()
+        for line in export.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("_type") != "issue":
+                continue
+            if str(record.get("status", "")).lower() in {"closed", "done"}:
+                closed.add(str(record["id"]))
+        marker = "**Blocking beads:**"
+        self.assertIn(
+            marker,
+            handoff,
+            "the handoff must carry a machine-checkable blocker line",
+        )
+        line = handoff[handoff.index(marker) + len(marker) :].split("\n", 1)[0]
+        declared = {
+            token.strip()
+            for token in line.split(",")
+            if token.strip() and token.strip().lower() != "none"
+        }
+        stale = declared & closed
+        self.assertEqual(
+            stale,
+            set(),
+            f"the handoff declares closed beads as blockers: {sorted(stale)}",
+        )
+        known = {
+            str(json.loads(entry)["id"])
+            for entry in export.read_text(encoding="utf-8").splitlines()
+            if entry.strip() and json.loads(entry).get("_type") == "issue"
+        }
+        unknown = declared - known
+        self.assertEqual(
+            unknown,
+            set(),
+            f"the handoff declares beads that do not exist: {sorted(unknown)}",
+        )
+
     def test_changelog_documents_per_field_projection(self) -> None:
         text = _norm(_text("CHANGELOG.md"))
         self.assertIn("per field", text)

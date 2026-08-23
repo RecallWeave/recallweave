@@ -847,13 +847,23 @@ field, so stdout remains a single JSON object.
 
 ## Evidence classes
 
-Task contracts carry two evidence classes for operator-selected content:
+Task contracts carry two evidence classes for operator-selected content. A
+class names **who wrote the statement**, never whether a citation is attached
+to it:
 
-- `authored_by_operator` — the operator stated it directly (`text` items);
-  RecallWeave attaches provenance but the assertion is the operator's.
-- `cited_passage` — the operator cited a vault passage (`note` items);
-  RecallWeave resolves the citation and verifies it resolves to real physical
-  vault lines.
+- `authored_by_operator` — the operator wrote the statement. That is a `text`
+  item, and it is **also** a `note` item carrying a `statement` gloss: the
+  operator supplied those words, so the vault does not contain them.
+  RecallWeave attaches provenance, and when the operator named a note the
+  citation and passage travel beside the statement as **support**, in their own
+  fields. The assertion remains the operator's.
+- `cited_passage` — the statement **is** the vault passage, which happens for a
+  `note` item with no `statement` gloss. RecallWeave resolves the citation and
+  verifies it against the indexed snapshot.
+
+So a `note` selector produces either class, decided by the gloss. RecallWeave
+does not judge whether a cited passage supports an operator's assertion — see
+[`constraints` and `prior_decisions`](#constraints-and-prior_decisions).
 
 Retrieved context always carries `evidence_class: "lexical_match"` and
 `verified: false`. Connections carry `"authored_link"` (verified) or

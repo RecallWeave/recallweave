@@ -16,16 +16,18 @@ This is a durable capability, not a demo.
 
 ## 2. Current checkpoint / phase
 
-**Phase: adversarial-review remediation, still open.**
+**Phase: adversarial-review remediation. No open bead blocks promotion.**
 
 - Integration branch: `foundry/task-contracts` — the durable remote checkpoint.
-- Suite: **412 tests green** with the CommonMark parser, green again under
-  `-W error::ResourceWarning`, `compileall` clean, runtime dependencies still
-  empty (`mistletoe` remains test-only).
-- Adversarial review: **25 cycles run.** Cycles 16 and 19 returned PASS WITH
-  FIXES; every other cycle returned FAIL. Cycle 25 is the latest: FAIL.
-- **Two P0 beads block promotion** (see §4). Everything else found in cycles
-  14-25 is fixed and integrated.
+- Suite green with the CommonMark parser and again under
+  `-W error::ResourceWarning`; `compileall` clean; runtime dependencies still
+  empty (`mistletoe` remains test-only). For the current count and verdict read
+  the newest files in `.codex-reviews/` rather than trusting a number written
+  here — volatile status goes stale faster than this document is rewritten.
+- Adversarial review: cycles 14-28 run this session. The last four returned
+  PASS WITH FIXES; the fixes for each are landed.
+- Promotion still requires a **clean PASS** plus explicit human approval.
+  Nothing has been promoted; no PR exists.
 
 ## 3. Architecture decisions already approved — DO NOT REOPEN
 
@@ -71,35 +73,35 @@ will repeat work already paid for.
 13. **Codex is the independent adversarial reviewer and must never be used as
     an implementer.**
 
-## 4. Open blockers — BOTH BLOCK PROMOTION
+## 4. Open blockers
 
-Two P0 beads. Both reproduced, both filed with a full diagnosis and options.
+<!-- The line below is machine-checked against the committed Beads export by
+tests/test_docs_per_field_projection.py, so a stale blocker list fails the
+suite instead of sending the next session into work that is already done.
+Write `none`, or a comma-separated list of bead ids. -->
 
-- **`recallweave-nv0` — an operator-written gloss is labeled `cited_passage`.**
-  The most serious open item: it needs **no tampering**, only the documented
-  spec format. A note-backed constraint or prior decision may carry an operator
-  `statement`; the builder copies that gloss into `statement` and labels the
-  whole item `cited_passage`. Nothing checks the passage says anything like it.
-  Reproduced: vault says "We evaluated three vendors and picked none of them
-  yet", operator gloss says "This architecture decision was approved", and the
-  artifact emits the gloss under `cited_passage` with a real citation. The
-  Markdown does not project `passage` for these items, so the reader never sees
-  the contradiction. **Needs a decision on the evidence model** — three options
-  are written up in the bead's design field; option A (classify by who wrote
-  the statement, carry the citation as separate supporting evidence) is
-  recommended. Note the projected/omitted partition moves with it.
-- **`recallweave-kob` — heading-link re-derivation cannot bind the coordinate or
-  heading level.** Deferred by Josh, deliberately. `sections` records a body's
-  `line_start`/`line_end` but never a heading's own physical line or `#` count,
-  so a tampered index can pair an authentic indexed heading with a false `line`
-  or a changed level. The real fix is recording heading position and level in
-  the index — a core schema change, out of scope for the contract work. The gap
-  is **disclosed in `docs/task-contracts.md`** and pinned by a docs test.
+**Blocking beads:** none
 
-Nothing has been promoted; no PR exists. Final merge needs a Codex **PASS** plus
-explicit human approval.
+Both P0 beads that blocked promotion at the previous handoff are closed:
 
-## 5. What was completed this session (cycles 14-25)
+- `recallweave-nv0` — an operator-written gloss was labeled `cited_passage`.
+  Fixed architecturally: an evidence class now names the ORIGIN of a statement,
+  never the presence of a citation. Operator wording stays
+  `authored_by_operator` even when cited, with the citation and passage carried
+  beside it as support; `cited_passage` may only describe source-derived
+  passage text. The Markdown projection shows the supporting passage under its
+  own label. No semantic-support inference was added, deliberately — see §3.
+- `recallweave-kob` — a heading link's coordinate and level were unbound. Fixed
+  by recording every heading in `note_headings` (line, level and the exact
+  stripped source line) and comparing stored bytes.
+
+What remains between this branch and `main` is a **clean PASS verdict** and
+Josh's approval, not a known defect. The last three cycles each returned PASS
+WITH FIXES, and each round's fixes were landed; the findings have been
+documentation drift and false rejections on the heading route rather than
+integrity holes.
+
+## 5. What was completed (cycles 14-28)
 
 All integrated, green, and each mutation-proven against the pre-fix tree:
 
@@ -129,25 +131,28 @@ All integrated, green, and each mutation-proven against the pre-fix tree:
   resolver, binding line, kind, target and unique resolution.
 - `5sy` — whole-section parsing restored the parser's fenced-code state, and a
   false rejection of genuine heading-line links was fixed alongside it.
+- `nv0` — evidence classes separated from citation presence (see §4).
+- `kob` — heading coordinates and levels bound, via `note_headings`.
+- Three follow-on rounds on the same heading route: bodyless headings recorded
+  (a heading with no body produces no section but can still carry a link), the
+  exact source line stored rather than reconstructed (any canonical rebuild is
+  a guess about formatting the source already settled), and the documentation
+  brought back in line with the code in four separate places.
 
 ## 6. Exact next actions, in order
 
-1. **Decide `recallweave-nv0`** (the evidence model for an operator gloss). It
-   is the only open item reachable without a tampered index, and it touches the
-   project's central premise. `bd show recallweave-nv0` has the reproduction and
-   three written-up options.
-2. **Land `recallweave-nv0`**, then re-run the review.
-3. **Decide `recallweave-kob`**: whether the index schema change is worth doing
-   now or the disclosure stands for this release.
-4. **Run the next adversarial cycle**: update the block between
+1. **Run the next adversarial cycle.** Update the block between
    `<!-- CYCLE-CONTEXT-START -->` and `<!-- CYCLE-CONTEXT-END -->` in
-   `docs/CODEX-REVIEW-PROMPT.md`, then `./scripts/codex-review.sh`. The verdict
-   is the first line of the newest `.codex-reviews/review-*.md`.
-5. **Reproduce every finding before acting on it.** This has repeatedly caught
-   architect error, and twice this session it caught a defect the reviewer had
-   under-described. Never file a bead from an unverified claim.
-6. **On PASS:** stop and ask Josh. Opening the milestone PR and merging to
-   `main` are his decisions.
+   `docs/CODEX-REVIEW-PROMPT.md` to say what the last round fixed and what to
+   attack, then `./scripts/codex-review.sh`. The verdict is the first line of
+   the newest `.codex-reviews/review-*.md`.
+2. **Reproduce every finding before acting on it.** This has repeatedly caught
+   architect error, and several times it showed a finding was larger or
+   narrower than reported. Never file a bead from an unverified claim.
+3. **On a clean PASS:** stop and ask Josh. Opening the milestone PR and merging
+   to `main` are his decisions, not the session's.
+4. **Do not start new feature work** until the gate passes. That was an explicit
+   instruction, not a default.
 
 ## 7. Known failure modes and traps
 

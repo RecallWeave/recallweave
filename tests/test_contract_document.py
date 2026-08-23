@@ -2722,6 +2722,51 @@ class ContractDocumentTest(unittest.TestCase):
                         f"a genuine edge from {heading!r} must export",
                     )
 
+    def test_stored_heading_line_equals_what_the_parser_links_from(self) -> None:
+        # Prove the agreement DIRECTLY rather than inferring it from a
+        # successful export. The exporter compares persisted edge evidence
+        # against note_headings.source_text, and the persisted evidence is
+        # LinkEvidence.text, so the two must be the same bytes. Checking only
+        # that an export succeeds would keep passing if BOTH sides drifted the
+        # same way.
+        import sqlite3
+
+        from recallweave.parser import _links
+
+        headings = (
+            "## Related [[Target]]",
+            "##  Related [[Target]]",
+            "##\tRelated [[Target]]",
+            "## Related [Target](Target.md)   ",
+        )
+        for heading in headings:
+            with self.subTest(heading=heading):
+                _vault, database = self._vault_with(
+                    "---\ntitle: Src\n---\n# Src\n\n## Body\n\n"
+                    f"zephyr searchable body\n\n{heading}\n"
+                )
+                with closing(
+                    sqlite3.connect(str(database))
+                ) as connection, connection:
+                    connection.row_factory = sqlite3.Row
+                    stored = connection.execute(
+                        "SELECT source_text FROM note_headings "
+                        "WHERE note_id = (SELECT id FROM notes "
+                        "WHERE relative_path = 'Src.md') AND line = 10"
+                    ).fetchone()
+                self.assertIsNotNone(stored, f"no heading recorded for {heading!r}")
+                parsed = _links([heading], 0)
+                self.assertTrue(parsed, f"the parser must link from {heading!r}")
+                self.assertEqual(
+                    str(stored["source_text"]),
+                    parsed[0].text,
+                    "the stored heading line and the line the parser links "
+                    "from must be the same bytes",
+                )
+                # Trailing whitespace: both sides strip, deliberately and
+                # identically, so the contract really is "exact STRIPPED line".
+                self.assertEqual(str(stored["source_text"]), heading.strip())
+
     def test_a_heading_inside_a_fence_is_not_a_heading(self) -> None:
         # A heading-looking line inside a code fence is not a heading: the
         # indexer never treats it as one, so it must not reach `note_headings`
