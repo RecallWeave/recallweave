@@ -95,46 +95,41 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your re-gate Low is fixed. This is the final gate before the milestone merge.
+Your Low is fixed, and it was a good catch twice over: the bypass you described
+was the very failure mode the guard exists to prevent, reproduced inside the
+guard itself.
 
-- **Low — the portability guard did not cover all three fixtures.** Precise and
-  correct: the AST end-to-end test duplicated the filename as a literal, which
-  sits outside `HostileFilenamePortabilityTest` — so reintroducing a reserved
-  character in that copy would again fail only on Windows, the exact blind spot
-  the guard exists to close. It also made the previous commit message's "shared
-  as one constant across the three tests" inaccurate; it was shared across two.
+- **Low — the source scan matched only double-quoted literals.** Confirmed.
+  `self.hostile_name = '![pixel](x)  [click](evil:payload).md'` slipped past it,
+  and the equality assertion did not close the gap either — it proved the
+  imported constant matched, which says nothing about what the fixture assigns.
 
-  The AST test now imports `HOSTILE_VAULT_FILENAME`, and the guard proves it in
-  both directions: the module's fixture EQUALS the shared constant, and no
-  hostile-filename literal reappears there — scanned as a filename shape (a
-  quoted string ending in `.md` carrying Markdown link syntax) so ordinary
-  sentinel assertions like `assert_sentinel_inert(self, markdown, "![pixel](x)")`
-  are not caught by it.
+  Both halves now use `ast` instead of text matching, because a regex over
+  source has to guess at quoting and the parser does not care how a string was
+  written:
 
-  Comparison is by VALUE, not identity: `unittest discover` imports these
-  modules under both `tests.x` and `x`, so the copies hold equal but distinct
-  string objects. Identity passed alone and failed in the suite until corrected.
+  - no hostile-filename LITERAL anywhere in the module, matched as a filename
+    shape (a string ending in `.md` carrying Markdown link syntax), so ordinary
+    sentinel assertions like
+    `assert_sentinel_inert(self, markdown, "![pixel](x)")` stay untouched;
+  - every assignment to `self.hostile_name` must be the shared NAME, not a
+    literal and not an expression derived from it.
 
-  **Mutation-proven:** reverting the AST test to the copied colon-bearing
-  literal now fails LOCALLY, on macOS, instead of only on Windows CI. That is
-  the point — the guard converts a platform-specific failure into a local one.
-
-Your other five suggestions are **filed as follow-up** rather than done here,
-deliberately: the line-ending matrix, a generalized fixture-portability guard,
-case-insensitive filesystem behaviour, real Windows junction coverage, and
-running the `viewer` job's Windows static-asset test on Windows. They are
-coverage work, nothing is known to be broken, and bundling them would age this
-verdict — which is exactly what happened to the cycle-30 PASS. The bead records
-your reasoning and orders them cheapest-first.
+  Mutation-proven against your exact bypass and two more: the single-quoted
+  colon-bearing literal, the constant imported but mutated with `.replace(...)`
+  to reintroduce a colon, and the assignment removed altogether. All three fail
+  locally now, on macOS, rather than only on Windows.
 
 Suite: **434 tests** with the parser, green under `-W error::ResourceWarning`;
-`compileall` clean. Runtime dependencies still empty. Since your PASS there is
-still **no `src/` change** — the delta is a `main` merge carrying only viewer
-dependency updates, a test fixture, and guard tests.
+`compileall` clean. Runtime dependencies still empty. Since the cycle-30 PASS
+there is still **no `src/` change**: the delta is a `main` merge carrying only
+viewer dependency updates, one test fixture, and guard tests.
+
+This is the gate before the milestone merge.
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. Confirm the no-`src/`-change reading still holds for this commit.
+2. Confirm the no-`src/`-change reading still holds.
 3. If anything at any severity remains, name it and say whether it blocks.
-4. Reassess every Critical and High from all thirty-one cycles and say which
+4. Reassess every Critical and High from all thirty-two cycles and say which
    remain closed.
 <!-- CYCLE-CONTEXT-END -->
