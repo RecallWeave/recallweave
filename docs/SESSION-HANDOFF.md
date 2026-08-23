@@ -16,7 +16,7 @@ This is a durable capability, not a demo.
 
 ## 2. Current checkpoint / phase
 
-**Phase: adversarial-review remediation. No open bead blocks promotion.**
+**Phase: review gate SATISFIED, awaiting human merge approval.**
 
 - Integration branch: `foundry/task-contracts` — the durable remote checkpoint.
 - Suite green with the CommonMark parser and again under
@@ -24,11 +24,14 @@ This is a durable capability, not a demo.
   empty (`mistletoe` remains test-only). For the current count and verdict read
   the newest files in `.codex-reviews/` rather than trusting a number written
   here — volatile status goes stale faster than this document is rewritten.
-- Adversarial review: cycles 14-29 run this session. For the run of verdicts
-  read `.codex-reviews/review-*.md` in order; restating a count here only
-  creates something else to go stale.
-- Promotion still requires a **clean PASS** plus explicit human approval.
-  Nothing has been promoted; no PR exists.
+- Adversarial review: **cycle 30 returned a clean PASS** — no findings at any
+  severity, and the reviewer states the tree is safe to merge into protected
+  `main`. For the run of verdicts read `.codex-reviews/review-*.md` in order;
+  restating a count here only creates something else to go stale.
+- The review gate is satisfied. What remains is **explicit human merge
+  approval**. Nothing has been promoted; no PR exists; the
+  `CHECKPOINT_NOT_APPROVED.md` marker is still in place and is deleted as part
+  of the promotion commit, not before.
 
 ## 3. Architecture decisions already approved — DO NOT REOPEN
 
@@ -97,11 +100,10 @@ Both P0 beads that blocked promotion at the previous handoff are closed:
   by recording every heading in `note_headings` (line, level and the exact
   stripped source line) and comparing stored bytes.
 
-What remains between this branch and `main` is a **clean PASS verdict** and
-Josh's approval, not a known defect. The recent findings have been
-documentation drift and false rejections on the heading route rather than
-integrity holes, and cycle 29 stated plainly that the code and
-evidence-integrity mechanisms are sound.
+What remains between this branch and `main` is **Josh's approval**, not a
+known defect and no longer a review verdict. Cycle 30 returned a clean PASS
+and recorded the implementation as complete, with every Critical and High from
+cycles 1-29 closed.
 
 ## 5. What was completed (cycles 14-28)
 
@@ -143,18 +145,21 @@ All integrated, green, and each mutation-proven against the pre-fix tree:
 
 ## 6. Exact next actions, in order
 
-1. **Run the next adversarial cycle.** Update the block between
-   `<!-- CYCLE-CONTEXT-START -->` and `<!-- CYCLE-CONTEXT-END -->` in
-   `docs/CODEX-REVIEW-PROMPT.md` to say what the last round fixed and what to
-   attack, then `./scripts/codex-review.sh`. The verdict is the first line of
-   the newest `.codex-reviews/review-*.md`.
-2. **Reproduce every finding before acting on it.** This has repeatedly caught
-   architect error, and several times it showed a finding was larger or
-   narrower than reported. Never file a bead from an unverified claim.
-3. **On a clean PASS:** stop and ask Josh. Opening the milestone PR and merging
-   to `main` are his decisions, not the session's.
-4. **Do not start new feature work** until the gate passes. That was an explicit
-   instruction, not a default.
+1. **Ask Josh whether to open the milestone PR.** The review gate is satisfied;
+   the merge is his call and nothing else is blocking. Do not open a PR, mark
+   one ready, or merge without him saying so — see the Git Cadence.
+2. **If he approves promotion:** open the milestone PR from
+   `foundry/task-contracts` to `main`, and delete `CHECKPOINT_NOT_APPROVED.md`
+   as part of the promotion commit. Its presence is the machine-checkable
+   signal that the branch is not approved, so it goes at promotion and not
+   before.
+3. **If work continues on this branch instead**, re-run the gate after any
+   change: update the block between `<!-- CYCLE-CONTEXT-START -->` and
+   `<!-- CYCLE-CONTEXT-END -->` in `docs/CODEX-REVIEW-PROMPT.md`, then
+   `./scripts/codex-review.sh`. A PASS ages the moment the tree changes.
+4. **Reproduce every finding before acting on it.** This repeatedly caught
+   architect error and several times showed a finding was larger or narrower
+   than reported. Never file a bead from an unverified claim.
 
 ## 7. Known failure modes and traps
 

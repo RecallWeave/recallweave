@@ -6,11 +6,12 @@ automatically whenever the local suite is green and the tree is clean.
 
 **Do not merge, promote, release, or deploy from this branch.**
 
-- Latest adversarial review verdict: **pending cycle 26** (cycle 25 was FAIL)
-- Both P0 blockers from cycle 25 are now closed: `recallweave-nv0` (an
-  operator-written gloss labeled `cited_passage`) and `recallweave-kob`
-  (heading-link coordinate and level unbound). No open bead blocks promotion;
-  promotion still requires a PASS verdict and human approval.
+- Latest adversarial review verdict: **PASS** (cycle 30, 2026-08-23) — no
+  findings at any severity, and the reviewer states the tree is safe to merge.
+- No open bead blocks promotion. The review gate is therefore **satisfied**.
+- What is still missing is **human merge approval**, which is the only reason
+  this file is still here. A PASS is not an approval: the milestone PR and the
+  merge to `main` are Josh's decisions, not a session's.
 - Promotion to `main` happens only through a milestone pull request with human
   merge approval, and only after the adversarial review returns PASS.
 - A failing or absent review does **not** block this checkpoint, because the
