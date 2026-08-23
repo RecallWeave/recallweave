@@ -293,14 +293,12 @@ project facts as overridden here until the generator takes a project argument.
 | Tick interval | 60s | **300s** | 2026-08-23 |
 | Workers | 4 lanes | **8 lanes** `oc_1`..`oc_8`, tmux session `recallweave` | 2026-08-23 |
 
-**Context-health rotation bands are NOT enforced in this project.** The doctrine
-above specifies warning/checkpoint/mandatory bands at 100K/130K/140K. This
-project's coordinator has no context-token probe: rotation is driven by
-`modal_ticks` and `idle_ticks_before_nudge` heuristics plus `ntm respawn`.
-Recording this as a declared gap rather than claiming compliance, because an
-unknown is never a safe value. Closing it means either adding a context probe to
-`rw_supervisor.py` or migrating this project onto the Factory coordinator.
-(2026-08-23)
+**Context-health rotation bands are enforced via `ntm status --json`.** The doctrine
+specifies warning/checkpoint/mandatory bands at 100K/130K/140K. As of 2026-08-23
+`rw_supervisor.py` probes `context_tokens` each tick, rotates idle lanes at the
+mandatory band (refusing dirty worktrees), and withholds dispatch from lanes in
+the checkpoint or rotate bands. An unavailable probe fails closed and holds
+dispatch rather than assuming healthy.
 
 **Standing project decisions that supplement the doctrine.** These predate the
 runbook and continue to win where they differ:

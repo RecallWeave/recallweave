@@ -100,32 +100,25 @@ worker holds unintegrated or uncommitted work.
 
 ## 5. Unresolved human decisions
 
-1. **Close the two stale P0 epics.** `recallweave-9ew` and `recallweave-vzb`
-   have zero remaining children — all sub-beads are closed and shipped in PR #1
-   — but both still read open, so the backlog looks like it has P0 work when it
-   does not. They are skipped by the dispatcher because epics are not
-   dispatchable, which is why this has persisted. Suggested:
-   `bd close recallweave-9ew recallweave-vzb`.
-2. **Decide the fate of `recallweave-z1a`** (deferred, P1): connection cap
-   precedes exclusions; text items silently discard note-only fields. Durable
-   work, deliberately deferred so it does not hold stewardship hostage. It is
-   `deferred` rather than `needs-human` on purpose — see §7.
-3. **Close the context-health gap** recorded in `SWARM-RUNBOOK.md` §11. The
-   adopted doctrine mandates rotation bands at 100K/130K/140K; this project's
-   coordinator has no context-token probe and rotates on modal/idle heuristics.
-   Either add a probe to `rw_supervisor.py` or migrate onto the Factory
-   coordinator. **Recorded as a declared gap, not as compliance.**
-4. **`eaf runbook` has no project-awareness** (a fix for the *Factory*, not
-   here): it renders from the Factory's own contract, and `--out` redirects the
-   file but not the content.
+All four items from the 2026-08-23 rotation queue were resolved by Josh on
+2026-08-23:
+
+1. **Stale P0 epics closed.** `recallweave-9ew` and `recallweave-vzb` — all
+   children shipped in PR #1.
+2. **`recallweave-z1a` remains deferred** until post-stewardship triage (P1 bug,
+   not blocking checkpoint durability).
+3. **Context-health gap closed.** `rw_supervisor.py` now probes
+   `ntm status --json` for `context_tokens` and enforces the 100K/130K/140K
+   bands (rotate refuses dirty worktrees; dispatch withheld from checkpoint+).
+4. **`eaf runbook` project-awareness** recorded in `bd remember` as a Factory
+   fix (`recallweave-eaf-runbook-gap`), not actionable in this repo.
 
 ## 6. Active beads and worker assignments
 
 - **Active beads: none.** Nothing claimed, nothing in progress.
-- Open: `recallweave-9ew` (epic), `recallweave-vzb` (epic) — both stale, see §5.
-- Deferred: `recallweave-z1a`.
+- Deferred: `recallweave-z1a` (P1, until 2026-11-20).
 - **Worker assignments: none.** All eight lanes `oc_1`..`oc_8` are idle, with
-  zero unintegrated commits and zero uncommitted paths. Verified 2026-08-23.
+  zero unintegrated commits and zero uncommitted paths.
 
 ## 7. Known failure modes and traps
 
@@ -184,9 +177,10 @@ worker holds unintegrated or uncommitted work.
 ## 8. Supervisor / coordinator status
 
 - **Running.** launchd `com.particle.rw-supervisor`, `StartInterval` 300s.
-  `~/.particle-supervisor/PAUSED` is absent. Last tick 283, all lanes idle.
-- It is idle **by design**: the only open beads are epics, which are not
-  dispatchable, and `z1a` is deferred. This is not a wedged swarm.
+  `~/.particle-supervisor/PAUSED` is absent. Context-health probe active
+  (`ntm status --json` → 100K/130K/140K bands).
+- It is idle **by design**: no open dispatchable beads; `z1a` is deferred. This
+  is not a wedged swarm.
 - Pause with `touch ~/.particle-supervisor/PAUSED`; resume with `rm -f` on it.
   Note `--dry-run` is gated behind the PAUSED check.
 - **The supervisor owns the routine loop** — integrate, gate, rotate, nudge,
@@ -235,7 +229,7 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | `foundry/steward` vs `origin/main` | 5 ahead, 0 behind |
 | Supervisor | **running**, tick 283, all lanes idle |
 | Latest verdict | PASS, but 4 commits newer than it |
-| Beads authoritative | **yes** — 2 stale epics, 1 deferred, 0 blockers |
+| Beads authoritative | **yes** — 0 open, 1 deferred, 0 blockers |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
