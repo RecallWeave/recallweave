@@ -51,6 +51,8 @@ Thumbs.db
 .dolt/
 .beads-credential-key
 .beads/proxieddb/
+.beads/dolt
+.beads/dolt-*
 
 # bv (beads viewer) local config and caches
 .bv/

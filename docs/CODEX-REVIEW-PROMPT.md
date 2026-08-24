@@ -95,25 +95,23 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 22 — promotion re-review of the tree being squash-merged to `main`.
+Cycle 23 — clean-tree promotion re-review for squash-merge to `main`.
 
-**Since cycle 21 PASS** (`review-20260824T001136Z.md`):
+**Since cycle 22** (`review-20260824T014627Z.md`, VERDICT: PASS WITH FIXES):
 
-- `recallweave-jqq` and `recallweave-3ea` mutation audits landed and closed.
-- Codex PR review on #3 remediations: durable `.codex-reviews/review-*.md`
-  tracking, enforceable-selector streaming fast path, incident-endpoint tag
-  load, `viewer` required-check gate job, runbook banner, fixture portability
-  AST scan, mutation-audit temp cleanup.
-- `CHECKPOINT_NOT_APPROVED.md` deleted in the promotion commit; supervisor
-  paused for the milestone merge.
+- Cycle-22 findings addressed: incident-endpoint tag load committed at
+  `96ee2f4`; this cycle must judge the **exact clean HEAD** after also applying
+  the verified-only filter on the tag prefetch when `include_candidates=false`.
+- Codex PR #3 conversation still requires a PASS covering that clean SHA
+  (prior artifact explicitly said the reviewed tree did not match the PR head).
+- `CHECKPOINT_NOT_APPROVED.md` already deleted; supervisor remains paused.
 
-Suite at review time: **466 tests** OK (1 skip), green under
-`-W error::ResourceWarning`; `compileall` clean. Runtime dependencies still
-empty.
+Expect suite: **466 tests** OK (1 skip), ResourceWarning-strict green,
+`compileall` clean. Runtime dependencies still empty.
 
 Focus for this cycle:
 
-1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. Confirm cycle-20/21 High findings remain closed on this tree.
-3. Any new finding from the PR-review remediations or mutation audits?
+1. **Say plainly whether this clean tree is safe to MERGE into protected `main`.**
+2. Confirm tag prefetch uses the same candidate filter as the edge cursor.
+3. Confirm cycle-20/21 High findings remain closed; no new Critical/High.
 <!-- CYCLE-CONTEXT-END -->

@@ -777,6 +777,9 @@ def _stream_connection_edges(
         return [], 0, set()
     seed_placeholders = ",".join("?" for _ in seed_ids)
     tags_by_note: dict[int, list[str]] = defaultdict(list)
+    # Match the edge cursor: when candidates are omitted, do not prefetch tags
+    # for candidate-only endpoints (unbounded fan-in that never exports).
+    candidate_clause = "" if include_candidates else "AND e.is_verified = 1"
     # Tag exclusion is the only reason to load note_tags. Restrict to endpoints
     # of edges that touch the seeds — loading every vault tag would scale with
     # the whole index rather than the incident edge set.
@@ -787,18 +790,19 @@ def _stream_connection_edges(
             FROM note_tags nt
             WHERE nt.note_id IN (
                 SELECT e.source_note_id FROM edges e
-                WHERE e.source_note_id IN ({seed_placeholders})
-                   OR e.target_note_id IN ({seed_placeholders})
+                WHERE (e.source_note_id IN ({seed_placeholders})
+                   OR e.target_note_id IN ({seed_placeholders}))
+                {candidate_clause}
                 UNION
                 SELECT e.target_note_id FROM edges e
-                WHERE e.source_note_id IN ({seed_placeholders})
-                   OR e.target_note_id IN ({seed_placeholders})
+                WHERE (e.source_note_id IN ({seed_placeholders})
+                   OR e.target_note_id IN ({seed_placeholders}))
+                {candidate_clause}
             )
             """,
             [*seed_ids, *seed_ids, *seed_ids, *seed_ids],
         ):
             tags_by_note[int(row["note_id"])].append(str(row["tag"]))
-    candidate_clause = "" if include_candidates else "AND e.is_verified = 1"
     allowed: list[Any] = []
     suppressed = 0
     dropped: set[int] = set()
