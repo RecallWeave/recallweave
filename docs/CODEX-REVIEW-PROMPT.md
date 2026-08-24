@@ -95,15 +95,20 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24 — stewardship after PR #3.
+Cycle 24 — stewardship hardening on fresh `foundry/steward` after PR #3.
 
-**Promoted:** PR #3 squash on `main` (`2fe19ed`). Fresh `foundry/steward` cut
-from that tip with `CHECKPOINT_NOT_APPROVED.md` restored. Cycle-23 PASS remains
-the last gate on the promoted tree (`.codex-reviews/review-20260824T030601Z.md`).
+**Since cycle 23 PASS** (`.codex-reviews/review-20260824T030601Z.md`, promoted
+via PR #3 squash `2fe19ed`):
 
-Open hardening (not promotion blockers): `recallweave-cxn`, `recallweave-dle`,
-`recallweave-rm3`.
+- `recallweave-cxn` — max-seed (50) tag prefetch under reduced SQLite variable limit
+- `recallweave-dle` — byte-identical export for tied scores with mixed exclusions
+- `recallweave-rm3` — vault-write AST scan covers nested bare `write()` helpers
+  and expression-interpolated / concatenated reserved filename characters
+- Checkpoint marker present; suite expected **471** OK (1 skip)
 
-Focus: review any new stewardship commits on the fresh checkpoint; do not
-re-litigate settled promotion findings.
+Focus:
+
+1. Confirm cxn/dle/rm3 remediations hold; no new Critical/High.
+2. Say plainly whether this checkpoint is safe to continue (and later promote).
+3. Any regression in exclusion streaming, tag prefetch, or fixture portability?
 <!-- CYCLE-CONTEXT-END -->
