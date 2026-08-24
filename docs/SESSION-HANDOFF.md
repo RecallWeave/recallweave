@@ -19,7 +19,7 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: STEWARDSHIP — fresh `foundry/steward` cut from `main` after PR #3.**
+**Phase: MILESTONE PROMOTION — stewardship hardening PR `foundry/steward` → `main`.**
 
 - Integration branch: **`foundry/steward`**, reset to `origin/main` (`2fe19ed`,
   squash of PR #3) then re-marked with `CHECKPOINT_NOT_APPROVED.md`.
@@ -115,13 +115,11 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 ## 6. Active beads and worker assignments
 
 - Epic **`recallweave-7o5`** — stewardship phase queue after PR #3:
-  1. **`recallweave-rm3` closed** — fixture-portability AST nested helpers /
-     expression filenames
-  2. **`recallweave-41d` in progress** — cycle-24 adversarial gate
-  3. **`recallweave-fh2`** — promote stewardship hardening to main (Codex ≤3,
-     Josh pre-authorized merge)
-- Also closed this rotation: `cxn`, `dle`.
-- **Worker assignments:** hand-drive phase 2–3; supervisor unpaused for routine.
+  1. **`recallweave-rm3` closed**
+  2. **`recallweave-41d` closed** — cycle-24d PASS (`review-20260824T064133Z.md`)
+  3. **`recallweave-fh2` in progress** — promote to main (Codex ≤3; Josh
+     pre-authorized merge)
+- Also closed: `cxn`, `dle`. Supervisor **paused** for promotion.
 
 ## 7. Known failure modes and traps
 
