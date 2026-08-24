@@ -110,12 +110,10 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- Epic **`recallweave-7o5`** — stewardship phase queue after PR #3:
-  1. **`recallweave-rm3` closed**
-  2. **`recallweave-41d` closed** — cycle-24d PASS (`review-20260824T064133Z.md`)
-  3. **`recallweave-fh2` in progress** — promote to main (Codex ≤3; Josh
-     pre-authorized merge)
-- Also closed: `cxn`, `dle`. Supervisor **paused** for promotion.
+- Epic **`recallweave-7o5`** — closed (PR #4 merged 2026-08-24).
+- **`recallweave-86e` in progress** — cycle-25 adversarial gate on path-binding
+  scanner fix (25c PASS WITH FIXES; compound-statement follow-up landed post-cap).
+- Also closed this rotation: `07h`, `94b`, `rm3`, `41d`, `fh2`, `cxn`, `dle`.
 
 ## 7. Known failure modes and traps
 
@@ -180,8 +178,8 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 9. Review state
 
-- Adversarial gate: cycle **24i PASS WITH FIXES** on promoted tree (PR #4);
-  cycle **25** pending on path-binding scanner fix (`recallweave-07h`).
+- Adversarial gate: cycle **25c PASS WITH FIXES** at `6d0260a` (scanner hardening;
+  no runtime Critical/High). Three remediation cycles consumed (25→25b→25c).
 
 ## 10. Do NOT replan or reconsider
 
@@ -206,8 +204,8 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Git branch | `foundry/steward` (fresh cut from `main` @ `374be23`) |
 | Marker | **present** |
 | Supervisor | **running** (no `~/.particle-supervisor/PAUSED` marker) |
-| Latest verdict | cycle 25 in progress on path-binding scanner fix |
-| Beads authoritative | **yes** — `86e` cycle-25 gate open |
+| Latest verdict | 25c PASS WITH FIXES @ `6d0260a` |
+| Beads authoritative | **yes** — `86e` closing |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
