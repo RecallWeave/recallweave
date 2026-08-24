@@ -1462,6 +1462,23 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
 
     # Windows reserves these in filenames; POSIX only reserves `/` and NUL.
     WINDOWS_RESERVED = '<>:"/\\|?*'
+    # Device basenames (case-insensitive; matched on the stem before the first
+    # `.`). A fixture named CON.md creates on POSIX and fails on Windows.
+    WINDOWS_DEVICE_BASENAMES = frozenset(
+        {
+            "con",
+            "prn",
+            "aux",
+            "nul",
+            *(f"com{i}" for i in range(1, 10)),
+            *(f"lpt{i}" for i in range(1, 10)),
+        }
+    )
+
+    @classmethod
+    def _is_windows_device_component(cls, component: str) -> bool:
+        stem = component.split(".", 1)[0].casefold()
+        return stem in cls.WINDOWS_DEVICE_BASENAMES
 
     def test_hostile_filename_is_creatable_on_every_platform(self) -> None:
         for character in self.WINDOWS_RESERVED:
@@ -1588,6 +1605,39 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
                         f"component {component!r} of fixture {name!r} ends in a "
                         "space or dot, which Windows strips from filenames",
                     )
+                    self.assertFalse(
+                        self._is_windows_device_component(component),
+                        f"component {component!r} of fixture {name!r} is a "
+                        "Windows reserved device name and cannot be created there",
+                    )
+
+    def test_portability_oracle_rejects_windows_device_basenames(self) -> None:
+        for name in (
+            "CON.md",
+            "prn.MD",
+            "AUX.txt.md",
+            "com1.md",
+            "LPT9.anything.md",
+            "Nested/CON.md",
+        ):
+            with self.subTest(name=name):
+                for component in re.split(r"[\\/]", name):
+                    if component:
+                        self.assertTrue(
+                            self._is_windows_device_component(component)
+                            or component.casefold()
+                            in {"nested"},  # path prefix ok
+                            msg=component,
+                        )
+                # At least one component must be a device name.
+                self.assertTrue(
+                    any(
+                        self._is_windows_device_component(c)
+                        for c in re.split(r"[\\/]", name)
+                        if c
+                    ),
+                    name,
+                )
 
     def test_scan_catches_nested_helper_name_calls(self) -> None:
         # Nested `def write(...): ...` helpers are invoked as bare names. A

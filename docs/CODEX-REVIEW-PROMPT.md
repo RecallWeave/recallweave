@@ -95,16 +95,15 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24b — re-review after cycle-24 Medium remediation on `foundry/steward`.
+Cycle 24c — re-review after Windows device-name oracle + handoff/marker hygiene.
 
-**Since cycle 24** (`review-20260824T062013Z.md`, PASS WITH FIXES):
+**Since cycle 24b** (`review-20260824T063432Z.md`, PASS WITH FIXES):
 
-- Fixture AST scan now uses bounded static evaluation (Constants / `+` /
-  JoinedStr / FormattedValue), keyword path args on bare `write(...)`, and
-  does not treat `Path.write_text` bodies as filenames.
-- Regression covers keyword helper, nested concat, and formatted BinOp cases.
-- `dle` compares two independently built indexes plus Markdown bytes.
-- Handoff lists `cxn`/`dle`/`rm3` closed; suite **472** OK (1 skip).
+- Portability oracle rejects Windows device basenames (CON/PRN/AUX/NUL/COMn/LPTn)
+  case-insensitively on the stem before the first `.`.
+- Handoff §11 Beads row corrected; marker will be refreshed to match latest
+  verdict after this gate.
+- Suite expected **473** OK (1 skip).
 
-Focus: confirm the Medium is closed; PASS if no Critical/High/Medium remain.
+Focus: PASS if no Critical/High/Medium remain; safe to promote after PASS.
 <!-- CYCLE-CONTEXT-END -->

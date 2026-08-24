@@ -218,7 +218,7 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | `origin/main` | `2fe19ed` (PR #3 squash) |
 | Supervisor | clear `PAUSED` after pushing fresh steward |
 | Latest verdict | PASS cycle 23 (`review-20260824T030601Z`); checkpoint restored |
-| Beads authoritative | **yes** — open: `cxn`, `dle`, `rm3` |
+| Beads authoritative | **yes** — open: `41d` (cycle-24 gate), `fh2` (promote); epic `7o5` |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
