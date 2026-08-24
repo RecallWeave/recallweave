@@ -1,5 +1,15 @@
 # Swarm Operations Runbook — elevare-agent-factory
 
+> **STOP — this file's generated body describes a different project.**
+> Read **§11 Project-specific overrides** before any command, branch name,
+> launchd service, or pause-file path below. The body was rendered for
+> `elevare-agent-factory` (`foundry/checkpoint-1`, 4 workers). This repository
+> is **`recallweave`**: integration branch **`foundry/steward`**, coordinator
+> `/Users/josh/particle-workers/supervisor/rw_supervisor.py` (launchd
+> `com.particle.rw-supervisor`), **8** lanes `oc_1`..`oc_8`, tick **300s**.
+> Treat the doctrine as authoritative and every project fact as overridden by
+> §11 until `eaf runbook` takes a project argument.
+
 > **GENERATED FILE — do not edit by hand.**
 > Rendered by `eaf runbook` from `templates/SWARM-RUNBOOK.md` plus the source contract.
 > Every operational fact below is derived from the code that implements it, so it cannot
@@ -13,10 +23,10 @@ your own conventions alongside it.
 
 | | |
 |---|---|
-| Project | `elevare-agent-factory` |
-| Integration branch | `foundry/checkpoint-1` |
+| Project | `elevare-agent-factory` (**overridden → `recallweave`**, see §11) |
+| Integration branch | `foundry/checkpoint-1` (**overridden → `foundry/steward`**, see §11) |
 | Protected (never pushed to) | `main master` |
-| Workers | 4 × `opencode` running `particle/dsv4-flash` |
+| Workers | 4 × `opencode` running `particle/dsv4-flash` (**overridden → 8 lanes**, see §11) |
 | Trust tier | `PUBLIC` |
 
 ---

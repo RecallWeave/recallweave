@@ -102,3 +102,11 @@ class ExclusionSet:
 
     def is_empty(self) -> bool:
         return not (self.paths or self.globs or self.tags or self.directives)
+
+    def has_enforceable_selectors(self) -> bool:
+        """True iff any selector can exclude notes/edges.
+
+        Directives are emitted for the receiving agent but never consulted by
+        `_note_excluded`, so a directives-only set must not force the
+        streaming exclusion path or a vault-wide tag load."""
+        return bool(self.paths or self.globs or self.tags)

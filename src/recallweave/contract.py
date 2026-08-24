@@ -776,8 +776,13 @@ def _stream_connection_edges(
     if not seed_ids:
         return [], 0, set()
     tags_by_note: dict[int, list[str]] = defaultdict(list)
-    for row in connection.execute("SELECT note_id, tag FROM note_tags"):
-        tags_by_note[int(row["note_id"])].append(str(row["tag"]))
+    # Tag exclusion is the only reason to materialize note_tags. Path/glob
+    # matching uses relative_path alone; loading every vault tag for those
+    # cases (or for directives-only, which never reach here) scales memory with
+    # the whole index rather than the incident edges.
+    if exclusions.tags:
+        for row in connection.execute("SELECT note_id, tag FROM note_tags"):
+            tags_by_note[int(row["note_id"])].append(str(row["tag"]))
     seed_placeholders = ",".join("?" for _ in seed_ids)
     candidate_clause = "" if include_candidates else "AND e.is_verified = 1"
     allowed: list[Any] = []
@@ -1079,14 +1084,13 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                 "a contract."
             )
         if seed_ids:
-            # When there are no exclusions, nothing can be suppressed, so use
-            # the bounded _edge_rows fetch directly (fast path). When exclusions
-            # are present, stream the edges and apply exclusion in Python: this
-            # keeps the row cap on ALLOWED edges only (the z1a under-inclusion
-            # fix) without materializing the excluded-note set as SQL
-            # placeholders, which would exceed SQLITE_LIMIT_VARIABLE_NUMBER when
-            # exclusions cover ~125k+ notes (recallweave-ur0).
-            if exclusions.is_empty():
+            # When no selector can exclude notes/edges (empty set, or
+            # directives-only), use the bounded _edge_rows fetch. When path,
+            # glob, or tag exclusions are present, stream and apply exclusion
+            # in Python: the row cap applies to ALLOWED edges only (z1a) without
+            # materializing the excluded-note set as SQL placeholders
+            # (recallweave-ur0 / SQLITE_LIMIT_VARIABLE_NUMBER).
+            if not exclusions.has_enforceable_selectors():
                 edge_rows = _edge_rows(
                     connection,
                     seed_ids,

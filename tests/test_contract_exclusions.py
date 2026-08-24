@@ -159,6 +159,11 @@ class IsEmptyTest(unittest.TestCase):
         self.assertFalse(ExclusionSet(globs=["a"]).is_empty())
         self.assertFalse(ExclusionSet(tags=["a"]).is_empty())
         self.assertFalse(ExclusionSet(directives=["a"]).is_empty())
+        self.assertTrue(ExclusionSet(paths=["a"]).has_enforceable_selectors())
+        self.assertTrue(ExclusionSet(globs=["a*"]).has_enforceable_selectors())
+        self.assertTrue(ExclusionSet(tags=["a"]).has_enforceable_selectors())
+        self.assertFalse(ExclusionSet(directives=["a"]).has_enforceable_selectors())
+        self.assertFalse(ExclusionSet().has_enforceable_selectors())
 
 
 class ConnectionExclusionVariableLimitTest(unittest.TestCase):

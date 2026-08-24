@@ -59,5 +59,8 @@ Thumbs.db
 # the project directory. Those are local orchestration artifacts, not source.
 .ntm/
 
-# Local Codex review output. Generated, not source.
+# Local Codex review output. Generated, not source — except the verdict
+# markdown files, which the promotion handoff cites by name and must be
+# inspectable in a clean checkout (cycle-21 Codex PR review).
 .codex-reviews/
+!.codex-reviews/review-*.md

@@ -1281,14 +1281,29 @@ class EscapedDisciplineTest(unittest.TestCase):
 def _vault_write_fixture_names() -> list[str]:
     """Every vault-note fixture filename the test suite actually writes, found
     by scanning test source for ``write``/``write_text``/``write_bytes`` calls
-    whose first argument is a ``.md`` string. This is deliberately scoped to
-    real WRITES (not every ``.md`` literal): assertion fragments, citation
-    strings, docs references, and Windows-style path-normalization literals
-    (``RESTRICTED\\\\PRIVATE\\\\DEEP.md``) are not fixtures and are not
-    checked. Any future fixture that reintroduces a Windows-reserved character
-    is caught here, on every platform, instead of erroring only on Windows."""
+    whose first argument is a ``.md`` string, OR whose receiver path embeds a
+    ``.md`` string (``(vault / \"Name.md\").write_text(...)``). Assertion
+    fragments, citation strings, docs references, and Windows-style
+    path-normalization literals are not fixtures and are not checked. Any
+    future fixture that reintroduces a Windows-reserved character is caught
+    here, on every platform, instead of erroring only on Windows."""
     root = Path(__file__).resolve().parents[1]
     names: list[str] = []
+
+    def _md_strings_in(node: ast.AST | None) -> list[str]:
+        found: list[str] = []
+        if node is None:
+            return found
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and child.value.endswith(".md")
+                and child.value != ".md"
+            ):
+                found.append(child.value)
+        return found
+
     for path in sorted((root / "tests").glob("*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -1299,16 +1314,20 @@ def _vault_write_fixture_names() -> list[str]:
                 continue
             if node.func.attr not in ("write", "write_text", "write_bytes"):
                 continue
-            if not node.args:
-                continue
-            arg = node.args[0]
-            if (
-                isinstance(arg, ast.Constant)
-                and isinstance(arg.value, str)
-                and arg.value.endswith(".md")
-                and arg.value != ".md"
-            ):
-                names.append(arg.value)
+            # Helper style: self.write("Name.md", ...) — first arg is the name.
+            if node.args:
+                arg = node.args[0]
+                if (
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and arg.value.endswith(".md")
+                    and arg.value != ".md"
+                ):
+                    names.append(arg.value)
+            # Path.write_text / write_bytes: the filename lives on the receiver
+            # ((vault / "Name.md").write_text("body")), not in args[0].
+            if node.func.attr in ("write_text", "write_bytes"):
+                names.extend(_md_strings_in(node.func.value))
     return names
 
 
