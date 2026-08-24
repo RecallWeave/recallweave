@@ -1278,92 +1278,158 @@ class EscapedDisciplineTest(unittest.TestCase):
             _join(_literal("a"), "raw untrusted")
 
 
+def _md_strings_in(node: ast.AST | None) -> list[str]:
+    """Collect `.md` filename literals (and hostile f-string fragments) under
+    ``node``. Used by the vault-write portability scan."""
+    found: list[str] = []
+    if node is None:
+        return found
+    reserved = '<>:"|?*'
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Constant)
+            and isinstance(child.value, str)
+            and child.value.endswith(".md")
+            and child.value != ".md"
+        ):
+            found.append(child.value)
+        # f-strings: `(vault / f"Bad:Name{i}.md").write_text(...)` has no
+        # single Constant ending in `.md`. Collect Constant fragments and
+        # treat any that look like a filename (or carry reserved chars next
+        # to a `.md` fragment) as fixture names the portability guard must
+        # reject.
+        if isinstance(child, ast.JoinedStr):
+            parts = [
+                value.value
+                for value in child.values
+                if isinstance(value, ast.Constant) and isinstance(value.value, str)
+            ]
+            # Expression-interpolated reserved characters: f"{'Bad:Name'}.md"
+            # puts the reserved char in a FormattedValue Constant, not a
+            # bare JoinedStr fragment. Catch those too (recallweave-rm3).
+            for value in child.values:
+                if not isinstance(value, ast.FormattedValue):
+                    continue
+                expr = value.value
+                if (
+                    isinstance(expr, ast.Constant)
+                    and isinstance(expr.value, str)
+                    and any(ch in reserved or ord(ch) < 0x20 for ch in expr.value)
+                ):
+                    found.append(expr.value)
+            if not parts:
+                continue
+            if not any(part.endswith(".md") or part == ".md" for part in parts):
+                # Still a `.md` name if a FormattedValue Constant ended in .md
+                # (f"{'Bad:Name.md'}") — already appended above when reserved.
+                formatted_md = [
+                    v.value.value
+                    for v in child.values
+                    if isinstance(v, ast.FormattedValue)
+                    and isinstance(v.value, ast.Constant)
+                    and isinstance(v.value.value, str)
+                    and v.value.value.endswith(".md")
+                    and v.value.value != ".md"
+                ]
+                found.extend(formatted_md)
+                continue
+            # Complete static `.md` names inside the f-string.
+            complete = [
+                part for part in parts if part.endswith(".md") and part != ".md"
+            ]
+            if complete:
+                found.extend(complete)
+                continue
+            # Incomplete interpolations: only flag fragments that already
+            # carry a Windows-reserved filename character (not `/` `\`,
+            # which are path separators). That catches `f"Bad:{i}.md"`
+            # without treating `f"Targets/Target {i}.md"` as a finished
+            # fixture name ending in a space.
+            for part in parts:
+                if part == ".md":
+                    continue
+                if any(ch in reserved or ord(ch) < 0x20 for ch in part):
+                    found.append(part)
+        # `"Bad:" + "x.md"` / `"x" + ":y.md"` — reserved char may live in a
+        # Constant that does not itself end in `.md`.
+        if isinstance(child, ast.BinOp) and isinstance(child.op, ast.Add):
+            left = child.left
+            right = child.right
+            if (
+                isinstance(left, ast.Constant)
+                and isinstance(left.value, str)
+                and isinstance(right, ast.Constant)
+                and isinstance(right.value, str)
+                and (left.value.endswith(".md") or right.value.endswith(".md")
+                     or left.value == ".md" or right.value == ".md")
+            ):
+                combined = left.value + right.value
+                if combined.endswith(".md") and combined != ".md":
+                    found.append(combined)
+                elif any(ch in reserved or ord(ch) < 0x20 for ch in combined):
+                    found.append(combined)
+    return found
+
+
+def _is_write_call(node: ast.Call) -> bool:
+    """True for Path/self attribute writes and bare nested-helper write calls."""
+    write_names = {"write", "write_text", "write_bytes"}
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr in write_names
+    if isinstance(node.func, ast.Name):
+        return node.func.id in write_names
+    return False
+
+
+def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
+    """Fixture filenames written by ``write``/``write_text``/``write_bytes``
+    calls in ``tree`` — including nested helpers invoked as bare names
+    (``write(\"Name.md\", ...)``) and Path receivers."""
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_write_call(node):
+            continue
+        # Helper style: write("Name.md", ...) / self.write("Name.md", ...)
+        # — first arg is the name. Also scan f-string / concat helper args.
+        if node.args:
+            arg = node.args[0]
+            if (
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value.endswith(".md")
+                and arg.value != ".md"
+            ):
+                names.append(arg.value)
+            else:
+                names.extend(_md_strings_in(arg))
+        # Path.write_text / write_bytes: the filename lives on the receiver
+        # ((vault / "Name.md").write_text("body")), not in args[0].
+        if isinstance(node.func, ast.Attribute) and node.func.attr in (
+            "write_text",
+            "write_bytes",
+        ):
+            names.extend(_md_strings_in(node.func.value))
+    return names
+
+
 def _vault_write_fixture_names() -> list[str]:
     """Every vault-note fixture filename the test suite actually writes, found
     by scanning test source for ``write``/``write_text``/``write_bytes`` calls
     whose first argument is a ``.md`` string, OR whose receiver path embeds a
-    ``.md`` string (``(vault / \"Name.md\").write_text(...)``). Assertion
-    fragments, citation strings, docs references, and Windows-style
-    path-normalization literals are not fixtures and are not checked. Any
-    future fixture that reintroduces a Windows-reserved character is caught
-    here, on every platform, instead of erroring only on Windows."""
+    ``.md`` string (``(vault / \"Name.md\").write_text(...)``), including nested
+    helpers called as bare names. Assertion fragments, citation strings, docs
+    references, and Windows-style path-normalization literals are not fixtures
+    and are not checked. Any future fixture that reintroduces a Windows-reserved
+    character is caught here, on every platform, instead of erroring only on
+    Windows."""
     root = Path(__file__).resolve().parents[1]
     names: list[str] = []
-
-    def _md_strings_in(node: ast.AST | None) -> list[str]:
-        found: list[str] = []
-        if node is None:
-            return found
-        for child in ast.walk(node):
-            if (
-                isinstance(child, ast.Constant)
-                and isinstance(child.value, str)
-                and child.value.endswith(".md")
-                and child.value != ".md"
-            ):
-                found.append(child.value)
-            # f-strings: `(vault / f"Bad:Name{i}.md").write_text(...)` has no
-            # single Constant ending in `.md`. Collect Constant fragments and
-            # treat any that look like a filename (or carry reserved chars next
-            # to a `.md` fragment) as fixture names the portability guard must
-            # reject.
-            if isinstance(child, ast.JoinedStr):
-                parts = [
-                    value.value
-                    for value in child.values
-                    if isinstance(value, ast.Constant) and isinstance(value.value, str)
-                ]
-                if not parts:
-                    continue
-                if not any(part.endswith(".md") or part == ".md" for part in parts):
-                    continue
-                # Complete static `.md` names inside the f-string.
-                complete = [
-                    part for part in parts if part.endswith(".md") and part != ".md"
-                ]
-                if complete:
-                    found.extend(complete)
-                    continue
-                # Incomplete interpolations: only flag fragments that already
-                # carry a Windows-reserved filename character (not `/` `\`,
-                # which are path separators). That catches `f"Bad:{i}.md"`
-                # without treating `f"Targets/Target {i}.md"` as a finished
-                # fixture name ending in a space.
-                reserved = '<>:"|?*'
-                for part in parts:
-                    if part == ".md":
-                        continue
-                    if any(ch in reserved or ord(ch) < 0x20 for ch in part):
-                        found.append(part)
-        return found
-
     for path in sorted((root / "tests").glob("*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if node.func.attr not in ("write", "write_text", "write_bytes"):
-                continue
-            # Helper style: self.write("Name.md", ...) — first arg is the name.
-            # Also scan f-string helper args (self.write(f"Bad:{i}.md", ...)).
-            if node.args:
-                arg = node.args[0]
-                if (
-                    isinstance(arg, ast.Constant)
-                    and isinstance(arg.value, str)
-                    and arg.value.endswith(".md")
-                    and arg.value != ".md"
-                ):
-                    names.append(arg.value)
-                else:
-                    names.extend(_md_strings_in(arg))
-            # Path.write_text / write_bytes: the filename lives on the receiver
-            # ((vault / "Name.md").write_text("body")), not in args[0].
-            if node.func.attr in ("write_text", "write_bytes"):
-                names.extend(_md_strings_in(node.func.value))
+        names.extend(_vault_write_fixture_names_from_tree(tree))
     return names
 
 
@@ -1504,6 +1570,43 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
                         f"component {component!r} of fixture {name!r} ends in a "
                         "space or dot, which Windows strips from filenames",
                     )
+
+    def test_scan_catches_nested_helper_name_calls(self) -> None:
+        # Nested `def write(...): ...` helpers are invoked as bare names. A
+        # scan that only accepts Attribute calls (self.write / Path.write_text)
+        # silently ignores them — the Windows-only failure mode this guard
+        # exists to prevent (recallweave-rm3).
+        source = '''
+def build(vault):
+    def write(relative_path, text):
+        path = vault / relative_path
+        path.write_text(text, encoding="utf-8", newline="")
+    write("Ok.md", "body")
+    write("Bad:Name.md", "body")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("Ok.md", names)
+        self.assertIn("Bad:Name.md", names)
+
+    def test_scan_catches_expression_interpolated_reserved_chars(self) -> None:
+        # Reserved characters may arrive via FormattedValue Constants
+        # (f"{'Bad:Name'}.md") or string concatenation rather than a static
+        # JoinedStr fragment. Both must surface as fixture names.
+        source = '''
+def build(vault):
+    (vault / f"{'Bad:Name'}.md").write_text("body", encoding="utf-8")
+    (vault / ("Nope|" + "x.md")).write_text("body", encoding="utf-8")
+    write_text = (vault / "Safe.md").write_text
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertTrue(
+            any("Bad:Name" in name or ":" in name for name in names),
+            f"expression-interpolated reserved char missed: {names!r}",
+        )
+        self.assertTrue(
+            any("|" in name or name.endswith("x.md") for name in names),
+            f"concatenated reserved char missed: {names!r}",
+        )
 
 
 class ContractVaultInjectionTest(unittest.TestCase):
