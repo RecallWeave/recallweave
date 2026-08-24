@@ -173,17 +173,15 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 8. Supervisor / coordinator status
 
-- **Paused for promotion.** `~/.particle-supervisor/PAUSED` is present so the
-  supervisor cannot recreate `CHECKPOINT_NOT_APPROVED.md` while PR #4 is open.
-  Resume only after merge + fresh steward cut from the new `main`.
+- **Running.** Supervisor was unpaused after PR #4 merge and fresh steward cut.
 - **The supervisor owns the routine loop** — integrate, gate, rotate, nudge,
   push, dispatch. Do not hand-drive it in parallel; two dispatchers produce
   duplicate work and lost commits.
 
 ## 9. Review state
 
-- Adversarial gate: cycle **24d PASS** at `f3b7fe1`; cycle **24e** covers
-  post-remediation tree (PR #4 turn 1/2). Marker deleted; supervisor paused.
+- Adversarial gate: cycle **24i PASS WITH FIXES** on promoted tree (PR #4);
+  cycle **25** pending on path-binding scanner fix (`recallweave-07h`).
 
 ## 10. Do NOT replan or reconsider
 

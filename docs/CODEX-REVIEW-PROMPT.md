@@ -95,7 +95,9 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24i — final promotion-tree gate after boolean format-spec remediation.
+Cycle 25 — adversarial gate on `foundry/steward` after variable path-binding
+scanner fix (recallweave-07h). Base `main` @ `374be23`; delta is tests + beads +
+checkpoint marker only.
 
-Suite target **485** OK (1 skip). PASS required for PR #4 merge.
+Suite target **487** OK (1 skip). PASS required for checkpoint push approval.
 <!-- CYCLE-CONTEXT-END -->
