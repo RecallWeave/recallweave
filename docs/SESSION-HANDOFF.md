@@ -114,14 +114,14 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- Cycle-23 defense-in-depth queue (not promotion blockers):
-  - **`recallweave-cxn`** (P2) — tag-prefetch max-seed under reduced SQLite
-    variable limit
-  - **`recallweave-dle`** (P3) — byte-for-byte determinism for tied scores
-  - **`recallweave-rm3`** (P3) — fixture-portability AST nested helpers /
-    expression filenames
-- Prior closed: `ur0`, `jqq`, `3ea`; PR #3 merged 2026-08-24.
-- **Worker assignments:** claim `cxn` next; NTM session may need restart.
+- Epic **`recallweave-7o5`** — stewardship phase queue after PR #3:
+  1. **`recallweave-rm3` closed** — fixture-portability AST nested helpers /
+     expression filenames
+  2. **`recallweave-41d` in progress** — cycle-24 adversarial gate
+  3. **`recallweave-fh2`** — promote stewardship hardening to main (Codex ≤3,
+     Josh pre-authorized merge)
+- Also closed this rotation: `cxn`, `dle`.
+- **Worker assignments:** hand-drive phase 2–3; supervisor unpaused for routine.
 
 ## 7. Known failure modes and traps
 
