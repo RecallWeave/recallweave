@@ -95,7 +95,9 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24f — final promotion-tree PASS on `d23aeef` after 24e remediations.
+Cycle 24g — final promotion-tree gate on current `foundry/steward` tip after
+Codex PR turn-3 remediations (format-spec strings, path `/` segments,
+case-insensitive `.md`, joinpath directory components).
 
-Suite **478** OK (1 skip). PASS required for PR #4 merge.
+Suite target **484** OK (1 skip). PASS required for PR #4 merge.
 <!-- CYCLE-CONTEXT-END -->

@@ -1443,6 +1443,42 @@ def _md_strings_in(node: ast.AST | None) -> list[str]:
     return found
 
 
+def _collect_joinpath_segments(expr: ast.AST, names: list[str]) -> None:
+    """Collect static arguments from ``Path.joinpath(...)`` receiver chains."""
+    seen: set[str] = set()
+
+    def append(name: str) -> None:
+        if not name or name in seen or len(name) > 240:
+            return
+        seen.add(name)
+        names.append(name)
+
+    def walk(e: ast.AST) -> None:
+        if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute):
+            if e.func.attr == "joinpath":
+                walk(e.func.value)
+                for arg in e.args:
+                    seg = _static_str(arg)
+                    if seg is not None:
+                        for part in re.split(r"[\\/]", seg):
+                            if part:
+                                append(part)
+                    else:
+                        for part in _md_strings_in(arg):
+                            append(part)
+                return
+        if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
+            walk(e.left)
+            seg = _static_str(e.right)
+            if seg is not None:
+                append(seg)
+            else:
+                for part in _md_strings_in(e.right):
+                    append(part)
+
+    walk(expr)
+
+
 def _collect_div_path_segments(expr: ast.AST, names: list[str]) -> None:
     """Collect every statically known ``/`` segment from a Path receiver chain."""
     seen: set[str] = set()
@@ -1506,6 +1542,7 @@ def _collect_name_expr(expr: ast.AST, names: list[str]) -> None:
         return
     names.extend(_md_strings_in(expr))
     _collect_div_path_segments(expr, names)
+    _collect_joinpath_segments(expr, names)
 
 
 def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
@@ -1534,6 +1571,7 @@ def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
             receiver = node.func.value
             names.extend(_md_strings_in(receiver))
             _collect_div_path_segments(receiver, names)
+            _collect_joinpath_segments(receiver, names)
     return names
 
 
@@ -1885,6 +1923,16 @@ def build(vault):
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
         self.assertIn("Bad ", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_collects_joinpath_directory_components(self) -> None:
+        source = '''
+def build(vault):
+    vault.joinpath("CON").mkdir()
+    vault.joinpath("CON", "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
         self.assertIn("Note.md", names)
 
 
