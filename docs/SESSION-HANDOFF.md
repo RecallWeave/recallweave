@@ -27,11 +27,13 @@ settled design.
   already-squashed commits onto the checkpoint.
 - PR #1 (task contract capability) merged 2026-08-23 as a squash. PR #2 (viewer
   zero-advisory audit) merged before it to green the required `viewer` check.
-- Latest adversarial verdict: **PASS** (`.codex-reviews/review-20260824T001136Z.md`,
-  cycle 21). Cycle-20 High closed by `recallweave-ur0`; mutation audits `jqq`/`3ea`
-  closed.
+- Latest adversarial verdict: **PASS** (`.codex-reviews/review-20260824T014627Z.md`,
+  cycle 22 — promotion re-review of the merge tree). Cycle-20 High closed by
+  `recallweave-ur0`; mutation audits `jqq`/`3ea` closed; Codex PR #3 remediations
+  included.
 - `CHECKPOINT_NOT_APPROVED.md` **deleted in this promotion commit** — Josh approved
-  the milestone merge after Codex PR review (max 3 turns).
+  the milestone merge after Codex PR review (max 3 turns). Supervisor paused
+  (`~/.particle-supervisor/PAUSED`) until merge completes.
 - `SWARM-RUNBOOK.md` was adopted 2026-08-23 as operating doctrine. **Read its
   §11 first**: the generated body was rendered for `elevare-agent-factory` and
   its project facts do not describe this repo.
@@ -178,22 +180,21 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 8. Supervisor / coordinator status
 
-- **Running.** launchd `com.particle.rw-supervisor`, `StartInterval` 300s.
-  `~/.particle-supervisor/PAUSED` is absent. Context-health probe active
-  (`ntm status --json` → 100K/130K/140K bands).
-- It is idle **by design**: no dispatchable open beads; phase-2/3 beads are
-  deferred pending cycle-20 PASS.
-- Pause with `touch ~/.particle-supervisor/PAUSED`; resume with `rm -f` on it.
-  Note `--dry-run` is gated behind the PAUSED check.
+- **Paused for promotion.** launchd `com.particle.rw-supervisor` remains installed;
+  `~/.particle-supervisor/PAUSED` is present so it cannot refresh
+  `CHECKPOINT_NOT_APPROVED.md` while the milestone PR is open. Context-health
+  probe remains implemented (`ntm status --json` → 100K/130K/140K bands).
+- Resume after merge with `rm -f ~/.particle-supervisor/PAUSED`. Note `--dry-run`
+  is gated behind the PAUSED check.
 - **The supervisor owns the routine loop** — integrate, gate, rotate, nudge,
   push, dispatch. Do not hand-drive it in parallel; two dispatchers produce
   duplicate work and lost commits.
 
 ## 9. Review state
 
-- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T001136Z.md` (cycle 21).
-  Cycle-20 High closed; all historical Critical/High findings remain closed.
-  Promotion commit deletes `CHECKPOINT_NOT_APPROVED.md` under Josh merge approval.
+- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T014627Z.md` (cycle 22
+  promotion re-review). Cycle-20 High closed; mutation audits closed; PR #3
+  remediations on the merge SHA. Supervisor paused for the milestone merge.
 
 ## 10. Do NOT replan or reconsider
 
@@ -220,8 +221,8 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Unpushed commits | **no** — `HEAD` == `origin/foundry/steward` |
 | Unintegrated worker commits | **no** — all 8 lanes 0 ahead, 0 uncommitted |
 | `foundry/steward` vs `origin/main` | 12 ahead, 0 behind |
-| Supervisor | **running**, all lanes idle |
-| Latest verdict | PASS cycle 21 (`review-20260824T001136Z`); promoting |
+| Supervisor | **paused** for promotion (`PAUSED` present) |
+| Latest verdict | PASS cycle 22 (`review-20260824T014627Z`); promoting |
 | Beads authoritative | **yes** — 0 open, 0 deferred, 0 blockers |
 | Resumable without transcript | **yes** |
 

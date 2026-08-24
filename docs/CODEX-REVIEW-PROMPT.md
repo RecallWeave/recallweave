@@ -95,31 +95,25 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 21 — re-review after `recallweave-ur0` remediation (cycle-20 High).
+Cycle 22 — promotion re-review of the tree being squash-merged to `main`.
 
-**Since cycle 20 FAIL** (`review-20260823T221453Z.md`):
+**Since cycle 21 PASS** (`review-20260824T001136Z.md`):
 
-- **`recallweave-ur0` integrated** (`9b1dbff`, merged `54c06a6`): connection edges are
-  streamed in deterministic rank order and exclusion is applied in Python via
-  `_stream_connection_edges()`. The 200-row cap still applies to ALLOWED edges only
-  (z1a under-inclusion fix preserved). Suppression counts remain exact by continuing
-  the scan after the cap. SQL no longer materializes the full excluded-note set as
-  placeholders, so broad tag/glob exclusions cannot exceed
-  `SQLITE_LIMIT_VARIABLE_NUMBER`. Fast path unchanged when `exclusions.is_empty()`.
-- New regression test: `ConnectionExclusionVariableLimitTest` patches
-  `sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER` to 300 with 250 excluded notes; export
-  succeeds and the allowed lower-ranked edge appears with exact suppression count.
+- `recallweave-jqq` and `recallweave-3ea` mutation audits landed and closed.
+- Codex PR review on #3 remediations: durable `.codex-reviews/review-*.md`
+  tracking, enforceable-selector streaming fast path, incident-endpoint tag
+  load, `viewer` required-check gate job, runbook banner, fixture portability
+  AST scan, mutation-audit temp cleanup.
+- `CHECKPOINT_NOT_APPROVED.md` deleted in the promotion commit; supervisor
+  paused for the milestone merge.
 
-Suite at review time: **464 tests** OK (1 skip: `test_junction_parent_refused`),
-green under `-W error::ResourceWarning`; `compileall` clean. Runtime dependencies
-still empty.
+Suite at review time: **466 tests** OK (1 skip), green under
+`-W error::ResourceWarning`; `compileall` clean. Runtime dependencies still
+empty.
 
 Focus for this cycle:
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. Verify the cycle-20 High is closed: large exclusion sets must not abort export.
-3. Re-verify the three class-wide rules (document sanitization, endpoint binding,
-   canonical authenticated fields) against the streaming exclusion path.
-4. Reassess every Critical and High across all cycles and say which remain closed.
-5. Any new finding from the ur0 streaming refactor?
+2. Confirm cycle-20/21 High findings remain closed on this tree.
+3. Any new finding from the PR-review remediations or mutation audits?
 <!-- CYCLE-CONTEXT-END -->

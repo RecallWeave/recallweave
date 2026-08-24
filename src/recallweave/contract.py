@@ -775,15 +775,29 @@ def _stream_connection_edges(
     id, even when excluded edges exceed the 200-row cap."""
     if not seed_ids:
         return [], 0, set()
-    tags_by_note: dict[int, list[str]] = defaultdict(list)
-    # Tag exclusion is the only reason to materialize note_tags. Path/glob
-    # matching uses relative_path alone; loading every vault tag for those
-    # cases (or for directives-only, which never reach here) scales memory with
-    # the whole index rather than the incident edges.
-    if exclusions.tags:
-        for row in connection.execute("SELECT note_id, tag FROM note_tags"):
-            tags_by_note[int(row["note_id"])].append(str(row["tag"]))
     seed_placeholders = ",".join("?" for _ in seed_ids)
+    tags_by_note: dict[int, list[str]] = defaultdict(list)
+    # Tag exclusion is the only reason to load note_tags. Restrict to endpoints
+    # of edges that touch the seeds — loading every vault tag would scale with
+    # the whole index rather than the incident edge set.
+    if exclusions.tags:
+        for row in connection.execute(
+            f"""
+            SELECT nt.note_id, nt.tag
+            FROM note_tags nt
+            WHERE nt.note_id IN (
+                SELECT e.source_note_id FROM edges e
+                WHERE e.source_note_id IN ({seed_placeholders})
+                   OR e.target_note_id IN ({seed_placeholders})
+                UNION
+                SELECT e.target_note_id FROM edges e
+                WHERE e.source_note_id IN ({seed_placeholders})
+                   OR e.target_note_id IN ({seed_placeholders})
+            )
+            """,
+            [*seed_ids, *seed_ids, *seed_ids, *seed_ids],
+        ):
+            tags_by_note[int(row["note_id"])].append(str(row["tag"]))
     candidate_clause = "" if include_candidates else "AND e.is_verified = 1"
     allowed: list[Any] = []
     suppressed = 0
