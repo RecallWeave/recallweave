@@ -1281,14 +1281,24 @@ class EscapedDisciplineTest(unittest.TestCase):
 def _static_str(node: ast.AST | None) -> str | None:
     """Best-effort static string for filename expressions.
 
-    Resolves Constants, ``+`` chains, and JoinedStr / FormattedValue forms whose
-    parts are themselves statically resolvable. Returns None when not fully
-    static (Names, Calls, etc.).
+    Resolves Constants (including unformatted numeric/bool primitives via their
+    f-string conversion), ``+`` chains, and JoinedStr / FormattedValue forms
+    whose parts are themselves statically resolvable. Returns None when not
+    fully static (Names, Calls, etc.).
     """
     if node is None:
         return None
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return "True" if value else "False"
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        if value is None:
+            return "None"
+        return None
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left = _static_str(node.left)
         right = _static_str(node.right)
@@ -1301,6 +1311,9 @@ def _static_str(node: ast.AST | None) -> str | None:
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 parts.append(value.value)
             elif isinstance(value, ast.FormattedValue):
+                # Skip format_spec / conversion that we cannot emulate.
+                if value.format_spec is not None or value.conversion != -1:
+                    return None
                 resolved = _static_str(value.value)
                 if resolved is None:
                     return None
@@ -1309,6 +1322,8 @@ def _static_str(node: ast.AST | None) -> str | None:
                 return None
         return "".join(parts)
     if isinstance(node, ast.FormattedValue):
+        if node.format_spec is not None or node.conversion != -1:
+            return None
         return _static_str(node.value)
     return None
 
@@ -1478,8 +1493,9 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
     @classmethod
     def _is_windows_device_component(cls, component: str) -> bool:
         # Win32 also treats ISO-8859-1 superscripts ¹/²/³ as COM/LPT digits
-        # (Microsoft naming rules). Normalize before the ASCII device check.
-        stem = component.split(".", 1)[0]
+        # (Microsoft naming rules). Spaces/dots immediately before the extension
+        # are insignificant for device-name matching (e.g. ``CON .md``).
+        stem = component.split(".", 1)[0].rstrip(" .")
         normalized = "".join(
             {"¹": "1", "²": "2", "³": "3"}.get(ch, ch) for ch in stem
         )
@@ -1628,6 +1644,8 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
             "com².txt.md",
             "LPT³.md",
             "Nested/COM¹.md",
+            "CON .md",
+            "com1 .txt.md",
         ):
             with self.subTest(name=name):
                 for component in re.split(r"[\\/]", name):
@@ -1702,6 +1720,18 @@ def build(vault):
             3,
             f"expected all three constructions; got {names!r}",
         )
+
+    def test_scan_resolves_numeric_fstring_device_names(self) -> None:
+        source = '''
+def build(vault):
+    (vault / f"COM{1}.md").write_text("x")
+    (vault / f"LPT{9}.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("COM1.md", names)
+        self.assertIn("LPT9.md", names)
+        self.assertTrue(self._is_windows_device_component("COM1.md"))
+        self.assertTrue(self._is_windows_device_component("LPT9.md"))
 
 
 class ContractVaultInjectionTest(unittest.TestCase):

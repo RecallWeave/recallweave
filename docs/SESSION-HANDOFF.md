@@ -21,17 +21,16 @@ settled design.
 
 **Phase: MILESTONE PROMOTION — stewardship hardening PR `foundry/steward` → `main`.**
 
-- Integration branch: **`foundry/steward`**, reset to `origin/main` (`2fe19ed`,
-  squash of PR #3) then re-marked with `CHECKPOINT_NOT_APPROVED.md`.
+- Integration branch: **`foundry/steward`** (post-PR #3 lineage). PR #4 open for
+  squash-merge to `main`.
 - `foundry/task-contracts` remains **HISTORICAL** (PR #1 lineage). **Never merge
   it into current work.**
-- PR #1 (task contract) and PR #3 (stewardship: exclusion streaming, mutation
-  audits, cycle-23 PASS) are on `main`. PR #2 greened the required `viewer` check.
-- Latest adversarial verdict on the promoted tree: **PASS**
-  (`.codex-reviews/review-20260824T030601Z.md`, cycle 23).
-- `CHECKPOINT_NOT_APPROVED.md` is **restored** on the new checkpoint tip.
-- Supervisor should be **unpaused** for routine integrate/gate/push once this
-  handoff is committed and `foundry/steward` is force-pushed to match the fresh cut.
+- Latest adversarial verdict for this promotion: **PASS**
+  (`.codex-reviews/review-20260824T064133Z.md`, cycle 24d).
+- `CHECKPOINT_NOT_APPROVED.md` is **deleted in this promotion commit**. Do not
+  restore it until after merge, when a fresh steward is cut from the new `main`.
+- Supervisor is **paused** (`~/.particle-supervisor/PAUSED`) until merge
+  completes and the fresh checkpoint is cut. Do not unpause during the open PR.
 - `SWARM-RUNBOOK.md` was adopted 2026-08-23 as operating doctrine. **Read its
   §11 first**: the generated body was rendered for `elevare-agent-factory` and
   its project facts do not describe this repo.
@@ -177,19 +176,17 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 8. Supervisor / coordinator status
 
-- **Ready to resume.** After PR #3 merge, `foundry/steward` was cut fresh from
-  `main` and re-marked. Clear `~/.particle-supervisor/PAUSED` to resume the
-  routine loop. Context-health probe remains implemented (`ntm status --json`
-  → 100K/130K/140K bands).
+- **Paused for promotion.** `~/.particle-supervisor/PAUSED` is present so the
+  supervisor cannot recreate `CHECKPOINT_NOT_APPROVED.md` while PR #4 is open.
+  Resume only after merge + fresh steward cut from the new `main`.
 - **The supervisor owns the routine loop** — integrate, gate, rotate, nudge,
   push, dispatch. Do not hand-drive it in parallel; two dispatchers produce
   duplicate work and lost commits.
 
 ## 9. Review state
 
-- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T030601Z.md` (cycle 23).
-  Promoted via PR #3 squash (`2fe19ed` on `main`). Fresh checkpoint is unreviewed
-  for *new* stewardship commits until the next cycle.
+- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T064133Z.md`
+  (cycle 24d). Marker deleted for promotion; supervisor paused until merge.
 
 ## 10. Do NOT replan or reconsider
 
@@ -204,19 +201,18 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 Anything not listed here is open to the next planner's judgement.
 
-## 11. Verified state at handoff (2026-08-24 post-merge)
+## 11. Verified state at handoff (2026-08-24 promotion)
 
 Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 
 | Check | Value |
 |---|---|
 | Repo path | `/Users/josh/particle-workers/recallweave` |
-| Git branch | `foundry/steward` (fresh cut from `main` @ `2fe19ed`) |
-| Tree clean | re-probe — expect marker + handoff commits then push |
-| `origin/main` | `2fe19ed` (PR #3 squash) |
-| Supervisor | clear `PAUSED` after pushing fresh steward |
-| Latest verdict | PASS cycle 23 (`review-20260824T030601Z`); checkpoint restored |
-| Beads authoritative | **yes** — open: `41d` (cycle-24 gate), `fh2` (promote); epic `7o5` |
+| Git branch | `foundry/steward` (PR #4 → `main`) |
+| Marker | **deleted** for promotion |
+| Supervisor | **paused** until merge + fresh cut |
+| Latest verdict | PASS cycle 24d (`review-20260824T064133Z`) |
+| Beads authoritative | **yes** — open: `fh2` (promote), epic `7o5`; `41d` closed |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
