@@ -95,20 +95,16 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24 — stewardship hardening on fresh `foundry/steward` after PR #3.
+Cycle 24b — re-review after cycle-24 Medium remediation on `foundry/steward`.
 
-**Since cycle 23 PASS** (`.codex-reviews/review-20260824T030601Z.md`, promoted
-via PR #3 squash `2fe19ed`):
+**Since cycle 24** (`review-20260824T062013Z.md`, PASS WITH FIXES):
 
-- `recallweave-cxn` — max-seed (50) tag prefetch under reduced SQLite variable limit
-- `recallweave-dle` — byte-identical export for tied scores with mixed exclusions
-- `recallweave-rm3` — vault-write AST scan covers nested bare `write()` helpers
-  and expression-interpolated / concatenated reserved filename characters
-- Checkpoint marker present; suite expected **471** OK (1 skip)
+- Fixture AST scan now uses bounded static evaluation (Constants / `+` /
+  JoinedStr / FormattedValue), keyword path args on bare `write(...)`, and
+  does not treat `Path.write_text` bodies as filenames.
+- Regression covers keyword helper, nested concat, and formatted BinOp cases.
+- `dle` compares two independently built indexes plus Markdown bytes.
+- Handoff lists `cxn`/`dle`/`rm3` closed; suite **472** OK (1 skip).
 
-Focus:
-
-1. Confirm cxn/dle/rm3 remediations hold; no new Critical/High.
-2. Say plainly whether this checkpoint is safe to continue (and later promote).
-3. Any regression in exclusion streaming, tag prefetch, or fixture portability?
+Focus: confirm the Medium is closed; PASS if no Critical/High/Medium remain.
 <!-- CYCLE-CONTEXT-END -->
