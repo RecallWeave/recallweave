@@ -95,20 +95,31 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 20 — re-review after stewardship and `recallweave-z1a` integration.
+Cycle 21 — re-review after `recallweave-ur0` remediation (cycle-20 High).
 
-**Since the last PASS** (`review-20260823T024349Z.md`, over `foundry/task-contracts`):
+**Since cycle 20 FAIL** (`review-20260823T221453Z.md`):
 
-- Integration branch is now **`foundry/steward`** (post-PR #1 squash). `foundry/task-contracts` is historical.
-- Stewardship commits: checkpoint marker, runbook adoption, platform-test pins, handoff refresh, context-health probe in `rw_supervisor.py`.
-- **`recallweave-z1a` integrated** (`2696bb9`): connection cap applies after exclusion filtering (excluded note IDs filtered in SQL before the 200-row limit); text items with `statement`/`heading` are rejected at validation rather than silently discarded. Two new regression tests; docs updated.
+- **`recallweave-ur0` integrated** (`9b1dbff`, merged `54c06a6`): connection edges are
+  streamed in deterministic rank order and exclusion is applied in Python via
+  `_stream_connection_edges()`. The 200-row cap still applies to ALLOWED edges only
+  (z1a under-inclusion fix preserved). Suppression counts remain exact by continuing
+  the scan after the cap. SQL no longer materializes the full excluded-note set as
+  placeholders, so broad tag/glob exclusions cannot exceed
+  `SQLITE_LIMIT_VARIABLE_NUMBER`. Fast path unchanged when `exclusions.is_empty()`.
+- New regression test: `ConnectionExclusionVariableLimitTest` patches
+  `sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER` to 300 with 250 excluded notes; export
+  succeeds and the allowed lower-ranked edge appears with exact suppression count.
 
-Suite at review time: **463 tests** OK (1 skip: `test_junction_parent_refused`), green under `-W error::ResourceWarning`; `compileall` clean. Runtime dependencies still empty.
+Suite at review time: **464 tests** OK (1 skip: `test_junction_parent_refused`),
+green under `-W error::ResourceWarning`; `compileall` clean. Runtime dependencies
+still empty.
 
 Focus for this cycle:
 
 1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. Re-verify the three class-wide rules (document sanitization, endpoint binding, canonical authenticated fields) against the z1a query-path changes.
-3. Reassess every Critical and High across all cycles and say which remain closed.
-4. Any new finding from the z1a connection-cap reorder or spec-validation tightening?
+2. Verify the cycle-20 High is closed: large exclusion sets must not abort export.
+3. Re-verify the three class-wide rules (document sanitization, endpoint binding,
+   canonical authenticated fields) against the streaming exclusion path.
+4. Reassess every Critical and High across all cycles and say which remain closed.
+5. Any new finding from the ur0 streaming refactor?
 <!-- CYCLE-CONTEXT-END -->
