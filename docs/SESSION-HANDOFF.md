@@ -19,22 +19,19 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: MILESTONE PROMOTION — PR from `foundry/steward` → `main`.**
+**Phase: STEWARDSHIP — fresh `foundry/steward` cut from `main` after PR #3.**
 
-- Integration branch: **`foundry/steward`**, cut from `main` after PR #1 merged.
-- `foundry/task-contracts` is **HISTORICAL** — the implementation lineage behind
-  PR #1. **Never merge it into current work.** Doing so once replayed 170
-  already-squashed commits onto the checkpoint.
-- PR #1 (task contract capability) merged 2026-08-23 as a squash. PR #2 (viewer
-  zero-advisory audit) merged before it to green the required `viewer` check.
-- Latest adversarial verdict: **PASS** (`.codex-reviews/review-20260824T030601Z.md`,
-  cycle 23 — clean promotion SHA `1ecb4be` including verified-only tag prefetch
-  + regression). Cycle-20 High closed by `recallweave-ur0`; mutation audits
-  `jqq`/`3ea` closed; Codex PR #3 remediations included.
-- `CHECKPOINT_NOT_APPROVED.md` **deleted in this promotion commit** — Josh approved
-  the milestone merge after Codex PR review (max 3 turns; post-cap blockers
-  cleared with cycle-23 PASS). Supervisor paused
-  (`~/.particle-supervisor/PAUSED`) until merge completes.
+- Integration branch: **`foundry/steward`**, reset to `origin/main` (`2fe19ed`,
+  squash of PR #3) then re-marked with `CHECKPOINT_NOT_APPROVED.md`.
+- `foundry/task-contracts` remains **HISTORICAL** (PR #1 lineage). **Never merge
+  it into current work.**
+- PR #1 (task contract) and PR #3 (stewardship: exclusion streaming, mutation
+  audits, cycle-23 PASS) are on `main`. PR #2 greened the required `viewer` check.
+- Latest adversarial verdict on the promoted tree: **PASS**
+  (`.codex-reviews/review-20260824T030601Z.md`, cycle 23).
+- `CHECKPOINT_NOT_APPROVED.md` is **restored** on the new checkpoint tip.
+- Supervisor should be **unpaused** for routine integrate/gate/push once this
+  handoff is committed and `foundry/steward` is force-pushed to match the fresh cut.
 - `SWARM-RUNBOOK.md` was adopted 2026-08-23 as operating doctrine. **Read its
   §11 first**: the generated body was rendered for `elevare-agent-factory` and
   its project facts do not describe this repo.
@@ -117,13 +114,14 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- **Cycle 21 adversarial gate:** **PASS** — `.codex-reviews/review-20260824T001136Z.md`
-- **`recallweave-jqq` closed** — per-region sanitizer mutation audits (5 subTests).
-- **`recallweave-3ea` closed** — endpoint-binding and canonical-form mutation
-  audits (4 subTests). Suite: 466 OK.
-- **Milestone:** promotion PR `foundry/steward` → `main` (Josh merge-approved;
-  Codex auto-review ≤3 turns). Marker deleted in this commit.
-- **Worker assignments:** none (all lanes idle; NTM session may need restart).
+- Cycle-23 defense-in-depth queue (not promotion blockers):
+  - **`recallweave-cxn`** (P2) — tag-prefetch max-seed under reduced SQLite
+    variable limit
+  - **`recallweave-dle`** (P3) — byte-for-byte determinism for tied scores
+  - **`recallweave-rm3`** (P3) — fixture-portability AST nested helpers /
+    expression filenames
+- Prior closed: `ur0`, `jqq`, `3ea`; PR #3 merged 2026-08-24.
+- **Worker assignments:** claim `cxn` next; NTM session may need restart.
 
 ## 7. Known failure modes and traps
 
@@ -181,22 +179,19 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 8. Supervisor / coordinator status
 
-- **Paused for promotion.** launchd `com.particle.rw-supervisor` remains installed;
-  `~/.particle-supervisor/PAUSED` is present so it cannot refresh
-  `CHECKPOINT_NOT_APPROVED.md` while the milestone PR is open. Context-health
-  probe remains implemented (`ntm status --json` → 100K/130K/140K bands).
-- Resume after merge with `rm -f ~/.particle-supervisor/PAUSED`. Note `--dry-run`
-  is gated behind the PAUSED check.
+- **Ready to resume.** After PR #3 merge, `foundry/steward` was cut fresh from
+  `main` and re-marked. Clear `~/.particle-supervisor/PAUSED` to resume the
+  routine loop. Context-health probe remains implemented (`ntm status --json`
+  → 100K/130K/140K bands).
 - **The supervisor owns the routine loop** — integrate, gate, rotate, nudge,
   push, dispatch. Do not hand-drive it in parallel; two dispatchers produce
   duplicate work and lost commits.
 
 ## 9. Review state
 
-- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T030601Z.md` (cycle 23
-  clean promotion SHA `1ecb4be`). Cycle-20 High closed; mutation audits closed;
-  verified-only tag prefetch + regression on the merge SHA. Supervisor paused
-  for the milestone merge.
+- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T030601Z.md` (cycle 23).
+  Promoted via PR #3 squash (`2fe19ed` on `main`). Fresh checkpoint is unreviewed
+  for *new* stewardship commits until the next cycle.
 
 ## 10. Do NOT replan or reconsider
 
@@ -211,21 +206,19 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 Anything not listed here is open to the next planner's judgement.
 
-## 11. Verified state at handoff (2026-08-23)
+## 11. Verified state at handoff (2026-08-24 post-merge)
 
 Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 
 | Check | Value |
 |---|---|
 | Repo path | `/Users/josh/particle-workers/recallweave` |
-| Git branch | `foundry/steward` |
-| Tree clean | **yes** — 0 dirty paths, including `.beads/` |
-| Unpushed commits | **no** — `HEAD` == `origin/foundry/steward` |
-| Unintegrated worker commits | **no** — all 8 lanes 0 ahead, 0 uncommitted |
-| `foundry/steward` vs `origin/main` | 12 ahead, 0 behind |
-| Supervisor | **paused** for promotion (`PAUSED` present) |
-| Latest verdict | PASS cycle 23 (`review-20260824T030601Z`); promoting `1ecb4be` |
-| Beads authoritative | **yes** — 0 open, 0 deferred, 0 blockers |
+| Git branch | `foundry/steward` (fresh cut from `main` @ `2fe19ed`) |
+| Tree clean | re-probe — expect marker + handoff commits then push |
+| `origin/main` | `2fe19ed` (PR #3 squash) |
+| Supervisor | clear `PAUSED` after pushing fresh steward |
+| Latest verdict | PASS cycle 23 (`review-20260824T030601Z`); checkpoint restored |
+| Beads authoritative | **yes** — open: `cxn`, `dle`, `rm3` |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**

@@ -95,11 +95,15 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 23 — clean promotion re-review for squash-merge to `main`.
+Cycle 24 — stewardship after PR #3.
 
-**PASS** recorded at `.codex-reviews/review-20260824T030601Z.md` for SHA
-`1ecb4be` (verified-only tag prefetch + regression). Suite: **467** OK (1 skip).
+**Promoted:** PR #3 squash on `main` (`2fe19ed`). Fresh `foundry/steward` cut
+from that tip with `CHECKPOINT_NOT_APPROVED.md` restored. Cycle-23 PASS remains
+the last gate on the promoted tree (`.codex-reviews/review-20260824T030601Z.md`).
 
-Next cycle after merge should cut a fresh stewardship checkpoint from the new
-`main` and restore `CHECKPOINT_NOT_APPROVED.md` before any routine push.
+Open hardening (not promotion blockers): `recallweave-cxn`, `recallweave-dle`,
+`recallweave-rm3`.
+
+Focus: review any new stewardship commits on the fresh checkpoint; do not
+re-litigate settled promotion findings.
 <!-- CYCLE-CONTEXT-END -->
