@@ -95,8 +95,9 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24d — superscript Win32 device digits (COM¹/LPT³) after 24c Medium.
+Cycle 24e — promotion-tree re-review after PR #4 turn-1/2 remediations.
 
-Prior cycle-24 AST/device Mediums closed. Suite expected **473** OK (1 skip).
-PASS if no Critical/High/Medium remain; then promote.
+Prior PASS at `f3b7fe1` does not cover `c672312` (handoff, determinism,
+device-name stem, numeric/conversion f-strings). Suite expected **475** OK
+(1 skip). PASS required before merge.
 <!-- CYCLE-CONTEXT-END -->
