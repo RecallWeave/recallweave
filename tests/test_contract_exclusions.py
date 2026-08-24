@@ -599,6 +599,47 @@ class TiedScoreExclusionDeterminismTest(unittest.TestCase):
         order_b = ordered_paths(db_b, keep_a_id=3, keep_b_id=1)
         self.assertNotEqual(order_a, order_b)
 
+    def test_stream_connection_edges_sql_includes_id_tiebreaker(self) -> None:
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "Hub.md").write_text(
+            "# Hub\n\n## S\n\nzzhubanchor. [[Peer.md]]\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Peer.md").write_text(
+            "# Peer\n\n## S\n\npeer.\n", encoding="utf-8", newline=""
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        executed: list[str] = []
+        with closing(connect(database, readonly=True)) as connection:
+            hub_id = connection.execute(
+                "SELECT id FROM notes WHERE relative_path = 'Hub.md'"
+            ).fetchone()[0]
+            real_execute = connection.execute
+
+            def tracing_execute(sql, parameters=()):
+                executed.append(str(sql))
+                return real_execute(sql, parameters)
+
+            connection.execute = tracing_execute  # type: ignore[method-assign]
+            _stream_connection_edges(
+                connection,
+                [int(hub_id)],
+                ExclusionSet(),
+                include_candidates=False,
+            )
+        edge_queries = [sql for sql in executed if "FROM edges e" in sql]
+        self.assertTrue(edge_queries, executed)
+        self.assertIn(
+            "ORDER BY e.is_verified DESC, e.score DESC, e.id",
+            edge_queries[-1],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
