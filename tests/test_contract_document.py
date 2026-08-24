@@ -4245,6 +4245,16 @@ class EndpointCanonicalMutationAuditTest(unittest.TestCase):
     def setUp(self) -> None:
         self._h = ContractDocumentTest()
         self._h._kept_tmp = []
+        # ContractDocumentTest helpers park TemporaryDirectory objects on
+        # `_kept_tmp` for their own tearDown; this audit is a separate TestCase,
+        # so register cleanup here or those dirs leak (ResourceWarning under
+        # -Werror).
+        self.addCleanup(self._cleanup_helper_temps)
+
+    def _cleanup_helper_temps(self) -> None:
+        for temp in getattr(self._h, "_kept_tmp", []):
+            temp.cleanup()
+        self._h._kept_tmp = []
 
     def _candidate_pair_index(self):
         return self._h._candidate_pair_index()

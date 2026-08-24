@@ -51,3 +51,20 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
+
+  # Branch protection requires the check context named exactly `viewer`.
+  # A matrix job publishes `viewer (ubuntu-latest)` / `viewer (windows-latest)`
+  # instead, which would leave the required status pending forever. This
+  # single-name gate collapses the matrix result into that required context.
+  viewer-required:
+    name: viewer
+    needs: viewer
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all viewer matrix legs
+        run: |
+          if [ "${{ needs.viewer.result }}" != "success" ]; then
+            echo "viewer matrix result: ${{ needs.viewer.result }}"
+            exit 1
+          fi

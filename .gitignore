@@ -62,5 +62,8 @@ Thumbs.db
 # Local Codex review output. Generated, not source — except the verdict
 # markdown files, which the promotion handoff cites by name and must be
 # inspectable in a clean checkout (cycle-21 Codex PR review).
-.codex-reviews/
+# Un-ignore the directory itself first; a bare `.codex-reviews/` ignore
+# prevents later file negations from applying to newly generated verdicts.
+.codex-reviews/**
+!.codex-reviews/
 !.codex-reviews/review-*.md

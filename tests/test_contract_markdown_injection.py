@@ -1302,6 +1302,26 @@ def _vault_write_fixture_names() -> list[str]:
                 and child.value != ".md"
             ):
                 found.append(child.value)
+            # f-strings: `(vault / f"Bad:Name{i}.md").write_text(...)` has no
+            # single Constant ending in `.md`. Collect Constant fragments and
+            # treat any that look like a filename (or carry reserved chars next
+            # to a `.md` fragment) as fixture names the portability guard must
+            # reject.
+            if isinstance(child, ast.JoinedStr):
+                parts = [
+                    value.value
+                    for value in child.values
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str)
+                ]
+                if not parts:
+                    continue
+                if not any(part.endswith(".md") or part == ".md" for part in parts):
+                    continue
+                for part in parts:
+                    if part.endswith(".md") and part != ".md":
+                        found.append(part)
+                    elif part and part != ".md":
+                        found.append(part)
         return found
 
     for path in sorted((root / "tests").glob("*.py")):
