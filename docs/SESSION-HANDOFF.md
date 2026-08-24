@@ -19,7 +19,7 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: POST-PROMOTION STEWARDSHIP — ur0 integrated; cycle 21 gate next.**
+**Phase: POST-PROMOTION STEWARDSHIP — cycle 21 PASS; jqq dispatchable.**
 
 - Integration branch: **`foundry/steward`**, cut from `main` after PR #1 merged.
 - `foundry/task-contracts` is **HISTORICAL** — the implementation lineage behind
@@ -114,18 +114,17 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- **Cycle 20 adversarial gate:** **FAIL** — `.codex-reviews/review-20260823T221453Z.md`
-  (High: exclusion SQL parameter explosion from z1a; text-item validation OK).
-- **`recallweave-ur0` integrated** — streams connection edges in Python instead of
-  SQL placeholders; regression test under small variable limit. Suite: 464 OK.
-- **Phase 1 (next):** cycle-21 adversarial re-review over ur0 fix.
-- **Phase 2 (deferred +4h, blocks on cycle-21 PASS):** `recallweave-jqq` — per-region
-  sanitizer mutation audits.
+- **Cycle 21 adversarial gate:** **PASS** — `.codex-reviews/review-20260824T001136Z.md`
+  (cycle-20 High closed; no new findings).
+- **`recallweave-ur0` integrated** — streaming exclusion path; suite 464 OK.
+- **Phase 2 (ready now):** `recallweave-jqq` — per-region sanitizer mutation audits.
+  Undeferred after cycle-21 PASS; supervisor will dispatch.
 - **Phase 3 (deferred +4h, blocks on jqq):** `recallweave-3ea` — endpoint-binding
   and candidate canonical-form mutation audits.
 - **Phase 4 (milestone, human-gated):** promotion PR from `foundry/steward` →
-  `main` after PASS + Josh merge approval. Not automated.
-- **Worker assignments:** none (NTM session absent post-reboot; restart needed).
+  `main` after Josh merge approval (PASS recorded; delete
+  `CHECKPOINT_NOT_APPROVED.md` in promotion commit). Not automated.
+- **Worker assignments:** pending dispatch of `recallweave-jqq`.
 
 ## 7. Known failure modes and traps
 
@@ -196,12 +195,10 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 9. Review state
 
-- Adversarial gate: **FAIL**, `.codex-reviews/review-20260823T221453Z.md` (cycle 20).
-  One new High: z1a SQL exclusion uses 2× excluded-note placeholders and exceeds
-  `SQLITE_LIMIT_VARIABLE_NUMBER` at ~125k excluded notes. Prior PASS
-  `review-20260823T024349Z.md` is superseded.
-- Promotion blocked until cycle-21 re-review returns PASS (ur0 remediation
-  integrated post-reboot).
+- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T001136Z.md` (cycle 21).
+  Cycle-20 High closed; all historical Critical/High findings remain closed.
+  Promotion toward `main` is approved pending human merge and deletion of
+  `CHECKPOINT_NOT_APPROVED.md` in the promotion commit.
 
 ## 10. Do NOT replan or reconsider
 
@@ -229,8 +226,8 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Unintegrated worker commits | **no** — all 8 lanes 0 ahead, 0 uncommitted |
 | `foundry/steward` vs `origin/main` | 12 ahead, 0 behind |
 | Supervisor | **running**, all lanes idle |
-| Latest verdict | FAIL cycle 20; ur0 integrated, cycle 21 pending |
-| Beads authoritative | **yes** — 0 open, 2 deferred (jqq, 3ea), 0 blockers |
+| Latest verdict | PASS cycle 21 (`review-20260824T001136Z`) |
+| Beads authoritative | **yes** — 0 open, 1 deferred (3ea), jqq ready after undefer |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
