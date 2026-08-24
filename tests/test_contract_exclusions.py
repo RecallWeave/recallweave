@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from recallweave.contract import build_contract_document
+from recallweave.contract import (
+    INDEX_CANDIDATE_EXPLANATION,
+    INDEX_CANDIDATE_METHOD,
+    _stream_connection_edges,
+    build_contract_document,
+)
 from recallweave.contract_exclusions import ExclusionSet
 from recallweave.contract_spec import TaskSpec
 from recallweave.index import build_index, connect
@@ -244,6 +251,130 @@ class ConnectionExclusionVariableLimitTest(unittest.TestCase):
             document["exclusions"]["suppressed"]["connections"],
             n_excluded,
         )
+
+
+class TagPrefetchCandidateFilterTest(unittest.TestCase):
+    """Regression: when include_candidates=false, both tag-prefetch UNION
+    branches must apply the same verified-only filter as the edge cursor, or
+    candidate-only endpoints fan the note_tags load without ever exporting."""
+
+    def _seeded_index(self) -> tuple[Path, int, int, int]:
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "Hub.md").write_text(
+            "# Hub\n\n## S\n\nzzhubanchor. See [[Verified]].\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Verified.md").write_text(
+            "---\ntags: [keep]\n---\n# Verified\n\n## S\n\nverified neighbor.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "CandidateOnly.md").write_text(
+            "---\ntags: [candonly]\n---\n# CandidateOnly\n\n## S\n\n"
+            "candidate only neighbor never linked.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        with closing(connect(database)) as connection, connection:
+            ids = {
+                row["relative_path"]: int(row["id"])
+                for row in connection.execute(
+                    "SELECT id, relative_path FROM notes"
+                )
+            }
+            hub_id = ids["Hub.md"]
+            verified_id = ids["Verified.md"]
+            candidate_id = ids["CandidateOnly.md"]
+            evidence = json.dumps(
+                {
+                    "method": INDEX_CANDIDATE_METHOD,
+                    "explanation": INDEX_CANDIDATE_EXPLANATION,
+                    "shared_terms": ["zzhubanchor", "candidate"],
+                    "source_evidence": {"citation": "Hub.md"},
+                    "target_evidence": {"citation": "CandidateOnly.md"},
+                }
+            )
+            connection.execute(
+                """
+                INSERT INTO edges(
+                    source_note_id, target_note_id, kind, is_verified, score,
+                    evidence_json
+                ) VALUES (?, ?, 'discovery_candidate', 0, 0.5, ?)
+                """,
+                (hub_id, candidate_id, evidence),
+            )
+        return database, hub_id, verified_id, candidate_id
+
+    def test_both_prefetch_branches_require_verified_when_candidates_omitted(
+        self,
+    ) -> None:
+        database, hub_id, verified_id, candidate_id = self._seeded_index()
+        exclusions = ExclusionSet(tags=["candonly"])
+        tag_sql: list[str] = []
+        with closing(connect(database, readonly=True)) as connection:
+            real_execute = connection.execute
+
+            def tracing_execute(sql, parameters=()):
+                text = str(sql)
+                if "FROM note_tags" in text or "from note_tags" in text:
+                    tag_sql.append(text)
+                return real_execute(sql, parameters)
+
+            connection.execute = tracing_execute  # type: ignore[method-assign]
+            _stream_connection_edges(
+                connection,
+                [hub_id],
+                exclusions,
+                include_candidates=False,
+            )
+            self.assertEqual(len(tag_sql), 1)
+            self.assertEqual(
+                tag_sql[0].count("is_verified = 1"),
+                2,
+                "both UNION branches must filter candidate edges",
+            )
+            loaded = {
+                int(row["note_id"])
+                for row in real_execute(
+                    """
+                    SELECT nt.note_id, nt.tag
+                    FROM note_tags nt
+                    WHERE nt.note_id IN (
+                        SELECT e.source_note_id FROM edges e
+                        WHERE (e.source_note_id IN (?) OR e.target_note_id IN (?))
+                        AND e.is_verified = 1
+                        UNION
+                        SELECT e.target_note_id FROM edges e
+                        WHERE (e.source_note_id IN (?) OR e.target_note_id IN (?))
+                        AND e.is_verified = 1
+                    )
+                    """,
+                    (hub_id, hub_id, hub_id, hub_id),
+                )
+            }
+            self.assertIn(verified_id, loaded)
+            self.assertNotIn(candidate_id, loaded)
+
+            tag_sql.clear()
+            _stream_connection_edges(
+                connection,
+                [hub_id],
+                exclusions,
+                include_candidates=True,
+            )
+            self.assertEqual(len(tag_sql), 1)
+            self.assertEqual(
+                tag_sql[0].count("is_verified = 1"),
+                0,
+                "candidate-inclusive prefetch must not inject the verified filter",
+            )
 
 
 if __name__ == "__main__":
