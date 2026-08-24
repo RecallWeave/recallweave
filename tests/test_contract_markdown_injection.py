@@ -1477,8 +1477,13 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
 
     @classmethod
     def _is_windows_device_component(cls, component: str) -> bool:
-        stem = component.split(".", 1)[0].casefold()
-        return stem in cls.WINDOWS_DEVICE_BASENAMES
+        # Win32 also treats ISO-8859-1 superscripts ¹/²/³ as COM/LPT digits
+        # (Microsoft naming rules). Normalize before the ASCII device check.
+        stem = component.split(".", 1)[0]
+        normalized = "".join(
+            {"¹": "1", "²": "2", "³": "3"}.get(ch, ch) for ch in stem
+        )
+        return normalized.casefold() in cls.WINDOWS_DEVICE_BASENAMES
 
     def test_hostile_filename_is_creatable_on_every_platform(self) -> None:
         for character in self.WINDOWS_RESERVED:
@@ -1619,6 +1624,10 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
             "com1.md",
             "LPT9.anything.md",
             "Nested/CON.md",
+            "COM¹.md",
+            "com².txt.md",
+            "LPT³.md",
+            "Nested/COM¹.md",
         ):
             with self.subTest(name=name):
                 for component in re.split(r"[\\/]", name):

@@ -95,15 +95,8 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24c — re-review after Windows device-name oracle + handoff/marker hygiene.
+Cycle 24d — superscript Win32 device digits (COM¹/LPT³) after 24c Medium.
 
-**Since cycle 24b** (`review-20260824T063432Z.md`, PASS WITH FIXES):
-
-- Portability oracle rejects Windows device basenames (CON/PRN/AUX/NUL/COMn/LPTn)
-  case-insensitively on the stem before the first `.`.
-- Handoff §11 Beads row corrected; marker will be refreshed to match latest
-  verdict after this gate.
-- Suite expected **473** OK (1 skip).
-
-Focus: PASS if no Critical/High/Medium remain; safe to promote after PASS.
+Prior cycle-24 AST/device Mediums closed. Suite expected **473** OK (1 skip).
+PASS if no Critical/High/Medium remain; then promote.
 <!-- CYCLE-CONTEXT-END -->
