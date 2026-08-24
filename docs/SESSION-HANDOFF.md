@@ -19,7 +19,7 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: POST-PROMOTION STEWARDSHIP — cycle 20 FAIL; remediation queued.**
+**Phase: POST-PROMOTION STEWARDSHIP — ur0 integrated; cycle 21 gate next.**
 
 - Integration branch: **`foundry/steward`**, cut from `main` after PR #1 merged.
 - `foundry/task-contracts` is **HISTORICAL** — the implementation lineage behind
@@ -116,15 +116,16 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 - **Cycle 20 adversarial gate:** **FAIL** — `.codex-reviews/review-20260823T221453Z.md`
   (High: exclusion SQL parameter explosion from z1a; text-item validation OK).
-- **Phase 1 (ready now):** `recallweave-ur0` — fix exclusion query strategy; OWNS
-  declared; supervisor will dispatch.
-- **Phase 2 (deferred +4h, blocks on ur0):** `recallweave-jqq` — per-region
-  sanitizer mutation audits. Undefer after ur0 closes + cycle-21 PASS.
+- **`recallweave-ur0` integrated** — streams connection edges in Python instead of
+  SQL placeholders; regression test under small variable limit. Suite: 464 OK.
+- **Phase 1 (next):** cycle-21 adversarial re-review over ur0 fix.
+- **Phase 2 (deferred +4h, blocks on cycle-21 PASS):** `recallweave-jqq` — per-region
+  sanitizer mutation audits.
 - **Phase 3 (deferred +4h, blocks on jqq):** `recallweave-3ea` — endpoint-binding
   and candidate canonical-form mutation audits.
 - **Phase 4 (milestone, human-gated):** promotion PR from `foundry/steward` →
   `main` after PASS + Josh merge approval. Not automated.
-- **Worker assignments:** pending dispatch of `recallweave-ur0`.
+- **Worker assignments:** none (NTM session absent post-reboot; restart needed).
 
 ## 7. Known failure modes and traps
 
@@ -199,8 +200,8 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
   One new High: z1a SQL exclusion uses 2× excluded-note placeholders and exceeds
   `SQLITE_LIMIT_VARIABLE_NUMBER` at ~125k excluded notes. Prior PASS
   `review-20260823T024349Z.md` is superseded.
-- Promotion blocked until remediation (`recallweave-ur0`) lands and cycle 21
-  re-review returns PASS.
+- Promotion blocked until cycle-21 re-review returns PASS (ur0 remediation
+  integrated post-reboot).
 
 ## 10. Do NOT replan or reconsider
 
@@ -228,8 +229,8 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Unintegrated worker commits | **no** — all 8 lanes 0 ahead, 0 uncommitted |
 | `foundry/steward` vs `origin/main` | 12 ahead, 0 behind |
 | Supervisor | **running**, all lanes idle |
-| Latest verdict | FAIL cycle 20 (`review-20260823T221453Z`); ur0 remediation ready |
-| Beads authoritative | **yes** — 1 open (ur0), 2 deferred (jqq, 3ea), 0 blockers |
+| Latest verdict | FAIL cycle 20; ur0 integrated, cycle 21 pending |
+| Beads authoritative | **yes** — 0 open, 2 deferred (jqq, 3ea), 0 blockers |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
