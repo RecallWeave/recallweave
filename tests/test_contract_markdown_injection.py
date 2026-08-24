@@ -1301,22 +1301,14 @@ def _format_static_value(
     elif isinstance(value, bool):
         rendered = "True" if value else "False"
     elif isinstance(value, int) and not isinstance(value, bool):
-        if spec in (None, "", "d"):
-            rendered = str(value)
-        elif spec == "x":
-            rendered = format(value, "x")
-        elif spec == "X":
-            rendered = format(value, "X")
-        elif spec == "o":
-            rendered = format(value, "o")
-        elif spec == "b":
-            rendered = format(value, "b")
-        else:
+        try:
+            rendered = format(value, spec or "")
+        except (ValueError, TypeError):
             return None
     elif isinstance(value, float):
-        if spec in (None, "", "g", "f"):
+        try:
             rendered = format(value, spec or "g")
-        else:
+        except (ValueError, TypeError):
             return None
     elif value is None and spec in (None, ""):
         rendered = "None"
@@ -1435,8 +1427,8 @@ def _md_strings_in(node: ast.AST | None) -> list[str]:
 
 
 def _is_write_call(node: ast.Call) -> bool:
-    """True for Path/self attribute writes and bare nested-helper write calls."""
-    write_names = {"write", "write_text", "write_bytes"}
+    """True for Path/self attribute writes/touch and bare nested-helper write calls."""
+    write_names = {"write", "write_text", "write_bytes", "touch"}
     if isinstance(node.func, ast.Attribute):
         return node.func.attr in write_names
     if isinstance(node.func, ast.Name):
@@ -1491,6 +1483,7 @@ def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
         if isinstance(node.func, ast.Attribute) and node.func.attr in (
             "write_text",
             "write_bytes",
+            "touch",
         ):
             receiver = node.func.value
             names.extend(_md_strings_in(receiver))
@@ -1796,6 +1789,22 @@ def build(vault):
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertGreaterEqual(names.count("COM1.md"), 2, names)
+
+    def test_scan_resolves_zero_padded_format_spec(self) -> None:
+        source = '''
+def build(vault):
+    (vault / f"COM{1:01d}.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("COM1.md", names)
+
+    def test_scan_catches_path_touch_with_reserved_name(self) -> None:
+        source = '''
+def build(vault):
+    (vault / "CON.md").touch()
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON.md", names)
 
 
 class ContractVaultInjectionTest(unittest.TestCase):

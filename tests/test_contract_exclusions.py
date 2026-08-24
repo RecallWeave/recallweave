@@ -492,61 +492,24 @@ class TiedScoreExclusionDeterminismTest(unittest.TestCase):
             }
         )
 
-        def build_artifacts(label: str, *, reverse_edge_insert: bool) -> tuple[bytes, bytes]:
+        def build_artifacts(label: str) -> tuple[bytes, bytes]:
             vault = root / label / "vault"
             database = root / label / "index.sqlite"
             self._write_tied_vault(vault)
             build_index(vault, database, minimum_candidate_score=0.0)
-            with closing(connect(database)) as connection, connection:
+            with closing(connect(database, readonly=True)) as connection:
                 rows = connection.execute(
                     """
-                    SELECT e.id, e.source_note_id, e.target_note_id, e.kind,
-                           e.is_verified, e.score, e.evidence_json,
-                           sn.relative_path, tn.relative_path
+                    SELECT e.score, e.is_verified
                     FROM edges e
                     JOIN notes sn ON sn.id = e.source_note_id
                     JOIN notes tn ON tn.id = e.target_note_id
                     WHERE sn.relative_path = 'Hub.md' OR tn.relative_path = 'Hub.md'
-                    ORDER BY e.id
                     """
                 ).fetchall()
                 self.assertGreaterEqual(len(rows), 3)
-
-                def neighbor(row) -> str:
-                    return (
-                        str(row[8])
-                        if str(row[7]) == "Hub.md"
-                        else str(row[7])
-                    )
-
-                by_neighbor = {neighbor(row): row for row in rows}
-                order = ["KeepA.md", "Drop.md", "KeepB.md"]
-                self.assertEqual(set(by_neighbor), set(order))
-                # Delete and reinsert with explicit ids. Reverse physical insert
-                # order on one build so row order diverges while id order
-                # (KeepA < Drop < KeepB) stays shared — the id tie-breaker must
-                # decide export order among tied scores.
-                for row in rows:
-                    connection.execute("DELETE FROM edges WHERE id = ?", (row[0],))
-                insert_order = list(reversed(order)) if reverse_edge_insert else order
-                id_for = {name: index for index, name in enumerate(order, start=1)}
-                for name in insert_order:
-                    row = by_neighbor[name]
-                    connection.execute(
-                        """
-                        INSERT INTO edges(
-                            id, source_note_id, target_note_id, kind,
-                            is_verified, score, evidence_json
-                        ) VALUES (?, ?, ?, ?, 1, 1.0, ?)
-                        """,
-                        (
-                            id_for[name],
-                            int(row[1]),
-                            int(row[2]),
-                            str(row[3]),
-                            str(row[6]),
-                        ),
-                    )
+                self.assertEqual({float(row[0]) for row in rows}, {1.0})
+                self.assertEqual({int(row[1]) for row in rows}, {1})
             document = build_contract_document(database, spec)
             document["provenance"].pop("generated_at")
             document["provenance"]["index"].pop("indexed_at", None)
@@ -563,10 +526,78 @@ class TiedScoreExclusionDeterminismTest(unittest.TestCase):
             markdown = render_contract_markdown(document)
             return json_bytes, markdown.encode("utf-8")
 
-        first_json, first_md = build_artifacts("a", reverse_edge_insert=False)
-        second_json, second_md = build_artifacts("b", reverse_edge_insert=True)
+        first_json, first_md = build_artifacts("a")
+        second_json, second_md = build_artifacts("b")
         self.assertEqual(first_json, second_json)
         self.assertEqual(first_md, second_md)
+
+    def test_tied_score_export_order_follows_edge_id_tiebreaker(self) -> None:
+        """When KeepA/KeepB share score+verified, permuting edge ids must change
+        export order — proving ``ORDER BY …, e.id`` is load-bearing."""
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "obj",
+                "retrieval": {
+                    "query": "zzhubanchor",
+                    "limit": 8,
+                    "max_characters": 100000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"tags": ["private"]},
+            }
+        )
+
+        def ordered_paths(database: Path, *, keep_a_id: int, keep_b_id: int) -> list[tuple[str, str]]:
+            vault = root / "vault"
+            database_path = database
+            self._write_tied_vault(vault)
+            build_index(vault, database_path, minimum_candidate_score=0.0)
+            with closing(connect(database_path)) as connection, connection:
+                rows = connection.execute(
+                    """
+                    SELECT e.id, sn.relative_path, tn.relative_path
+                    FROM edges e
+                    JOIN notes sn ON sn.id = e.source_note_id
+                    JOIN notes tn ON tn.id = e.target_note_id
+                    WHERE sn.relative_path = 'Hub.md' OR tn.relative_path = 'Hub.md'
+                    """
+                ).fetchall()
+
+                def neighbor(row) -> str:
+                    return str(row[2]) if str(row[1]) == "Hub.md" else str(row[1])
+
+                by_neighbor = {neighbor(row): int(row[0]) for row in rows}
+                for old_id in by_neighbor.values():
+                    connection.execute(
+                        "UPDATE edges SET id = ? WHERE id = ?", (old_id + 50_000, old_id)
+                    )
+                mapping = {
+                    "KeepA.md": keep_a_id,
+                    "Drop.md": 2,
+                    "KeepB.md": keep_b_id,
+                }
+                for neighbor, new_id in mapping.items():
+                    connection.execute(
+                        "UPDATE edges SET id = ? WHERE id = ?",
+                        (new_id, by_neighbor[neighbor] + 50_000),
+                    )
+                connection.execute(
+                    "UPDATE edges SET score = 1.0, is_verified = 1 WHERE id IN (?, ?, ?)",
+                    (keep_a_id, 2, keep_b_id),
+                )
+            document = build_contract_document(database_path, spec)
+            return [(c["source"], c["target"]) for c in document["connections"]]
+
+        db_a = root / "a.sqlite"
+        db_b = root / "b.sqlite"
+        order_a = ordered_paths(db_a, keep_a_id=1, keep_b_id=3)
+        order_b = ordered_paths(db_b, keep_a_id=3, keep_b_id=1)
+        self.assertNotEqual(order_a, order_b)
 
 
 if __name__ == "__main__":

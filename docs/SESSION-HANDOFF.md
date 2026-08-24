@@ -25,8 +25,9 @@ settled design.
   squash-merge to `main`.
 - `foundry/task-contracts` remains **HISTORICAL** (PR #1 lineage). **Never merge
   it into current work.**
-- Latest adversarial verdict for this promotion: **PASS**
-  (`.codex-reviews/review-20260824T064133Z.md`, cycle 24d).
+- Latest adversarial verdict for this promotion: cycle **24d PASS** at `f3b7fe1`;
+  post-PR#4 remediations through `c672312` were re-gated as cycle **24e** (see
+  `.codex-reviews/review-20260824T084937Z.md` and subsequent fix commits).
 - `CHECKPOINT_NOT_APPROVED.md` is **deleted in this promotion commit**. Do not
   restore it until after merge, when a fresh steward is cut from the new `main`.
 - Supervisor is **paused** (`~/.particle-supervisor/PAUSED`) until merge
@@ -185,8 +186,8 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 9. Review state
 
-- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T064133Z.md`
-  (cycle 24d). Marker deleted for promotion; supervisor paused until merge.
+- Adversarial gate: cycle **24d PASS** at `f3b7fe1`; cycle **24e** covers
+  post-remediation tree (PR #4 turn 1/2). Marker deleted; supervisor paused.
 
 ## 10. Do NOT replan or reconsider
 
@@ -211,7 +212,7 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Git branch | `foundry/steward` (PR #4 → `main`) |
 | Marker | **deleted** for promotion |
 | Supervisor | **paused** until merge + fresh cut |
-| Latest verdict | PASS cycle 24d (`review-20260824T064133Z`) |
+| Latest verdict | 24d PASS @ `f3b7fe1`; 24e re-review on promotion remediations |
 | Beads authoritative | **yes** — open: `fh2` (promote), epic `7o5`; `41d` closed |
 | Resumable without transcript | **yes** |
 
