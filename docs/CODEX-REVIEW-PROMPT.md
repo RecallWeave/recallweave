@@ -95,7 +95,7 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 25b — re-gate after scope/order-aware path binding remediation (25a).
+Cycle 25c — final re-gate after closure/compound-statement scanner remediation.
 
-Suite target **490** OK (1 skip). PASS required for checkpoint push approval.
+Suite target **493** OK (1 skip). PASS required for checkpoint push approval.
 <!-- CYCLE-CONTEXT-END -->

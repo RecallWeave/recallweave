@@ -1497,27 +1497,47 @@ def _scan_writes_in_stmts(
 ) -> None:
     for stmt in stmts:
         if isinstance(stmt, ast.Assign):
+            for node in ast.walk(stmt.value):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
             for target in stmt.targets:
                 if isinstance(target, ast.Name):
                     segs = _resolve_binding_segments(stmt.value, bindings)
                     if segs:
                         bindings[target.id] = segs
+                    else:
+                        bindings.pop(target.id, None)
         elif (
             isinstance(stmt, ast.AnnAssign)
             and isinstance(stmt.target, ast.Name)
             and stmt.value is not None
         ):
+            for node in ast.walk(stmt.value):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
             segs = _resolve_binding_segments(stmt.value, bindings)
             if segs:
                 bindings[stmt.target.id] = segs
+            else:
+                bindings.pop(stmt.target.id, None)
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            _scan_writes_in_stmts(stmt.body, names, {})
+            _scan_writes_in_stmts(stmt.body, names, dict(bindings))
         elif isinstance(stmt, ast.If):
             _scan_writes_in_stmts(stmt.body, names, bindings)
             _scan_writes_in_stmts(stmt.orelse, names, bindings)
-        elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
-            inner = getattr(stmt, "body", None) or []
-            _scan_writes_in_stmts(inner, names, bindings)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            _scan_writes_in_stmts(stmt.body, names, bindings)
+        elif isinstance(stmt, ast.Try):
+            _scan_writes_in_stmts(stmt.body, names, bindings)
+            for handler in stmt.handlers:
+                _scan_writes_in_stmts(handler.body, names, bindings)
+            _scan_writes_in_stmts(stmt.orelse, names, bindings)
+            _scan_writes_in_stmts(stmt.finalbody, names, bindings)
+        elif isinstance(stmt, ast.Match):
+            for case in stmt.cases:
+                _scan_writes_in_stmts(case.body, names, bindings)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            _scan_writes_in_stmts(stmt.body, names, bindings)
         else:
             for node in ast.walk(stmt):
                 if isinstance(node, ast.Call) and _is_write_call(node):
@@ -2058,6 +2078,38 @@ def build(vault):
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
         self.assertIn("Safe", names)
+
+    def test_scan_catches_write_on_assignment_rhs(self) -> None:
+        source = '''
+def build(vault):
+    result = (vault / "CON" / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_inherits_enclosing_bindings_in_nested_functions(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "CON"
+    def helper():
+        (private / "Note.md").write_text("x")
+    helper()
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_collects_bindings_inside_while_bodies(self) -> None:
+        source = '''
+def build(vault):
+    while ready():
+        private = vault / "CON"
+        (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
 
 
 class ContractVaultInjectionTest(unittest.TestCase):
