@@ -19,20 +19,15 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: MILESTONE PROMOTION — stewardship hardening PR `foundry/steward` → `main`.**
+**Phase: STEWARDSHIP — post-PR #4; fresh `foundry/steward` cut from `main`.**
 
-- Integration branch: **`foundry/steward`** (post-PR #3 lineage). PR #4 open for
-  squash-merge to `main`.
+- Integration branch: **`foundry/steward`** cut from `main` @ `374be23` (PR #4).
 - `foundry/task-contracts` remains **HISTORICAL** (PR #1 lineage). **Never merge
   it into current work.**
-- Latest adversarial verdict for this promotion: cycle **24i** `PASS WITH FIXES`
-  at `c1a4ccb` (`.codex-reviews/review-20260824T101232Z.md`); only Medium
-  test-scanner coverage gaps remain — no runtime Critical/High findings.
-  Cycle **24d PASS** at `f3b7fe1` covered an earlier tree only.
-- `CHECKPOINT_NOT_APPROVED.md` is **deleted in this promotion commit**. Do not
-  restore it until after merge, when a fresh steward is cut from the new `main`.
-- Supervisor is **paused** (`~/.particle-supervisor/PAUSED`) until merge
-  completes and the fresh checkpoint is cut. Do not unpause during the open PR.
+- Latest adversarial verdict on the promoted tree: cycle **24i** `PASS WITH FIXES`
+  (Medium test-scanner gaps only; no runtime Critical/High).
+- `CHECKPOINT_NOT_APPROVED.md` is **restored** on the fresh steward.
+- Supervisor may be **unpaused** after this cut.
 - `SWARM-RUNBOOK.md` was adopted 2026-08-23 as operating doctrine. **Read its
   §11 first**: the generated body was rendered for `elevare-agent-factory` and
   its project facts do not describe this repo.
@@ -203,18 +198,18 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 Anything not listed here is open to the next planner's judgement.
 
-## 11. Verified state at handoff (2026-08-24 promotion)
+## 11. Verified state at handoff (2026-08-24 post-merge)
 
 Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 
 | Check | Value |
 |---|---|
 | Repo path | `/Users/josh/particle-workers/recallweave` |
-| Git branch | `foundry/steward` (PR #4 → `main`) |
-| Marker | **deleted** for promotion |
-| Supervisor | **paused** until merge + fresh cut |
-| Latest verdict | 24i PASS WITH FIXES @ `c1a4ccb`; Medium scanner gaps only |
-| Beads authoritative | **yes** — open: `fh2` (promote), epic `7o5`; `41d` closed |
+| Git branch | `foundry/steward` (fresh cut from `main` @ `374be23`) |
+| Marker | **present** |
+| Supervisor | unpause after checkpoint push |
+| Latest verdict | 24i PASS WITH FIXES (promoted via PR #4) |
+| Beads authoritative | **yes** — `fh2` / `7o5` closing |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
