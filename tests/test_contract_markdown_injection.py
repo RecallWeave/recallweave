@@ -1463,28 +1463,65 @@ def _md_strings_in(node: ast.AST | None) -> list[str]:
     return found
 
 
-def _static_path_bindings(tree: ast.AST) -> dict[str, list[str]]:
-    """Map simple names to path segments from statically resolved assignments."""
-    bindings: dict[str, list[str]] = {}
+def _resolve_binding_segments(
+    expr: ast.AST, bindings: dict[str, list[str]]
+) -> list[str]:
+    segments: list[str] = []
+    _collect_path_segments(expr, segments, bindings)
+    return segments
 
-    def bind(name: str, expr: ast.AST) -> None:
-        segments: list[str] = []
-        _collect_path_segments(expr, segments)
-        if segments:
-            bindings[name] = segments
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
+def _record_write_call(
+    node: ast.Call, names: list[str], bindings: dict[str, list[str]]
+) -> None:
+    helper_path_arg = isinstance(node.func, ast.Name) or (
+        isinstance(node.func, ast.Attribute) and node.func.attr == "write"
+    )
+    if helper_path_arg:
+        if node.args:
+            _collect_name_expr(node.args[0], names, bindings)
+        for kw_value in _pathlike_kwargs(node):
+            _collect_name_expr(kw_value, names, bindings)
+    if isinstance(node.func, ast.Attribute) and node.func.attr in (
+        "write_text",
+        "write_bytes",
+        "touch",
+    ):
+        receiver = node.func.value
+        names.extend(_md_strings_in(receiver))
+        _collect_path_segments(receiver, names, bindings)
+
+
+def _scan_writes_in_stmts(
+    stmts: list[ast.stmt], names: list[str], bindings: dict[str, list[str]]
+) -> None:
+    for stmt in stmts:
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
                 if isinstance(target, ast.Name):
-                    bind(target.id, node.value)
+                    segs = _resolve_binding_segments(stmt.value, bindings)
+                    if segs:
+                        bindings[target.id] = segs
         elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.value is not None
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.value is not None
         ):
-            bind(node.target.id, node.value)
-    return bindings
+            segs = _resolve_binding_segments(stmt.value, bindings)
+            if segs:
+                bindings[stmt.target.id] = segs
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _scan_writes_in_stmts(stmt.body, names, {})
+        elif isinstance(stmt, ast.If):
+            _scan_writes_in_stmts(stmt.body, names, bindings)
+            _scan_writes_in_stmts(stmt.orelse, names, bindings)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
+            inner = getattr(stmt, "body", None) or []
+            _scan_writes_in_stmts(inner, names, bindings)
+        else:
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
 
 
 def _collect_path_segments(
@@ -1583,28 +1620,8 @@ def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
     calls in ``tree`` — including nested helpers invoked as bare names,
     keyword path arguments, nested concatenations, and Path receivers."""
     names: list[str] = []
-    bindings = _static_path_bindings(tree)
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_write_call(node):
-            continue
-        # Path.write_text/write_bytes: args[0] is file BODY, not the filename.
-        # Only bare/attribute ``write(...)`` helpers take the path as arg0.
-        helper_path_arg = isinstance(node.func, ast.Name) or (
-            isinstance(node.func, ast.Attribute) and node.func.attr == "write"
-        )
-        if helper_path_arg:
-            if node.args:
-                _collect_name_expr(node.args[0], names, bindings)
-            for kw_value in _pathlike_kwargs(node):
-                _collect_name_expr(kw_value, names, bindings)
-        if isinstance(node.func, ast.Attribute) and node.func.attr in (
-            "write_text",
-            "write_bytes",
-            "touch",
-        ):
-            receiver = node.func.value
-            names.extend(_md_strings_in(receiver))
-            _collect_path_segments(receiver, names, bindings)
+    body = tree.body if isinstance(tree, ast.Module) else [tree]
+    _scan_writes_in_stmts(body, names, {})
     return names
 
 
@@ -1999,6 +2016,48 @@ def build(vault):
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
         self.assertIn("Note.md", names)
+
+    def test_scan_resolves_transitive_path_bindings(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "CON"
+    nested = private / "Safe"
+    (nested / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Safe", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_respects_reassignment_order(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "CON"
+    (private / "First.md").write_text("x")
+    private = vault / "Safe"
+    (private / "Second.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Safe", names)
+        self.assertIn("First.md", names)
+        self.assertIn("Second.md", names)
+
+    def test_scan_scopes_bindings_per_function(self) -> None:
+        source = '''
+def build(vault):
+    def reserved():
+        private = vault / "CON"
+        (private / "Bad.md").write_text("x")
+    def safe():
+        private = vault / "Safe"
+        (private / "Ok.md").write_text("x")
+    reserved()
+    safe()
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Safe", names)
 
 
 class ContractVaultInjectionTest(unittest.TestCase):

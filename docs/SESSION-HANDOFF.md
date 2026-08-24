@@ -205,9 +205,9 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Repo path | `/Users/josh/particle-workers/recallweave` |
 | Git branch | `foundry/steward` (fresh cut from `main` @ `374be23`) |
 | Marker | **present** |
-| Supervisor | unpause after checkpoint push |
-| Latest verdict | 24i PASS WITH FIXES (promoted via PR #4) |
-| Beads authoritative | **yes** — `fh2` / `7o5` closing |
+| Supervisor | **running** (no `~/.particle-supervisor/PAUSED` marker) |
+| Latest verdict | cycle 25 in progress on path-binding scanner fix |
+| Beads authoritative | **yes** — `86e` cycle-25 gate open |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**
