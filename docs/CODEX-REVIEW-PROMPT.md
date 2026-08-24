@@ -95,9 +95,7 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24e — promotion-tree re-review after PR #4 turn-1/2 remediations.
+Cycle 24f — final promotion-tree PASS on `d23aeef` after 24e remediations.
 
-Prior PASS at `f3b7fe1` does not cover `c672312` (handoff, determinism,
-device-name stem, numeric/conversion f-strings). Suite expected **475** OK
-(1 skip). PASS required before merge.
+Suite **478** OK (1 skip). PASS required for PR #4 merge.
 <!-- CYCLE-CONTEXT-END -->
