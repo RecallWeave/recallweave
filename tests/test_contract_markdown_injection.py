@@ -1278,6 +1278,53 @@ class EscapedDisciplineTest(unittest.TestCase):
             _join(_literal("a"), "raw untrusted")
 
 
+def _format_static_value(
+    value: object, conversion: int, format_spec: ast.AST | None
+) -> str | None:
+    """Emulate a subset of f-string conversion/format_spec for static values."""
+    if conversion not in (-1, ord("s"), ord("r"), ord("a")):
+        return None
+    spec: str | None = None
+    if format_spec is not None:
+        if isinstance(format_spec, ast.Constant) and isinstance(format_spec.value, str):
+            spec = format_spec.value
+        elif isinstance(format_spec, ast.JoinedStr):
+            spec = _static_str(format_spec)
+        else:
+            return None
+    if conversion == ord("r"):
+        rendered = repr(value)
+    elif conversion == ord("a"):
+        rendered = ascii(value)
+    elif isinstance(value, str):
+        rendered = value
+    elif isinstance(value, bool):
+        rendered = "True" if value else "False"
+    elif isinstance(value, int) and not isinstance(value, bool):
+        if spec in (None, "", "d"):
+            rendered = str(value)
+        elif spec == "x":
+            rendered = format(value, "x")
+        elif spec == "X":
+            rendered = format(value, "X")
+        elif spec == "o":
+            rendered = format(value, "o")
+        elif spec == "b":
+            rendered = format(value, "b")
+        else:
+            return None
+    elif isinstance(value, float):
+        if spec in (None, "", "g", "f"):
+            rendered = format(value, spec or "g")
+        else:
+            return None
+    elif value is None and spec in (None, ""):
+        rendered = "None"
+    else:
+        return None
+    return rendered
+
+
 def _static_str(node: ast.AST | None) -> str | None:
     """Best-effort static string for filename expressions.
 
@@ -1311,18 +1358,26 @@ def _static_str(node: ast.AST | None) -> str | None:
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 parts.append(value.value)
             elif isinstance(value, ast.FormattedValue):
-                # Skip format_spec / conversion that we cannot emulate.
-                if value.format_spec is not None or value.conversion != -1:
+                if isinstance(value.value, ast.Constant):
+                    rendered = _format_static_value(
+                        value.value.value, value.conversion, value.format_spec
+                    )
+                else:
+                    if value.conversion != -1 or value.format_spec is not None:
+                        return None
+                    rendered = _static_str(value.value)
+                if rendered is None:
                     return None
-                resolved = _static_str(value.value)
-                if resolved is None:
-                    return None
-                parts.append(resolved)
+                parts.append(rendered)
             else:
                 return None
         return "".join(parts)
     if isinstance(node, ast.FormattedValue):
-        if node.format_spec is not None or node.conversion != -1:
+        if isinstance(node.value, ast.Constant):
+            return _format_static_value(
+                node.value.value, node.conversion, node.format_spec
+            )
+        if node.conversion != -1 or node.format_spec is not None:
             return None
         return _static_str(node.value)
     return None
@@ -1732,6 +1787,15 @@ def build(vault):
         self.assertIn("LPT9.md", names)
         self.assertTrue(self._is_windows_device_component("COM1.md"))
         self.assertTrue(self._is_windows_device_component("LPT9.md"))
+
+    def test_scan_resolves_converted_and_formatted_numeric_fstrings(self) -> None:
+        source = '''
+def build(vault):
+    (vault / f"COM{1!s}.md").write_text("x")
+    (vault / f"COM{1:d}.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertGreaterEqual(names.count("COM1.md"), 2, names)
 
 
 class ContractVaultInjectionTest(unittest.TestCase):
