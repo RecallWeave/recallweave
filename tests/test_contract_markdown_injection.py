@@ -1292,32 +1292,47 @@ def _format_static_value(
             spec = _static_str(format_spec)
         else:
             return None
+
+    def apply_spec(base: str) -> str | None:
+        try:
+            return format(base, spec or "")
+        except (ValueError, TypeError):
+            return None
+
     if conversion == ord("r"):
-        rendered = repr(value)
-    elif conversion == ord("a"):
-        rendered = ascii(value)
-    elif isinstance(value, str):
+        return apply_spec(repr(value))
+    if conversion == ord("a"):
+        return apply_spec(ascii(value))
+    if conversion == ord("s"):
+        if isinstance(value, bool):
+            base = "True" if value else "False"
+        elif isinstance(value, str):
+            base = value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            base = str(value)
+        elif value is None:
+            base = "None"
+        else:
+            return None
+        return apply_spec(base)
+
+    if isinstance(value, str):
+        return apply_spec(value)
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, int) and not isinstance(value, bool):
         try:
-            rendered = format(value, spec or "")
+            return format(value, spec or "")
         except (ValueError, TypeError):
             return None
-    elif isinstance(value, bool):
-        rendered = "True" if value else "False"
-    elif isinstance(value, int) and not isinstance(value, bool):
+    if isinstance(value, float):
         try:
-            rendered = format(value, spec or "")
+            return format(value, spec or "g")
         except (ValueError, TypeError):
             return None
-    elif isinstance(value, float):
-        try:
-            rendered = format(value, spec or "g")
-        except (ValueError, TypeError):
-            return None
-    elif value is None and spec in (None, ""):
-        rendered = "None"
-    else:
-        return None
-    return rendered
+    if value is None and spec in (None, ""):
+        return "None"
+    return None
 
 
 def _static_str(node: ast.AST | None) -> str | None:
@@ -1869,9 +1884,10 @@ def build(vault):
 def build(vault):
     (vault / f"COM{1!s}.md").write_text("x")
     (vault / f"COM{1:d}.md").write_text("x")
+    (vault / f"COM{1!s:.1}.md").write_text("x")
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
-        self.assertGreaterEqual(names.count("COM1.md"), 2, names)
+        self.assertGreaterEqual(names.count("COM1.md"), 3, names)
 
     def test_scan_resolves_zero_padded_format_spec(self) -> None:
         source = '''
