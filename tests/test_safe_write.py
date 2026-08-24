@@ -57,6 +57,32 @@ class SafeWriteTest(unittest.TestCase):
             )
         self.assertFalse((real_parent / "contract.json").exists())
 
+    @unittest.skipUnless(os.name == "nt", "junctions are a Windows construct")
+    def test_junction_parent_refused(self) -> None:
+        # The destination protocol explicitly promises junction refusal, but
+        # ordinary `os.symlink` needs privileges on Windows and the symlink
+        # tests above skip when it is unavailable — so a real junction could go
+        # unexercised on Windows. Create one with `mklink /J`, which needs no
+        # admin, and assert the refusal actually runs. This is the junction case
+        # the local gate cannot observe, so CI on Windows must.
+        import subprocess
+
+        real = self.root / "real_dir"
+        real.mkdir()
+        junction = self.root / "linked_dir"
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(junction), str(real)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            self.skipTest(f"junction creation unavailable: {result.stderr.strip()}")
+
+        output = junction / "contract.json"
+        with self.assertRaisesRegex(ValueError, "symlinked parent"):
+            prepare_destination(output, self.protected, force=True, label=LABEL)
+        self.assertFalse((real / "contract.json").exists())
+
     def test_protected_file_target_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "cannot replace"):
             prepare_destination(self.protected, self.protected, force=True, label=LABEL)

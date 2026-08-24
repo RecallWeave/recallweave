@@ -95,40 +95,11 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Your Medium is fixed, and your second suggested test was the one that mattered.
+Cycle 23 — clean promotion re-review for squash-merge to `main`.
 
-- **Medium — index provenance bypassed the sanitizer.** Correct; the source
-  path you traced was exact. `schema_version` and `indexed_at` are now
-  sanitized. Not a leak, as you said, but an invariant with an exception is not
-  one.
+**PASS** recorded at `.codex-reviews/review-20260824T030601Z.md` for SHA
+`1ecb4be` (verified-only tag prefetch + regression). Suite: **467** OK (1 skip).
 
-- **The structural fix.** Your recursive assertion is now the test.
-  Sanitization has been missed five separate times in this effort — paths but
-  not tags, sides but not endpoints, retrieved metadata but not index
-  provenance — each time because a fix covered the values a particular function
-  touched rather than the CLASS the rule is about. The invariant is now
-  quantified over the DOCUMENT: a maximally hostile contract (bidi, zero-width
-  and C0 controls in filename, title, frontmatter tag, heading, body, wikilink,
-  operator statements, and the index's own `meta` row), then a walk over every
-  emitted string requiring `sanitize(value) == value`. A new emitted field is
-  covered the moment it exists.
-
-  Proven against **five independent members** of the class: index provenance,
-  connection endpoints, retrieved headings, constraint `relative_path`, and the
-  objective. Removing sanitization from any one fails this single test.
-
-  It also asserts it REACHED those places. The first version silently missed
-  `relative_path` because the fixture's constraints were all text items, so the
-  field was null and the invariant was never asked — a walk that visits nothing
-  passes.
-
-Suite: **457 tests** with the parser, green under `-W error::ResourceWarning`;
-`compileall` clean. Runtime dependencies still empty.
-
-1. **Say plainly whether this tree is safe to MERGE into protected `main`.**
-2. Two other rules were quantified over classes in the same way — endpoint
-   binding and the canonical-form requirement for authenticated fields. Is
-   either still missing a member?
-3. Reassess every Critical and High across all cycles and say which remain
-   closed.
+Next cycle after merge should cut a fresh stewardship checkpoint from the new
+`main` and restore `CHECKPOINT_NOT_APPROVED.md` before any routine push.
 <!-- CYCLE-CONTEXT-END -->

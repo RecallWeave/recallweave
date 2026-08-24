@@ -238,6 +238,33 @@ class TaskSpecParsingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exactly one of 'text' or 'note'"):
             TaskSpec.from_payload(payload)
 
+    def test_text_item_with_note_only_fields_rejected(self) -> None:
+        # `heading` and `statement` apply only to note selectors. On a text item
+        # _resolve_item takes the text branch and silently discards them, so
+        # accepting the spec would throw away an operator-authored qualification
+        # (recallweave-z1a). Reject rather than discard.
+        for field in ("statement", "heading"):
+            with self.subTest(field=field):
+                payload = valid_payload()
+                payload["constraints"] = [{"text": "keep", field: "qualification"}]
+                with self.assertRaisesRegex(ValueError, "only valid when 'note' is set"):
+                    TaskSpec.from_payload(payload)
+        # Both note-only fields together on a text item are rejected too.
+        payload = valid_payload()
+        payload["constraints"] = [
+            {"text": "keep", "statement": "q", "heading": "H"}
+        ]
+        with self.assertRaisesRegex(ValueError, "only valid when 'note' is set"):
+            TaskSpec.from_payload(payload)
+        # A note item still accepts both fields (the applicable case).
+        payload = valid_payload()
+        payload["constraints"] = [
+            {"note": "Projects/Foo.md", "statement": "q", "heading": "H"}
+        ]
+        spec = TaskSpec.from_payload(payload)
+        self.assertEqual(spec.constraints[0].statement, "q")
+        self.assertEqual(spec.constraints[0].heading, "H")
+
     def test_objective_missing_rejected(self) -> None:
         payload = valid_payload()
         del payload["objective"]

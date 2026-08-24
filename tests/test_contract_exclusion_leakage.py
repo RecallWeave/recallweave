@@ -11,6 +11,7 @@ from recallweave.cli import main as cli_main
 from recallweave.contract import build_contract_document
 from recallweave.contract_spec import TaskSpec
 from recallweave.index import build_index
+from recallweave.query import MAX_EDGE_ROWS
 
 PATH_SENTINEL = "ZZQEXCLUDEDSENTINEL"
 GLOB_SENTINEL = "ZZQGLOBSENTINEL"
@@ -455,6 +456,73 @@ class ContractExclusionLeakageTest(unittest.TestCase):
         self.assertIn("Secret", error["message"])
         self.assertFalse(output.exists())
         self.assertEqual(list(self.root.glob("should-not-exist*")), [])
+
+    def test_connection_cap_applies_after_exclusions(self) -> None:
+        # The connection row cap must apply to ALLOWED edges only. Build a note
+        # (Hub) with 200+ higher-ranked edges all whose endpoints are excluded,
+        # plus one allowed lower-ranked edge that ranks past the 200-row cap.
+        # With the cap applied BEFORE exclusions, every fetched row is
+        # suppressed and the allowed connection is dropped despite ample budget
+        # (recallweave-z1a). The allowed connection must be exported.
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        private = vault / "Private"
+        private.mkdir()
+        n_private = MAX_EDGE_ROWS  # at least 200 higher-ranked excluded edges
+        for i in range(n_private):
+            (private / f"P{i:03d}.md").write_text(
+                f"---\ntags: [private]\n---\n# P{i}\n\n## S\n\n"
+                f"private term P{i} zzpriv{i}.\n",
+                encoding="utf-8",
+                newline="",
+            )
+        (vault / "Allowed.md").write_text(
+            "# Allowed\n\n## S\n\nallowed term zzallowed.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        links = "".join(f"[[Private/P{i:03d}]] " for i in range(n_private)) + "[[Allowed]]"
+        (vault / "Hub.md").write_text(
+            f"# Hub\n\n## S\n\nzzhubanchor. Links: {links}\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "obj",
+                "retrieval": {
+                    "query": "zzhubanchor",
+                    "limit": 8,
+                    "max_characters": 100000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"tags": ["private"]},
+            }
+        )
+        document = build_contract_document(database, spec)
+        connections = document["connections"]
+        allowed = [
+            c
+            for c in connections
+            if "Allowed" in c["source"] or "Allowed" in c["target"]
+        ]
+        self.assertEqual(
+            len(allowed), 1,
+            "the allowed lower-ranked connection must be exported after the "
+            "excluded edges are filtered",
+        )
+        self.assertGreaterEqual(
+            document["exclusions"]["suppressed"]["connections"],
+            MAX_EDGE_ROWS,
+            "the excluded edges must still be counted as suppressed",
+        )
 
 
 if __name__ == "__main__":

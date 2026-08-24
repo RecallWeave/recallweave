@@ -41,8 +41,17 @@ requests to back up clean, validated commits.
 **Topology**
 - `main` is **protected**. It is never pushed to, merged into, or auto-merged
   locally. Local `main` mirrors `origin/main` and nothing else.
-- `foundry/task-contracts` is the **active integration branch** — the durable,
+- `foundry/steward` is the **active integration branch** — the durable,
   continuously updated remote checkpoint for current work.
+- A promoted checkpoint branch becomes **historical** the moment its milestone
+  PR merges: it is the preserved implementation lineage behind that PR, and a
+  fresh checkpoint branch is cut from the new `main`. `foundry/task-contracts`
+  is historical (merged to `main` on 2026-08-23 as PR #1). **Never merge a
+  historical branch into current work** — its commits already shipped, squashed,
+  and re-merging them replays 170 commits of settled history onto a fresh branch
+  and destroys the provenance the split exists to create. When this document and
+  a dispatch prompt disagree about the branch name, the branch you were
+  dispatched onto wins; say so rather than reaching for a name you remember.
 - Workers commit to their own `ntm/<session>/oc_N` branches in their worktrees.
 
 **Routine cycle (automatic, no approval needed)**

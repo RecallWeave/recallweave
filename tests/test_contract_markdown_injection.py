@@ -10,6 +10,7 @@ from __future__ import annotations
 # heading/list nodes), which is the strongest check the stdlib permits. This is
 # an accepted, documented deviation, not an oversight.
 
+import ast
 import copy
 import json
 import os
@@ -1277,9 +1278,97 @@ class EscapedDisciplineTest(unittest.TestCase):
             _join(_literal("a"), "raw untrusted")
 
 
+def _vault_write_fixture_names() -> list[str]:
+    """Every vault-note fixture filename the test suite actually writes, found
+    by scanning test source for ``write``/``write_text``/``write_bytes`` calls
+    whose first argument is a ``.md`` string, OR whose receiver path embeds a
+    ``.md`` string (``(vault / \"Name.md\").write_text(...)``). Assertion
+    fragments, citation strings, docs references, and Windows-style
+    path-normalization literals are not fixtures and are not checked. Any
+    future fixture that reintroduces a Windows-reserved character is caught
+    here, on every platform, instead of erroring only on Windows."""
+    root = Path(__file__).resolve().parents[1]
+    names: list[str] = []
+
+    def _md_strings_in(node: ast.AST | None) -> list[str]:
+        found: list[str] = []
+        if node is None:
+            return found
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Constant)
+                and isinstance(child.value, str)
+                and child.value.endswith(".md")
+                and child.value != ".md"
+            ):
+                found.append(child.value)
+            # f-strings: `(vault / f"Bad:Name{i}.md").write_text(...)` has no
+            # single Constant ending in `.md`. Collect Constant fragments and
+            # treat any that look like a filename (or carry reserved chars next
+            # to a `.md` fragment) as fixture names the portability guard must
+            # reject.
+            if isinstance(child, ast.JoinedStr):
+                parts = [
+                    value.value
+                    for value in child.values
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str)
+                ]
+                if not parts:
+                    continue
+                if not any(part.endswith(".md") or part == ".md" for part in parts):
+                    continue
+                # Complete static `.md` names inside the f-string.
+                complete = [
+                    part for part in parts if part.endswith(".md") and part != ".md"
+                ]
+                if complete:
+                    found.extend(complete)
+                    continue
+                # Incomplete interpolations: only flag fragments that already
+                # carry a Windows-reserved filename character (not `/` `\`,
+                # which are path separators). That catches `f"Bad:{i}.md"`
+                # without treating `f"Targets/Target {i}.md"` as a finished
+                # fixture name ending in a space.
+                reserved = '<>:"|?*'
+                for part in parts:
+                    if part == ".md":
+                        continue
+                    if any(ch in reserved or ord(ch) < 0x20 for ch in part):
+                        found.append(part)
+        return found
+
+    for path in sorted((root / "tests").glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in ("write", "write_text", "write_bytes"):
+                continue
+            # Helper style: self.write("Name.md", ...) — first arg is the name.
+            # Also scan f-string helper args (self.write(f"Bad:{i}.md", ...)).
+            if node.args:
+                arg = node.args[0]
+                if (
+                    isinstance(arg, ast.Constant)
+                    and isinstance(arg.value, str)
+                    and arg.value.endswith(".md")
+                    and arg.value != ".md"
+                ):
+                    names.append(arg.value)
+                else:
+                    names.extend(_md_strings_in(arg))
+            # Path.write_text / write_bytes: the filename lives on the receiver
+            # ((vault / "Name.md").write_text("body")), not in args[0].
+            if node.func.attr in ("write_text", "write_bytes"):
+                names.extend(_md_strings_in(node.func.value))
+    return names
+
+
 class HostileFilenamePortabilityTest(unittest.TestCase):
     """The hostile-filename fixture must be creatable on every platform CI runs.
-
     A fixture that cannot exist on one platform does not weaken the property it
     tests -- it silently stops testing it there. Three tests errored on Windows
     for three cycles because the fixture carried a `:`, which Windows forbids in
@@ -1386,6 +1475,35 @@ class HostileFilenamePortabilityTest(unittest.TestCase):
         kinds = {type(token).__name__ for token in _walk_tokens(parsed)}
         self.assertIn("Image", kinds, "fixture lost its image syntax")
         self.assertIn("Link", kinds, "fixture lost its link syntax")
+
+    def test_every_vault_write_fixture_is_platform_portable(self) -> None:
+        # Generalize the hostile-filename guard to EVERY fixture the suite
+        # writes: a fixture that cannot exist on Windows does not weaken the
+        # property it tests — it silently stops testing it there. Scan all
+        # vault-write fixture names and check each PATH COMPONENT against the
+        # Windows reserved set (excluding `/` and `\`, which are separators),
+        # the C0 control characters, and a trailing space or dot.
+        names = _vault_write_fixture_names()
+        self.assertGreater(len(names), 10, "scan must cover the suite's fixtures")
+        for name in names:
+            components = re.split(r"[\\/]", name)
+            for component in components:
+                with self.subTest(fixture=name, component=component):
+                    for character in self.WINDOWS_RESERVED.replace("/", "").replace("\\", ""):
+                        self.assertNotIn(
+                            character,
+                            component,
+                            f"{character!r} is reserved in Windows filenames, so "
+                            f"fixture {name!r} cannot be created there and its "
+                            "tests would error rather than run",
+                        )
+                    for codepoint in range(0x00, 0x20):
+                        self.assertNotIn(chr(codepoint), component)
+                    self.assertFalse(
+                        component.endswith((" ", ".")),
+                        f"component {component!r} of fixture {name!r} ends in a "
+                        "space or dot, which Windows strips from filenames",
+                    )
 
 
 class ContractVaultInjectionTest(unittest.TestCase):

@@ -127,6 +127,11 @@ def _edge_rows(
     include_candidates: bool,
     limit: int = MAX_EDGE_ROWS,
 ) -> list[Any]:
+    """Fetch up to `limit` edges touching any of `note_ids`, in deterministic
+    rank order. Exclusion filtering is NOT pushed into this query: the contract
+    path streams the relevant edges and applies exclusion in Python, because
+    materializing a large excluded-note set as SQL placeholders exceeds
+    SQLITE_LIMIT_VARIABLE_NUMBER (recallweave-ur0)."""
     if not note_ids:
         return []
     placeholders = ",".join("?" for _ in note_ids)
