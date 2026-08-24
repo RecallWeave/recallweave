@@ -4084,5 +4084,155 @@ class ContractDocumentTest(unittest.TestCase):
         self.assertEqual(sorted(kept_paths), ["Keep1.md", "Keep2.md"])
 
 
+class SanitizerRegionMutationAuditTest(unittest.TestCase):
+    """recallweave-jqq: independently prove each emission region requires sanitization.
+
+    For each region, temporarily remove the sanitize() call in source, reload,
+  and assert the emitted field carries hostile bytes. Restores source and clears
+    __pycache__ after every subTest."""
+
+    _SRC = Path(__file__).resolve().parents[1] / "src" / "recallweave"
+    _BIDI = "\u202e"
+    _ZWSP = "\u200b"
+
+    @classmethod
+    def _clear_pycache(cls) -> None:
+        import shutil
+
+        for cache in cls._SRC.parent.rglob("__pycache__"):
+            shutil.rmtree(cache, ignore_errors=True)
+
+    @classmethod
+    def _reload_contract(cls):
+        import importlib
+
+        import recallweave.contract_provenance as provenance_mod
+        import recallweave.contract as contract_mod
+
+        importlib.reload(provenance_mod)
+        importlib.reload(contract_mod)
+        return contract_mod
+
+    def _hostile_fixture(self) -> tuple[Path, TaskSpec]:
+        import sqlite3
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        (vault / "Nested").mkdir(parents=True)
+        bidi, zwsp = self._BIDI, self._ZWSP
+        (vault / f"Al{bidi}pha.md").write_text(
+            f'---\ntitle: Ti{zwsp}tle\ntags: ["ta{bidi}g"]\n---\n'
+            f"# Al{zwsp}pha\n\n## He{bidi}ad\n\n"
+            f"zephyr quadrata bo{zwsp}dy. See [[Be{bidi}ta]] here.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Nested" / f"Be{bidi}ta.md").write_text(
+            f"---\ntitle: Be{zwsp}ta\n---\n# Beta\n\n## S\n\n"
+            "zephyr quadrata shared topic beta.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute(
+                "UPDATE meta SET value = value || ? WHERE key = 'indexed_at'",
+                (zwsp,),
+            )
+        spec = TaskSpec.from_payload(
+            {
+                "task_id": "task",
+                "objective": f"obj{bidi}ective",
+                "retrieval": {
+                    "query": "zephyr quadrata",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 50000,
+                },
+                "constraints": [{"note": f"Al{bidi}pha.md"}],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": [], "globs": [], "tags": [], "directives": []
+                },
+            }
+        )
+        return database, spec
+
+    def _assert_field_unsanitized(self, value: str, region: str) -> None:
+        self.assertIsInstance(value, str)
+        self.assertNotEqual(
+            sanitize(value),
+            value,
+            f"removing sanitization from {region} must leave hostile bytes in output",
+        )
+
+    def _mutate_and_audit(
+        self,
+        *,
+        region: str,
+        path: Path,
+        old: str,
+        new: str,
+        check,
+    ) -> None:
+        original = path.read_text(encoding="utf-8")
+        if old not in original:
+            self.fail(f"mutation anchor for {region} not found in {path.name}")
+        try:
+            path.write_text(original.replace(old, new, 1), encoding="utf-8")
+            self._clear_pycache()
+            contract_mod = self._reload_contract()
+            database, spec = self._hostile_fixture()
+            document = contract_mod.build_contract_document(database, spec)
+            self._assert_field_unsanitized(check(document), region)
+        finally:
+            path.write_text(original, encoding="utf-8")
+            self._clear_pycache()
+            self._reload_contract()
+
+    def test_removing_sanitization_fails_per_region(self) -> None:
+        provenance = self._SRC / "contract_provenance.py"
+        contract = self._SRC / "contract.py"
+        regions = {
+            "index_provenance": {
+                "path": provenance,
+                "old": "return sanitize(str(row[\"value\"]))",
+                "new": "return str(row[\"value\"])",
+                "check": lambda doc: doc["provenance"]["index"]["indexed_at"],
+            },
+            "connection_endpoints": {
+                "path": contract,
+                "old": '"source": sanitize(str(row["source_path"])),',
+                "new": '"source": str(row["source_path"]),',
+                "check": lambda doc: doc["connections"][0]["source"],
+            },
+            "retrieved_metadata": {
+                "path": contract,
+                "old": '"relative_path": sanitize(str(hit["relative_path"])),',
+                "new": '"relative_path": str(hit["relative_path"]),',
+                "check": lambda doc: doc["retrieved_context"][0]["relative_path"],
+            },
+            "constraints": {
+                "path": contract,
+                "old": "relative_path = sanitize(raw_relative_path)",
+                "new": "relative_path = raw_relative_path",
+                "check": lambda doc: doc["constraints"][0]["relative_path"],
+            },
+            "objective": {
+                "path": contract,
+                "old": "objective = sanitize(spec.objective)",
+                "new": "objective = spec.objective",
+                "check": lambda doc: doc["task"]["objective"],
+            },
+        }
+        for region, spec in regions.items():
+            with self.subTest(region=region):
+                self._mutate_and_audit(region=region, **spec)
+
+
 if __name__ == "__main__":
     unittest.main()
