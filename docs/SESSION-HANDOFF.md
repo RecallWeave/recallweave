@@ -19,7 +19,7 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: POST-PROMOTION STEWARDSHIP — jqq closed; 3ea dispatchable.**
+**Phase: POST-PROMOTION STEWARDSHIP — mutation audits complete; promotion-ready.**
 
 - Integration branch: **`foundry/steward`**, cut from `main` after PR #1 merged.
 - `foundry/task-contracts` is **HISTORICAL** — the implementation lineage behind
@@ -116,11 +116,12 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 - **Cycle 21 adversarial gate:** **PASS** — `.codex-reviews/review-20260824T001136Z.md`
 - **`recallweave-jqq` closed** — per-region sanitizer mutation audits (5 subTests).
-- **Phase 3 (ready now):** `recallweave-3ea` — endpoint-binding and candidate
-  canonical-form mutation audits. Undeferred; supervisor will dispatch.
-- **Phase 4 (milestone, human-gated):** promotion PR from `foundry/steward` →
-  `main` after Josh merge approval. Not automated.
-- **Worker assignments:** pending dispatch of `recallweave-3ea`.
+- **`recallweave-3ea` closed** — endpoint-binding and canonical-form mutation
+  audits (4 subTests). Suite: 466 OK.
+- **Next (milestone, human-gated):** promotion PR from `foundry/steward` → `main`
+  after Josh merge approval. Delete `CHECKPOINT_NOT_APPROVED.md` in promotion
+  commit. Not automated.
+- **Worker assignments:** none (all lanes idle).
 
 ## 7. Known failure modes and traps
 
@@ -223,7 +224,7 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | `foundry/steward` vs `origin/main` | 12 ahead, 0 behind |
 | Supervisor | **running**, all lanes idle |
 | Latest verdict | PASS cycle 21 (`review-20260824T001136Z`) |
-| Beads authoritative | **yes** — 0 open, 0 deferred; 3ea ready after undefer |
+| Beads authoritative | **yes** — 0 open, 0 deferred, 0 blockers |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**

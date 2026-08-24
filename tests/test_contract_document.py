@@ -4234,5 +4234,280 @@ class SanitizerRegionMutationAuditTest(unittest.TestCase):
                 self._mutate_and_audit(region=region, **spec)
 
 
+class EndpointCanonicalMutationAuditTest(unittest.TestCase):
+    """recallweave-3ea: prove endpoint binding and canonical-form checks matter.
+
+    Each subTest temporarily disables one invariant in source, reloads, and
+    shows a forgery that normally fails can export successfully."""
+
+    _SRC = Path(__file__).resolve().parents[1] / "src" / "recallweave"
+
+    def setUp(self) -> None:
+        self._h = ContractDocumentTest()
+        self._h._kept_tmp = []
+
+    def _candidate_pair_index(self):
+        return self._h._candidate_pair_index()
+
+    def _authentic_candidate_envelope(self, database: Path) -> dict:
+        return self._h._authentic_candidate_envelope(database)
+
+    def _indexed_side(self, database: Path, citation: str) -> dict:
+        return self._h._indexed_side(database, citation)
+
+    def _any_indexed_citation(self, database: Path) -> str:
+        return self._h._any_indexed_citation(database)
+
+    def _rewrite_edge_evidence(self, database: Path, evidence: dict, *, exact: bool = False) -> None:
+        self._h._rewrite_edge_evidence(database, evidence, exact=exact)
+
+    def _evidence_spec(self, **kwargs) -> TaskSpec:
+        return self._h._evidence_spec(**kwargs)
+
+    @classmethod
+    def _clear_pycache(cls) -> None:
+        import shutil
+
+        for cache in cls._SRC.parent.rglob("__pycache__"):
+            shutil.rmtree(cache, ignore_errors=True)
+
+    @classmethod
+    def _reload_contract(cls):
+        import importlib
+
+        import recallweave.contract as contract_mod
+
+        importlib.reload(contract_mod)
+        return contract_mod
+
+    def _mutate_and_run(
+        self,
+        *,
+        region: str,
+        path: Path,
+        old: str,
+        new: str,
+        run,
+    ) -> None:
+        original = path.read_text(encoding="utf-8")
+        if old not in original:
+            self.fail(f"mutation anchor for {region} not found in {path.name}")
+        try:
+            path.write_text(original.replace(old, new, 1), encoding="utf-8")
+            self._clear_pycache()
+            contract_mod = self._reload_contract()
+            run(contract_mod)
+        finally:
+            path.write_text(original, encoding="utf-8")
+            self._clear_pycache()
+            self._reload_contract()
+
+    def _endpoint_binding_attack(self, contract_mod) -> None:
+        import sqlite3
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        (vault / "Secret").mkdir(parents=True)
+        (vault / "Alpha.md").write_text(
+            "---\ntitle: Alpha\n---\n# Alpha\n\n## S\n\n"
+            "zephyr quadrata shared topic alpha.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Beta.md").write_text(
+            "---\ntitle: Beta\n---\n# Beta\n\n## S\n\n"
+            "zephyr quadrata shared topic beta.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Secret" / "Confidential.md").write_text(
+            "---\ntitle: Confidential\n---\n# Confidential\n\n## S\n\n"
+            "zephyr quadrata ZZTOPSECRET acquisition price.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.row_factory = sqlite3.Row
+            secret = connection.execute(
+                "SELECT n.relative_path p, s.heading h, s.line_start a, "
+                "s.line_end b, s.text t FROM sections s "
+                "JOIN notes n ON n.id = s.note_id "
+                "WHERE n.relative_path LIKE 'Secret/%'"
+            ).fetchone()
+            citation = f"{secret['p']}:{secret['a']}-{secret['b']}"
+            truncated = len(secret["t"]) > MAX_PASSAGE_CHARACTERS
+            indexed_passage = secret["t"][:MAX_PASSAGE_CHARACTERS].rstrip() + (
+                "\u2026" if truncated else ""
+            )
+            passage, _ = bounded(sanitize(indexed_passage), MAX_PASSAGE_CHARACTERS)
+            foreign_side = {
+                "citation": citation,
+                "heading": sanitize(str(secret["h"])),
+                "passage": passage,
+                "truncated": truncated,
+            }
+            edge = connection.execute(
+                "SELECT id, evidence_json FROM edges WHERE is_verified = 0 LIMIT 1"
+            ).fetchone()
+            evidence = json.loads(edge["evidence_json"])
+            evidence["source_evidence"] = foreign_side
+            connection.execute(
+                "UPDATE edges SET evidence_json = ? WHERE id = ?",
+                (json.dumps(evidence), edge["id"]),
+            )
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "endpoint binding mutation",
+                "retrieval": {
+                    "query": "zephyr quadrata",
+                    "limit": 8,
+                    "include_candidates": True,
+                    "max_characters": 9000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {
+                    "paths": ["Secret/Confidential.md"],
+                    "globs": [],
+                    "tags": [],
+                    "directives": [],
+                },
+            }
+        )
+        try:
+            document = contract_mod.build_contract_document(database, spec)
+        except ValueError:
+            self.fail(
+                "removing endpoint binding must allow the excluded-note forgery"
+            )
+        payload = json.dumps(document)
+        self.assertIn("ZZTOPSECRET", payload)
+
+    def _canonical_attack(self, contract_mod, forged_evidence: dict) -> None:
+        _vault, database = self._candidate_pair_index()
+        side = self._indexed_side(database, self._any_indexed_citation(database))
+        self._rewrite_edge_evidence(
+            database, {**forged_evidence, "source_evidence": side}, exact=True
+        )
+        try:
+            document = contract_mod.build_contract_document(
+                database, self._evidence_spec()
+            )
+        except ValueError:
+            self.fail("removing canonical-form checks must allow the forged export")
+        self.assertTrue(document["connections"])
+
+    def test_removing_invariants_allows_forged_export(self) -> None:
+        contract_path = self._SRC / "contract.py"
+        _vault, database = self._candidate_pair_index()
+        envelope = self._authentic_candidate_envelope(database)
+        genuine = envelope["shared_terms"][0]
+        regions = {
+            "endpoint_binding": {
+                "path": contract_path,
+                "old": (
+                    "    excluded.\"\"\"\n"
+                    "    if not isinstance(side, dict):\n"
+                    "        return True\n"
+                    "    citation = side.get(\"citation\")"
+                ),
+                "new": (
+                    "    excluded.\"\"\"\n"
+                    "    return True\n"
+                    "    if not isinstance(side, dict):\n"
+                    "        return True\n"
+                    "    citation = side.get(\"citation\")"
+                ),
+                "run": self._endpoint_binding_attack,
+            },
+            "canonical_shared_terms": {
+                "path": contract_path,
+                "old": (
+                    "if any(sanitize(term) != term for term in terms):\n"
+                    "            return False\n"
+                    "    for member in (\"method\", \"explanation\"):"
+                ),
+                "new": (
+                    "if False:\n"
+                    "            return False\n"
+                    "    for member in (\"method\", \"explanation\"):"
+                ),
+                "run": lambda mod: self._canonical_attack(
+                    mod,
+                    {
+                        **envelope,
+                        "shared_terms": [
+                            genuine + "\u200b",
+                            *envelope["shared_terms"][1:],
+                        ],
+                    },
+                ),
+            },
+            "canonical_method": {
+                "path": contract_path,
+                "old": (
+                    "if any(sanitize(term) != term for term in terms):\n"
+                    "            return False\n"
+                    "    for member in (\"method\", \"explanation\"):\n"
+                    "        value = parsed.get(member)\n"
+                    "        if value is not None:\n"
+                    "            if not isinstance(value, str) or sanitize(value) != value:\n"
+                    "                return False\n"
+                    "    return True"
+                ),
+                "new": (
+                    "if any(sanitize(term) != term for term in terms):\n"
+                    "            return False\n"
+                    "    value = parsed.get(\"explanation\")\n"
+                    "    if value is not None:\n"
+                    "        if not isinstance(value, str) or sanitize(value) != value:\n"
+                    "            return False\n"
+                    "    return True"
+                ),
+                "run": lambda mod: self._canonical_attack(
+                    mod,
+                    {**envelope, "method": INDEX_CANDIDATE_METHOD + "\u200b"},
+                ),
+            },
+            "canonical_explanation": {
+                "path": contract_path,
+                "old": (
+                    "if any(sanitize(term) != term for term in terms):\n"
+                    "            return False\n"
+                    "    for member in (\"method\", \"explanation\"):\n"
+                    "        value = parsed.get(member)\n"
+                    "        if value is not None:\n"
+                    "            if not isinstance(value, str) or sanitize(value) != value:\n"
+                    "                return False\n"
+                    "    return True"
+                ),
+                "new": (
+                    "if any(sanitize(term) != term for term in terms):\n"
+                    "            return False\n"
+                    "    value = parsed.get(\"method\")\n"
+                    "    if value is not None:\n"
+                    "        if not isinstance(value, str) or sanitize(value) != value:\n"
+                    "            return False\n"
+                    "    return True"
+                ),
+                "run": lambda mod: self._canonical_attack(
+                    mod,
+                    {
+                        **envelope,
+                        "explanation": INDEX_CANDIDATE_EXPLANATION + "\u202e",
+                    },
+                ),
+            },
+        }
+        for region, spec in regions.items():
+            with self.subTest(region=region):
+                self._mutate_and_run(region=region, **spec)
+
+
 if __name__ == "__main__":
     unittest.main()
