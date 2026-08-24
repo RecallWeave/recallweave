@@ -1335,6 +1335,7 @@ def _vault_write_fixture_names() -> list[str]:
             if node.func.attr not in ("write", "write_text", "write_bytes"):
                 continue
             # Helper style: self.write("Name.md", ...) — first arg is the name.
+            # Also scan f-string helper args (self.write(f"Bad:{i}.md", ...)).
             if node.args:
                 arg = node.args[0]
                 if (
@@ -1344,6 +1345,8 @@ def _vault_write_fixture_names() -> list[str]:
                     and arg.value != ".md"
                 ):
                     names.append(arg.value)
+                else:
+                    names.extend(_md_strings_in(arg))
             # Path.write_text / write_bytes: the filename lives on the receiver
             # ((vault / "Name.md").write_text("body")), not in args[0].
             if node.func.attr in ("write_text", "write_bytes"):
