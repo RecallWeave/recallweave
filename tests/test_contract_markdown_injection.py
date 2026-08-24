@@ -1319,6 +1319,11 @@ def _format_static_value(
     if isinstance(value, str):
         return apply_spec(value)
     if isinstance(value, bool):
+        if spec:
+            try:
+                return format(int(value), spec)
+            except (ValueError, TypeError):
+                return None
         return "True" if value else "False"
     if isinstance(value, int) and not isinstance(value, bool):
         try:
@@ -1896,6 +1901,15 @@ def build(vault):
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("COM1.md", names)
+
+    def test_scan_resolves_boolean_format_specs_as_device_names(self) -> None:
+        source = '''
+def build(vault):
+    (vault / f"COM{True:d}.md").write_text("x")
+    (vault / f"COM{True:01d}.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertGreaterEqual(names.count("COM1.md"), 2, names)
 
     def test_scan_catches_path_touch_with_reserved_name(self) -> None:
         source = '''
