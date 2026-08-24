@@ -448,5 +448,85 @@ class TagPrefetchMaxSeedVariableLimitTest(unittest.TestCase):
             )
 
 
+class TiedScoreExclusionDeterminismTest(unittest.TestCase):
+    """Cycle-23 / recallweave-dle: mixed allowed/excluded edges with tied
+    verified scores must export byte-identical contracts across builds."""
+
+    def test_tied_scores_with_mixed_exclusions_are_byte_identical(self) -> None:
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "KeepA.md").write_text(
+            "# KeepA\n\n## S\n\nkeep a neighbor.\n", encoding="utf-8", newline=""
+        )
+        (vault / "Drop.md").write_text(
+            "---\ntags: [private]\n---\n# Drop\n\n## S\n\ndrop neighbor.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "KeepB.md").write_text(
+            "# KeepB\n\n## S\n\nkeep b neighbor.\n", encoding="utf-8", newline=""
+        )
+        (vault / "Hub.md").write_text(
+            "# Hub\n\n## S\n\nzzhubanchor. "
+            "[[KeepA]] [[Drop]] [[KeepB]]\n",
+            encoding="utf-8",
+            newline="",
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        with closing(connect(database, readonly=True)) as connection:
+            rows = connection.execute(
+                """
+                SELECT e.id, e.score, e.is_verified, sn.relative_path, tn.relative_path
+                FROM edges e
+                JOIN notes sn ON sn.id = e.source_note_id
+                JOIN notes tn ON tn.id = e.target_note_id
+                WHERE sn.relative_path = 'Hub.md' OR tn.relative_path = 'Hub.md'
+                ORDER BY e.id
+                """
+            ).fetchall()
+            self.assertGreaterEqual(len(rows), 3)
+            scores = {float(row[1]) for row in rows}
+            verified = {int(row[2]) for row in rows}
+            self.assertEqual(len(scores), 1, "fixture edges must share one tied score")
+            self.assertEqual(verified, {1})
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "obj",
+                "retrieval": {
+                    "query": "zzhubanchor",
+                    "limit": 8,
+                    "max_characters": 100000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"tags": ["private"]},
+            }
+        )
+
+        def snapshot() -> bytes:
+            document = build_contract_document(database, spec)
+            document["provenance"].pop("generated_at")
+            document["provenance"]["index"].pop("indexed_at", None)
+            self.assertEqual(document["exclusions"]["suppressed"]["connections"], 1)
+            paths = {
+                (c["source"], c["target"]) for c in document["connections"]
+            }
+            self.assertTrue(any("KeepA" in s or "KeepA" in t for s, t in paths))
+            self.assertTrue(any("KeepB" in s or "KeepB" in t for s, t in paths))
+            self.assertFalse(any("Drop" in s or "Drop" in t for s, t in paths))
+            return json.dumps(document, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+
+        first = snapshot()
+        second = snapshot()
+        self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()
