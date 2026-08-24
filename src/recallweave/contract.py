@@ -755,61 +755,67 @@ def _note_excluded(
     return exclusions.excludes_tags(tags)
 
 
-def _excluded_note_ids(connection, exclusions: ExclusionSet) -> set[int]:
-    """Every note id this exclusion set excludes (by path, glob, or tag), using
-    the same `_note_excluded` decision the connection loop applies per endpoint.
-    This lets the edge fetch push exclusion into SQL so its row cap applies to
-    allowed edges only (recallweave-z1a)."""
+def _stream_connection_edges(
+    connection,
+    seed_ids: list[int],
+    exclusions: ExclusionSet,
+    include_candidates: bool,
+    limit: int = MAX_EDGE_ROWS,
+) -> tuple[list[Any], int, set[int]]:
+    """Stream the edges touching any seed note in deterministic rank order,
+    applying exclusion in Python (via `_note_excluded`) rather than pushing the
+    excluded-note set into SQL as placeholders — materializing a large excluded
+    set as placeholders explodes past SQLITE_LIMIT_VARIABLE_NUMBER when
+    exclusions cover ~125k+ notes (recallweave-ur0).
+
+    Retains the first `limit` ALLOWED edges (so the row cap applies to allowed
+    edges only, preserving the z1a under-inclusion fix), then keeps scanning to
+    the end of the stream for exact suppression accounting: `suppressed`
+    counts every excluded edge and `dropped` collects every excluded endpoint
+    id, even when excluded edges exceed the 200-row cap."""
+    if not seed_ids:
+        return [], 0, set()
     tags_by_note: dict[int, list[str]] = defaultdict(list)
     for row in connection.execute("SELECT note_id, tag FROM note_tags"):
         tags_by_note[int(row["note_id"])].append(str(row["tag"]))
-    excluded: set[int] = set()
-    for row in connection.execute("SELECT id, relative_path FROM notes"):
-        note_id = int(row["id"])
-        is_excluded, _ = _note_excluded(
-            exclusions, str(row["relative_path"]), tags_by_note.get(note_id, [])
-        )
-        if is_excluded:
-            excluded.add(note_id)
-    return excluded
-
-
-def _excluded_edge_counts(
-    connection,
-    seed_ids: list[int],
-    excluded_note_ids: set[int],
-    include_candidates: bool,
-) -> tuple[int, set[int]]:
-    """Count the edges touching any seed note that have an excluded endpoint,
-    and collect the excluded endpoint ids, so the connection loop can report
-    `suppressed.connections` and `suppressed.notes` even though the excluded
-    edges are filtered out of the fetched rows by the SQL exclusion clause."""
-    if not seed_ids or not excluded_note_ids:
-        return 0, set()
     seed_placeholders = ",".join("?" for _ in seed_ids)
-    excluded_placeholders = ",".join("?" for _ in excluded_note_ids)
     candidate_clause = "" if include_candidates else "AND e.is_verified = 1"
-    rows = connection.execute(
+    allowed: list[Any] = []
+    suppressed = 0
+    dropped: set[int] = set()
+    cursor = connection.execute(
         f"""
-        SELECT e.source_note_id, e.target_note_id
+        SELECT e.*, sn.relative_path AS source_path, sn.title AS source_title,
+               tn.relative_path AS target_path, tn.title AS target_title
         FROM edges e
+        JOIN notes sn ON sn.id = e.source_note_id
+        JOIN notes tn ON tn.id = e.target_note_id
         WHERE (e.source_note_id IN ({seed_placeholders})
                OR e.target_note_id IN ({seed_placeholders}))
         {candidate_clause}
-        AND (e.source_note_id IN ({excluded_placeholders})
-             OR e.target_note_id IN ({excluded_placeholders}))
+        ORDER BY e.is_verified DESC, e.score DESC, e.id
         """,
-        [*seed_ids, *seed_ids, *excluded_note_ids, *excluded_note_ids],
-    ).fetchall()
-    dropped: set[int] = set()
-    for row in rows:
-        source = int(row["source_note_id"])
-        target = int(row["target_note_id"])
-        if source in excluded_note_ids:
-            dropped.add(source)
-        if target in excluded_note_ids:
-            dropped.add(target)
-    return len(rows), dropped
+        [*seed_ids, *seed_ids],
+    )
+    for row in cursor:
+        source_id = int(row["source_note_id"])
+        target_id = int(row["target_note_id"])
+        source_excluded, _ = _note_excluded(
+            exclusions, str(row["source_path"]), tags_by_note.get(source_id, [])
+        )
+        target_excluded, _ = _note_excluded(
+            exclusions, str(row["target_path"]), tags_by_note.get(target_id, [])
+        )
+        if source_excluded or target_excluded:
+            suppressed += 1
+            if source_excluded:
+                dropped.add(source_id)
+            if target_excluded:
+                dropped.add(target_id)
+            continue
+        if len(allowed) < limit:
+            allowed.append(row)
+    return allowed, suppressed, dropped
 
 
 def _resolve_item(
@@ -1073,35 +1079,39 @@ def build_contract_document(database: Path, spec: TaskSpec) -> dict[str, Any]:
                 "a contract."
             )
         if seed_ids:
-            # Push exclusion into the edge fetch so its row cap applies to
-            # ALLOWED edges only: a run of higher-ranked excluded edges must not
-            # consume the whole cap and starve an allowed lower-ranked edge
-            # (recallweave-z1a). The excluded edges are counted separately below
-            # so `suppressed.connections` / `suppressed.notes` still report them.
-            excluded_note_ids = _excluded_note_ids(connection, exclusions)
-            conn_suppressed, conn_dropped = _excluded_edge_counts(
-                connection,
-                seed_ids,
-                excluded_note_ids,
-                spec.include_candidates,
-            )
-            suppressed_connections += conn_suppressed
-            dropped_notes |= conn_dropped
-            edge_rows = _edge_rows(
-                connection,
-                seed_ids,
-                include_candidates=spec.include_candidates,
-                excluded_note_ids=excluded_note_ids,
-            )
+            # When there are no exclusions, nothing can be suppressed, so use
+            # the bounded _edge_rows fetch directly (fast path). When exclusions
+            # are present, stream the edges and apply exclusion in Python: this
+            # keeps the row cap on ALLOWED edges only (the z1a under-inclusion
+            # fix) without materializing the excluded-note set as SQL
+            # placeholders, which would exceed SQLITE_LIMIT_VARIABLE_NUMBER when
+            # exclusions cover ~125k+ notes (recallweave-ur0).
+            if exclusions.is_empty():
+                edge_rows = _edge_rows(
+                    connection,
+                    seed_ids,
+                    include_candidates=spec.include_candidates,
+                )
+            else:
+                edge_rows, conn_suppressed, conn_dropped = _stream_connection_edges(
+                    connection,
+                    seed_ids,
+                    exclusions,
+                    spec.include_candidates,
+                )
+                suppressed_connections += conn_suppressed
+                dropped_notes |= conn_dropped
             endpoint_ids = list(
                 {int(row["source_note_id"]) for row in edge_rows}
                 | {int(row["target_note_id"]) for row in edge_rows}
             )
             endpoint_tags = _tags_map(connection, endpoint_ids)
             for row in edge_rows:
-                # Every fetched edge is now an allowed one (excluded edges were
-                # filtered in SQL), so no per-endpoint exclusion check is needed
-                # here; the suppressed counts came from _excluded_edge_counts.
+                # Every edge here is an allowed one: with exclusions they were
+                # filtered out of the stream by _stream_connection_edges, and
+                # with an empty exclusion set nothing is excluded at all. So no
+                # per-endpoint exclusion check is needed here; the suppressed
+                # counts came from the stream when exclusions were present.
                 # The indexer writes only 0 or 1. A corrupt or hand-edited
                 # index -- SQLite check constraints can be bypassed -- could
                 # hold another integer, and bool() would silently read it as

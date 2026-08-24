@@ -126,29 +126,16 @@ def _edge_rows(
     note_ids: list[int],
     include_candidates: bool,
     limit: int = MAX_EDGE_ROWS,
-    excluded_note_ids: set[int] | None = None,
 ) -> list[Any]:
-    """Fetch up to `limit` edges touching any of `note_ids`. When
-    `excluded_note_ids` is provided (a set of note ids to exclude), edges whose
-    source OR target is excluded are removed in SQL so the `limit` bound applies
-    to ALLOWED edges only. Without this, a run of higher-ranked excluded edges
-    could consume the whole bound and starve an allowed edge that ranks below
-    them — an under-inclusion defect (recallweave-z1a)."""
+    """Fetch up to `limit` edges touching any of `note_ids`, in deterministic
+    rank order. Exclusion filtering is NOT pushed into this query: the contract
+    path streams the relevant edges and applies exclusion in Python, because
+    materializing a large excluded-note set as SQL placeholders exceeds
+    SQLITE_LIMIT_VARIABLE_NUMBER (recallweave-ur0)."""
     if not note_ids:
         return []
     placeholders = ",".join("?" for _ in note_ids)
     candidate_clause = "" if include_candidates else "AND e.is_verified = 1"
-    params: list = [*note_ids, *note_ids]
-    exclusion_clause = ""
-    excluded = excluded_note_ids or set()
-    if excluded:
-        excluded_placeholders = ",".join("?" for _ in excluded)
-        exclusion_clause = (
-            f" AND e.source_note_id NOT IN ({excluded_placeholders})"
-            f" AND e.target_note_id NOT IN ({excluded_placeholders})"
-        )
-        params += [*excluded, *excluded]
-    params.append(limit)
     return connection.execute(
         f"""
         SELECT e.*, sn.relative_path AS source_path, sn.title AS source_title,
@@ -158,11 +145,10 @@ def _edge_rows(
         JOIN notes tn ON tn.id = e.target_note_id
         WHERE (e.source_note_id IN ({placeholders}) OR e.target_note_id IN ({placeholders}))
         {candidate_clause}
-        {exclusion_clause}
         ORDER BY e.is_verified DESC, e.score DESC, e.id
         LIMIT ?
         """,
-        params,
+        [*note_ids, *note_ids, limit],
     ).fetchall()
 
 

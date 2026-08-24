@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from recallweave.contract import build_contract_document
 from recallweave.contract_exclusions import ExclusionSet
+from recallweave.contract_spec import TaskSpec
+from recallweave.index import build_index, connect
 
 
 class _FakeSpec:
@@ -152,6 +159,86 @@ class IsEmptyTest(unittest.TestCase):
         self.assertFalse(ExclusionSet(globs=["a"]).is_empty())
         self.assertFalse(ExclusionSet(tags=["a"]).is_empty())
         self.assertFalse(ExclusionSet(directives=["a"]).is_empty())
+
+
+class ConnectionExclusionVariableLimitTest(unittest.TestCase):
+    """Regression: recallweave-ur0. Pushing the excluded-note set into SQL as
+    placeholders explodes past SQLITE_LIMIT_VARIABLE_NUMBER when exclusions
+    cover many notes (~125k in the wild, but reproduced here with a small
+    limit). The fix streams the edges and applies exclusion in Python, so the
+    export succeeds under a small variable limit and the allowed lower-ranked
+    edge still appears, with exact suppression counts."""
+
+    def test_export_succeeds_under_small_variable_limit(self) -> None:
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        database = root / "index.sqlite"
+        # Enough excluded notes that 2*len(excluded) placeholders would exceed
+        # the small limit (had the excluded set been pushed into SQL), AND more
+        # than the 200-row cap so the suppression count is proven exact beyond
+        # the cap.
+        n_excluded = 250
+        for i in range(n_excluded):
+            private = vault / "Private"
+            private.mkdir(exist_ok=True)
+            (private / f"P{i:03d}.md").write_text(
+                f"---\ntags: [private]\n---\n# P{i}\n\n## S\n\nprivate term P{i}.\n",
+                encoding="utf-8",
+                newline="",
+            )
+        (vault / "Allowed.md").write_text(
+            "# Allowed\n\n## S\n\nallowed term.\n", encoding="utf-8", newline=""
+        )
+        links = "".join(f"[[Private/P{i:03d}]] " for i in range(n_excluded)) + "[[Allowed]]"
+        (vault / "Hub.md").write_text(
+            f"# Hub\n\n## S\n\nzzhubanchor. Links: {links}\n",
+            encoding="utf-8",
+            newline="",
+        )
+        build_index(vault, database, minimum_candidate_score=0.0)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "obj",
+                "retrieval": {
+                    "query": "zzhubanchor",
+                    "limit": 8,
+                    "max_characters": 100000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"tags": ["private"]},
+            }
+        )
+
+        def limited_connect(database: Path, readonly: bool = False):
+            connection = connect(database, readonly=readonly)
+            connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 300)
+            return connection
+
+        with patch("recallweave.contract.connect", side_effect=limited_connect):
+            document = build_contract_document(database, spec)
+
+        allowed = [
+            c
+            for c in document["connections"]
+            if "Allowed" in c["source"] or "Allowed" in c["target"]
+        ]
+        self.assertEqual(
+            len(allowed),
+            1,
+            "the allowed lower-ranked connection must be exported even under a "
+            "small SQLite variable limit",
+        )
+        # Suppression counts remain exact even though the excluded edges exceed
+        # the 200-row cap.
+        self.assertEqual(
+            document["exclusions"]["suppressed"]["connections"],
+            n_excluded,
+        )
 
 
 if __name__ == "__main__":
