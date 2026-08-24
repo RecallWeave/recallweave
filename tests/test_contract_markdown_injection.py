@@ -1297,7 +1297,10 @@ def _format_static_value(
     elif conversion == ord("a"):
         rendered = ascii(value)
     elif isinstance(value, str):
-        rendered = value
+        try:
+            rendered = format(value, spec or "")
+        except (ValueError, TypeError):
+            return None
     elif isinstance(value, bool):
         rendered = "True" if value else "False"
     elif isinstance(value, int) and not isinstance(value, bool):
@@ -1375,6 +1378,22 @@ def _static_str(node: ast.AST | None) -> str | None:
     return None
 
 
+def _is_markdown_fixture_name(name: str) -> bool:
+    lowered = name.casefold()
+    return lowered.endswith(".md") and lowered != ".md"
+
+
+def _append_fixture_segment(name: str, found: list[str], seen: set[str]) -> None:
+    """Record a vault path segment for portability validation."""
+    if not name or name == ".md" or name in seen:
+        return
+    # Bodies passed to Path.write_text must never be treated as filenames.
+    if len(name) > 240:
+        return
+    seen.add(name)
+    found.append(name)
+
+
 def _md_strings_in(node: ast.AST | None) -> list[str]:
     """Collect `.md` / hostile filename strings under ``node`` via bounded
     static evaluation (Constants, ``+``, JoinedStr, FormattedValue)."""
@@ -1385,18 +1404,16 @@ def _md_strings_in(node: ast.AST | None) -> list[str]:
     seen: set[str] = set()
 
     def add(name: str) -> None:
-        if not name or name == ".md" or name in seen or "\n" in name or "\r" in name:
+        if re.search(r"[\\/]", name):
+            for part in re.split(r"[\\/]", name):
+                if part:
+                    add(part)
             return
-        # Bodies passed to Path.write_text must never be treated as filenames.
-        if len(name) > 240:
-            return
-        if name.endswith(".md"):
-            seen.add(name)
-            found.append(name)
+        if _is_markdown_fixture_name(name):
+            _append_fixture_segment(name, found, seen)
             return
         if any(ch in reserved or ord(ch) < 0x20 for ch in name):
-            seen.add(name)
-            found.append(name)
+            _append_fixture_segment(name, found, seen)
 
     resolved_root = _static_str(node)
     if resolved_root is not None:
@@ -1415,15 +1432,44 @@ def _md_strings_in(node: ast.AST | None) -> list[str]:
                 for value in child.values
                 if isinstance(value, ast.Constant) and isinstance(value.value, str)
             ]
-            if any(part.endswith(".md") or part == ".md" for part in parts):
+            if any(_is_markdown_fixture_name(part) or part == ".md" for part in parts):
                 for part in parts:
                     if part == ".md":
                         continue
-                    if part.endswith(".md") and part != ".md":
+                    if _is_markdown_fixture_name(part):
                         add(part)
                     elif any(ch in reserved or ord(ch) < 0x20 for ch in part):
                         add(part)
     return found
+
+
+def _collect_div_path_segments(expr: ast.AST, names: list[str]) -> None:
+    """Collect every statically known ``/`` segment from a Path receiver chain."""
+    seen: set[str] = set()
+
+    def append(name: str) -> None:
+        if not name or name in seen or len(name) > 240:
+            return
+        seen.add(name)
+        names.append(name)
+
+    def walk(e: ast.AST) -> None:
+        if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
+            walk(e.left)
+            seg = _static_str(e.right)
+            if seg is not None:
+                append(seg)
+            else:
+                for part in _md_strings_in(e.right):
+                    append(part)
+            return
+        resolved = _static_str(e)
+        if resolved is not None:
+            for part in re.split(r"[\\/]", resolved):
+                if part:
+                    append(part)
+
+    walk(expr)
 
 
 def _is_write_call(node: ast.Call) -> bool:
@@ -1450,16 +1496,16 @@ def _collect_name_expr(expr: ast.AST, names: list[str]) -> None:
     if (
         isinstance(expr, ast.Constant)
         and isinstance(expr.value, str)
-        and expr.value.endswith(".md")
-        and expr.value != ".md"
+        and _is_markdown_fixture_name(expr.value)
     ):
         names.append(expr.value)
         return
     resolved = _static_str(expr)
-    if resolved is not None and resolved.endswith(".md") and resolved != ".md":
+    if resolved is not None and _is_markdown_fixture_name(resolved):
         names.append(resolved)
         return
     names.extend(_md_strings_in(expr))
+    _collect_div_path_segments(expr, names)
 
 
 def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
@@ -1487,8 +1533,7 @@ def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
         ):
             receiver = node.func.value
             names.extend(_md_strings_in(receiver))
-            if isinstance(receiver, ast.BinOp) and isinstance(receiver.op, ast.Div):
-                _collect_name_expr(receiver.right, names)
+            _collect_div_path_segments(receiver, names)
     return names
 
 
@@ -1805,6 +1850,42 @@ def build(vault):
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON.md", names)
+
+    def test_scan_applies_format_spec_to_static_string_values(self) -> None:
+        source = '''
+def build(vault):
+    (vault / f"{'COM1x':.4}.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("COM1.md", names)
+
+    def test_scan_preserves_newline_path_components(self) -> None:
+        source = '''
+def build(vault):
+    (vault / "Bad\\nDir" / "Name.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("Bad\nDir", names)
+        self.assertIn("Name.md", names)
+
+    def test_scan_matches_markdown_extensions_case_insensitively(self) -> None:
+        source = '''
+def build(vault):
+    (vault / "CON.MD").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON.MD", names)
+
+    def test_scan_collects_non_markdown_directory_components(self) -> None:
+        source = '''
+def build(vault):
+    (vault / "CON" / "Note.md").write_text("x")
+    (vault / "Bad " / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Bad ", names)
+        self.assertIn("Note.md", names)
 
 
 class ContractVaultInjectionTest(unittest.TestCase):
