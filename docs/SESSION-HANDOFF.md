@@ -19,7 +19,7 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: POST-PROMOTION STEWARDSHIP — mutation audits complete; promotion-ready.**
+**Phase: MILESTONE PROMOTION — PR from `foundry/steward` → `main`.**
 
 - Integration branch: **`foundry/steward`**, cut from `main` after PR #1 merged.
 - `foundry/task-contracts` is **HISTORICAL** — the implementation lineage behind
@@ -27,11 +27,11 @@ settled design.
   already-squashed commits onto the checkpoint.
 - PR #1 (task contract capability) merged 2026-08-23 as a squash. PR #2 (viewer
   zero-advisory audit) merged before it to green the required `viewer` check.
-- Latest adversarial verdict: **PASS** (`.codex-reviews/review-20260823T024349Z.md`).
-  Read the newest file in `.codex-reviews/` rather than trusting a number here.
-- `CHECKPOINT_NOT_APPROVED.md` is present on `foundry/steward` and is correct —
-  the branch is a durability checkpoint again, not approved work. Delete it only
-  in a future promotion commit.
+- Latest adversarial verdict: **PASS** (`.codex-reviews/review-20260824T001136Z.md`,
+  cycle 21). Cycle-20 High closed by `recallweave-ur0`; mutation audits `jqq`/`3ea`
+  closed.
+- `CHECKPOINT_NOT_APPROVED.md` **deleted in this promotion commit** — Josh approved
+  the milestone merge after Codex PR review (max 3 turns).
 - `SWARM-RUNBOOK.md` was adopted 2026-08-23 as operating doctrine. **Read its
   §11 first**: the generated body was rendered for `elevare-agent-factory` and
   its project facts do not describe this repo.
@@ -118,10 +118,9 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 - **`recallweave-jqq` closed** — per-region sanitizer mutation audits (5 subTests).
 - **`recallweave-3ea` closed** — endpoint-binding and canonical-form mutation
   audits (4 subTests). Suite: 466 OK.
-- **Next (milestone, human-gated):** promotion PR from `foundry/steward` → `main`
-  after Josh merge approval. Delete `CHECKPOINT_NOT_APPROVED.md` in promotion
-  commit. Not automated.
-- **Worker assignments:** none (all lanes idle).
+- **Milestone:** promotion PR `foundry/steward` → `main` (Josh merge-approved;
+  Codex auto-review ≤3 turns). Marker deleted in this commit.
+- **Worker assignments:** none (all lanes idle; NTM session may need restart).
 
 ## 7. Known failure modes and traps
 
@@ -194,8 +193,7 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 - Adversarial gate: **PASS**, `.codex-reviews/review-20260824T001136Z.md` (cycle 21).
   Cycle-20 High closed; all historical Critical/High findings remain closed.
-  Promotion toward `main` is approved pending human merge and deletion of
-  `CHECKPOINT_NOT_APPROVED.md` in the promotion commit.
+  Promotion commit deletes `CHECKPOINT_NOT_APPROVED.md` under Josh merge approval.
 
 ## 10. Do NOT replan or reconsider
 
@@ -223,7 +221,7 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Unintegrated worker commits | **no** — all 8 lanes 0 ahead, 0 uncommitted |
 | `foundry/steward` vs `origin/main` | 12 ahead, 0 behind |
 | Supervisor | **running**, all lanes idle |
-| Latest verdict | PASS cycle 21 (`review-20260824T001136Z`) |
+| Latest verdict | PASS cycle 21 (`review-20260824T001136Z`); promoting |
 | Beads authoritative | **yes** — 0 open, 0 deferred, 0 blockers |
 | Resumable without transcript | **yes** |
 
