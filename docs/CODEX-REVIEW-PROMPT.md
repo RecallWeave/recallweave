@@ -95,23 +95,11 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 23 — clean-tree promotion re-review for squash-merge to `main`.
+Cycle 23 — clean promotion re-review for squash-merge to `main`.
 
-**Since cycle 22** (`review-20260824T014627Z.md`, VERDICT: PASS WITH FIXES):
+**PASS** recorded at `.codex-reviews/review-20260824T030601Z.md` for SHA
+`1ecb4be` (verified-only tag prefetch + regression). Suite: **467** OK (1 skip).
 
-- Cycle-22 findings addressed: incident-endpoint tag load committed at
-  `96ee2f4`; this cycle must judge the **exact clean HEAD** after also applying
-  the verified-only filter on the tag prefetch when `include_candidates=false`.
-- Codex PR #3 conversation still requires a PASS covering that clean SHA
-  (prior artifact explicitly said the reviewed tree did not match the PR head).
-- `CHECKPOINT_NOT_APPROVED.md` already deleted; supervisor remains paused.
-
-Expect suite: **466 tests** OK (1 skip), ResourceWarning-strict green,
-`compileall` clean. Runtime dependencies still empty.
-
-Focus for this cycle:
-
-1. **Say plainly whether this clean tree is safe to MERGE into protected `main`.**
-2. Confirm tag prefetch uses the same candidate filter as the edge cursor.
-3. Confirm cycle-20/21 High findings remain closed; no new Critical/High.
+Next cycle after merge should cut a fresh stewardship checkpoint from the new
+`main` and restore `CHECKPOINT_NOT_APPROVED.md` before any routine push.
 <!-- CYCLE-CONTEXT-END -->

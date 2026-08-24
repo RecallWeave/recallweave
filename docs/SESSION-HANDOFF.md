@@ -27,12 +27,13 @@ settled design.
   already-squashed commits onto the checkpoint.
 - PR #1 (task contract capability) merged 2026-08-23 as a squash. PR #2 (viewer
   zero-advisory audit) merged before it to green the required `viewer` check.
-- Latest adversarial verdict: **PASS** (`.codex-reviews/review-20260824T014627Z.md`,
-  cycle 22 — promotion re-review of the merge tree). Cycle-20 High closed by
-  `recallweave-ur0`; mutation audits `jqq`/`3ea` closed; Codex PR #3 remediations
-  included.
+- Latest adversarial verdict: **PASS** (`.codex-reviews/review-20260824T030601Z.md`,
+  cycle 23 — clean promotion SHA `1ecb4be` including verified-only tag prefetch
+  + regression). Cycle-20 High closed by `recallweave-ur0`; mutation audits
+  `jqq`/`3ea` closed; Codex PR #3 remediations included.
 - `CHECKPOINT_NOT_APPROVED.md` **deleted in this promotion commit** — Josh approved
-  the milestone merge after Codex PR review (max 3 turns). Supervisor paused
+  the milestone merge after Codex PR review (max 3 turns; post-cap blockers
+  cleared with cycle-23 PASS). Supervisor paused
   (`~/.particle-supervisor/PAUSED`) until merge completes.
 - `SWARM-RUNBOOK.md` was adopted 2026-08-23 as operating doctrine. **Read its
   §11 first**: the generated body was rendered for `elevare-agent-factory` and
@@ -192,9 +193,10 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 9. Review state
 
-- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T014627Z.md` (cycle 22
-  promotion re-review). Cycle-20 High closed; mutation audits closed; PR #3
-  remediations on the merge SHA. Supervisor paused for the milestone merge.
+- Adversarial gate: **PASS**, `.codex-reviews/review-20260824T030601Z.md` (cycle 23
+  clean promotion SHA `1ecb4be`). Cycle-20 High closed; mutation audits closed;
+  verified-only tag prefetch + regression on the merge SHA. Supervisor paused
+  for the milestone merge.
 
 ## 10. Do NOT replan or reconsider
 
@@ -222,7 +224,7 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Unintegrated worker commits | **no** — all 8 lanes 0 ahead, 0 uncommitted |
 | `foundry/steward` vs `origin/main` | 12 ahead, 0 behind |
 | Supervisor | **paused** for promotion (`PAUSED` present) |
-| Latest verdict | PASS cycle 22 (`review-20260824T014627Z`); promoting |
+| Latest verdict | PASS cycle 23 (`review-20260824T030601Z`); promoting `1ecb4be` |
 | Beads authoritative | **yes** — 0 open, 0 deferred, 0 blockers |
 | Resumable without transcript | **yes** |
 
