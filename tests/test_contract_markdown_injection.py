@@ -1317,10 +1317,23 @@ def _vault_write_fixture_names() -> list[str]:
                     continue
                 if not any(part.endswith(".md") or part == ".md" for part in parts):
                     continue
+                # Complete static `.md` names inside the f-string.
+                complete = [
+                    part for part in parts if part.endswith(".md") and part != ".md"
+                ]
+                if complete:
+                    found.extend(complete)
+                    continue
+                # Incomplete interpolations: only flag fragments that already
+                # carry a Windows-reserved filename character (not `/` `\`,
+                # which are path separators). That catches `f"Bad:{i}.md"`
+                # without treating `f"Targets/Target {i}.md"` as a finished
+                # fixture name ending in a space.
+                reserved = '<>:"|?*'
                 for part in parts:
-                    if part.endswith(".md") and part != ".md":
-                        found.append(part)
-                    elif part and part != ".md":
+                    if part == ".md":
+                        continue
+                    if any(ch in reserved or ord(ch) < 0x20 for ch in part):
                         found.append(part)
         return found
 
