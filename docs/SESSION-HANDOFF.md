@@ -25,10 +25,10 @@ settled design.
   squash-merge to `main`.
 - `foundry/task-contracts` remains **HISTORICAL** (PR #1 lineage). **Never merge
   it into current work.**
-- Latest adversarial verdict for this promotion: cycle **24g** `PASS WITH FIXES`
-  at `166539d` (`.codex-reviews/review-20260824T095046Z.md`); cycle **24d PASS**
-  at `f3b7fe1` covered an earlier tree only. Post-24g `!s`+format-spec fix
-  pending final re-gate on tip.
+- Latest adversarial verdict for this promotion: cycle **24i** `PASS WITH FIXES`
+  at `c1a4ccb` (`.codex-reviews/review-20260824T101232Z.md`); only Medium
+  test-scanner coverage gaps remain — no runtime Critical/High findings.
+  Cycle **24d PASS** at `f3b7fe1` covered an earlier tree only.
 - `CHECKPOINT_NOT_APPROVED.md` is **deleted in this promotion commit**. Do not
   restore it until after merge, when a fresh steward is cut from the new `main`.
 - Supervisor is **paused** (`~/.particle-supervisor/PAUSED`) until merge
@@ -213,7 +213,7 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Git branch | `foundry/steward` (PR #4 → `main`) |
 | Marker | **deleted** for promotion |
 | Supervisor | **paused** until merge + fresh cut |
-| Latest verdict | 24g PASS WITH FIXES @ `166539d`; 24d PASS @ `f3b7fe1` is historical |
+| Latest verdict | 24i PASS WITH FIXES @ `c1a4ccb`; Medium scanner gaps only |
 | Beads authoritative | **yes** — open: `fh2` (promote), epic `7o5`; `41d` closed |
 | Resumable without transcript | **yes** |
 
