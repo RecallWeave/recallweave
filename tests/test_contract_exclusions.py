@@ -377,5 +377,76 @@ class TagPrefetchCandidateFilterTest(unittest.TestCase):
             )
 
 
+class TagPrefetchMaxSeedVariableLimitTest(unittest.TestCase):
+    """Cycle-23 / recallweave-cxn: at the retrieval.limit ceiling (50 seeds),
+    tag-prefetch parameter count must stay seed-bounded under a tight
+    SQLITE_LIMIT_VARIABLE_NUMBER — never scale with excluded-note count."""
+
+    def test_fifty_seeds_tag_prefetch_under_reduced_variable_limit(self) -> None:
+        n_seeds = 50
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        private = vault / "Private"
+        private.mkdir(parents=True)
+        for i in range(n_seeds):
+            (private / f"P{i:02d}.md").write_text(
+                f"---\ntags: [private]\n---\n# P{i}\n\n## S\n\nprivate term {i}.\n",
+                encoding="utf-8",
+                newline="",
+            )
+            (vault / f"Seed{i:02d}.md").write_text(
+                f"# Seed{i}\n\n## S\n\nzzseedanchor{i:02d}. See [[Private/P{i:02d}]].\n",
+                encoding="utf-8",
+                newline="",
+            )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        with closing(connect(database, readonly=True)) as connection:
+            seed_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM notes WHERE relative_path LIKE 'Seed%' "
+                    "ORDER BY relative_path"
+                )
+            ]
+            self.assertEqual(len(seed_ids), n_seeds)
+            # Tag prefetch binds seed_ids four times (200 placeholders at the
+            # ceiling). Cap just above that so a seed-bounded query succeeds
+            # while any excluded-note placeholder expansion would still fail.
+            connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 220)
+            max_params = 0
+            real_execute = connection.execute
+
+            def tracing_execute(sql, parameters=()):
+                nonlocal max_params
+                count = len(parameters) if parameters is not None else 0
+                max_params = max(max_params, count)
+                return real_execute(sql, parameters)
+
+            connection.execute = tracing_execute  # type: ignore[method-assign]
+            allowed, suppressed, dropped = _stream_connection_edges(
+                connection,
+                seed_ids,
+                ExclusionSet(tags=["private"]),
+                include_candidates=False,
+            )
+            self.assertEqual(allowed, [])
+            self.assertEqual(suppressed, n_seeds)
+            self.assertEqual(len(dropped), n_seeds)
+            self.assertLessEqual(
+                max_params,
+                200,
+                "tag prefetch + edge cursor must bind only seed placeholders "
+                f"(4×{n_seeds}=200), not the exclusion set",
+            )
+            self.assertGreaterEqual(
+                max_params,
+                200,
+                "expected the 50-seed tag prefetch to exercise the 200-parameter bound",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
