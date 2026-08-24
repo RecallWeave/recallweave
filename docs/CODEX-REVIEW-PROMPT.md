@@ -95,11 +95,7 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 23 — clean promotion re-review for squash-merge to `main`.
+Cycle 24i — final promotion-tree gate after boolean format-spec remediation.
 
-**PASS** recorded at `.codex-reviews/review-20260824T030601Z.md` for SHA
-`1ecb4be` (verified-only tag prefetch + regression). Suite: **467** OK (1 skip).
-
-Next cycle after merge should cut a fresh stewardship checkpoint from the new
-`main` and restore `CHECKPOINT_NOT_APPROVED.md` before any routine push.
+Suite target **485** OK (1 skip). PASS required for PR #4 merge.
 <!-- CYCLE-CONTEXT-END -->

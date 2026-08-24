@@ -15,6 +15,7 @@ from recallweave.contract import (
     build_contract_document,
 )
 from recallweave.contract_exclusions import ExclusionSet
+from recallweave.contract_markdown import render_contract_markdown
 from recallweave.contract_spec import TaskSpec
 from recallweave.index import build_index, connect
 
@@ -375,6 +376,269 @@ class TagPrefetchCandidateFilterTest(unittest.TestCase):
                 0,
                 "candidate-inclusive prefetch must not inject the verified filter",
             )
+
+
+class TagPrefetchMaxSeedVariableLimitTest(unittest.TestCase):
+    """Cycle-23 / recallweave-cxn: at the retrieval.limit ceiling (50 seeds),
+    tag-prefetch parameter count must stay seed-bounded under a tight
+    SQLITE_LIMIT_VARIABLE_NUMBER — never scale with excluded-note count."""
+
+    def test_fifty_seeds_tag_prefetch_under_reduced_variable_limit(self) -> None:
+        n_seeds = 50
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        private = vault / "Private"
+        private.mkdir(parents=True)
+        for i in range(n_seeds):
+            (private / f"P{i:02d}.md").write_text(
+                f"---\ntags: [private]\n---\n# P{i}\n\n## S\n\nprivate term {i}.\n",
+                encoding="utf-8",
+                newline="",
+            )
+            (vault / f"Seed{i:02d}.md").write_text(
+                f"# Seed{i}\n\n## S\n\nzzseedanchor{i:02d}. See [[Private/P{i:02d}]].\n",
+                encoding="utf-8",
+                newline="",
+            )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        with closing(connect(database, readonly=True)) as connection:
+            seed_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM notes WHERE relative_path LIKE 'Seed%' "
+                    "ORDER BY relative_path"
+                )
+            ]
+            self.assertEqual(len(seed_ids), n_seeds)
+            # Tag prefetch binds seed_ids four times (200 placeholders at the
+            # ceiling). Cap just above that so a seed-bounded query succeeds
+            # while any excluded-note placeholder expansion would still fail.
+            connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 220)
+            max_params = 0
+            real_execute = connection.execute
+
+            def tracing_execute(sql, parameters=()):
+                nonlocal max_params
+                count = len(parameters) if parameters is not None else 0
+                max_params = max(max_params, count)
+                return real_execute(sql, parameters)
+
+            connection.execute = tracing_execute  # type: ignore[method-assign]
+            allowed, suppressed, dropped = _stream_connection_edges(
+                connection,
+                seed_ids,
+                ExclusionSet(tags=["private"]),
+                include_candidates=False,
+            )
+            self.assertEqual(allowed, [])
+            self.assertEqual(suppressed, n_seeds)
+            self.assertEqual(len(dropped), n_seeds)
+            self.assertLessEqual(
+                max_params,
+                200,
+                "tag prefetch + edge cursor must bind only seed placeholders "
+                f"(4×{n_seeds}=200), not the exclusion set",
+            )
+            self.assertGreaterEqual(
+                max_params,
+                200,
+                "expected the 50-seed tag prefetch to exercise the 200-parameter bound",
+            )
+
+
+class TiedScoreExclusionDeterminismTest(unittest.TestCase):
+    """Cycle-23 / recallweave-dle: mixed allowed/excluded edges with tied
+    verified scores must export byte-identical contracts across builds."""
+
+    def _write_tied_vault(self, vault: Path) -> None:
+        vault.mkdir(parents=True, exist_ok=True)
+        (vault / "KeepA.md").write_text(
+            "# KeepA\n\n## S\n\nkeep a neighbor.\n", encoding="utf-8", newline=""
+        )
+        (vault / "Drop.md").write_text(
+            "---\ntags: [private]\n---\n# Drop\n\n## S\n\ndrop neighbor.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "KeepB.md").write_text(
+            "# KeepB\n\n## S\n\nkeep b neighbor.\n", encoding="utf-8", newline=""
+        )
+        (vault / "Hub.md").write_text(
+            "# Hub\n\n## S\n\nzzhubanchor. "
+            "[[KeepA]] [[Drop]] [[KeepB]]\n",
+            encoding="utf-8",
+            newline="",
+        )
+
+    def test_tied_scores_with_mixed_exclusions_are_byte_identical(self) -> None:
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "obj",
+                "retrieval": {
+                    "query": "zzhubanchor",
+                    "limit": 8,
+                    "max_characters": 100000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"tags": ["private"]},
+            }
+        )
+
+        def build_artifacts(label: str) -> tuple[bytes, bytes]:
+            vault = root / label / "vault"
+            database = root / label / "index.sqlite"
+            self._write_tied_vault(vault)
+            build_index(vault, database, minimum_candidate_score=0.0)
+            with closing(connect(database, readonly=True)) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT e.score, e.is_verified
+                    FROM edges e
+                    JOIN notes sn ON sn.id = e.source_note_id
+                    JOIN notes tn ON tn.id = e.target_note_id
+                    WHERE sn.relative_path = 'Hub.md' OR tn.relative_path = 'Hub.md'
+                    """
+                ).fetchall()
+                self.assertGreaterEqual(len(rows), 3)
+                self.assertEqual({float(row[0]) for row in rows}, {1.0})
+                self.assertEqual({int(row[1]) for row in rows}, {1})
+            document = build_contract_document(database, spec)
+            document["provenance"].pop("generated_at")
+            document["provenance"]["index"].pop("indexed_at", None)
+            self.assertEqual(document["exclusions"]["suppressed"]["connections"], 1)
+            ordered = [(c["source"], c["target"]) for c in document["connections"]]
+            self.assertTrue(any("KeepA" in s or "KeepA" in t for s, t in ordered))
+            self.assertTrue(any("KeepB" in s or "KeepB" in t for s, t in ordered))
+            self.assertFalse(any("Drop" in s or "Drop" in t for s, t in ordered))
+            json_bytes = json.dumps(
+                {"ordered": ordered, "doc": document},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            markdown = render_contract_markdown(document)
+            return json_bytes, markdown.encode("utf-8")
+
+        first_json, first_md = build_artifacts("a")
+        second_json, second_md = build_artifacts("b")
+        self.assertEqual(first_json, second_json)
+        self.assertEqual(first_md, second_md)
+
+    def test_tied_score_export_order_follows_edge_id_tiebreaker(self) -> None:
+        """When KeepA/KeepB share score+verified, permuting edge ids must change
+        export order — proving ``ORDER BY …, e.id`` is load-bearing."""
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        spec = TaskSpec.from_payload(
+            {
+                "objective": "obj",
+                "retrieval": {
+                    "query": "zzhubanchor",
+                    "limit": 8,
+                    "max_characters": 100000,
+                },
+                "constraints": [],
+                "prior_decisions": [],
+                "acceptance_criteria": [],
+                "exclusions": {"tags": ["private"]},
+            }
+        )
+
+        def ordered_paths(database: Path, *, keep_a_id: int, keep_b_id: int) -> list[tuple[str, str]]:
+            vault = root / "vault"
+            database_path = database
+            self._write_tied_vault(vault)
+            build_index(vault, database_path, minimum_candidate_score=0.0)
+            with closing(connect(database_path)) as connection, connection:
+                rows = connection.execute(
+                    """
+                    SELECT e.id, sn.relative_path, tn.relative_path
+                    FROM edges e
+                    JOIN notes sn ON sn.id = e.source_note_id
+                    JOIN notes tn ON tn.id = e.target_note_id
+                    WHERE sn.relative_path = 'Hub.md' OR tn.relative_path = 'Hub.md'
+                    """
+                ).fetchall()
+
+                def neighbor(row) -> str:
+                    return str(row[2]) if str(row[1]) == "Hub.md" else str(row[1])
+
+                by_neighbor = {neighbor(row): int(row[0]) for row in rows}
+                for old_id in by_neighbor.values():
+                    connection.execute(
+                        "UPDATE edges SET id = ? WHERE id = ?", (old_id + 50_000, old_id)
+                    )
+                mapping = {
+                    "KeepA.md": keep_a_id,
+                    "Drop.md": 2,
+                    "KeepB.md": keep_b_id,
+                }
+                for neighbor, new_id in mapping.items():
+                    connection.execute(
+                        "UPDATE edges SET id = ? WHERE id = ?",
+                        (new_id, by_neighbor[neighbor] + 50_000),
+                    )
+                connection.execute(
+                    "UPDATE edges SET score = 1.0, is_verified = 1 WHERE id IN (?, ?, ?)",
+                    (keep_a_id, 2, keep_b_id),
+                )
+            document = build_contract_document(database_path, spec)
+            return [(c["source"], c["target"]) for c in document["connections"]]
+
+        db_a = root / "a.sqlite"
+        db_b = root / "b.sqlite"
+        order_a = ordered_paths(db_a, keep_a_id=1, keep_b_id=3)
+        order_b = ordered_paths(db_b, keep_a_id=3, keep_b_id=1)
+        self.assertNotEqual(order_a, order_b)
+
+    def test_stream_connection_edges_sql_includes_id_tiebreaker(self) -> None:
+        temp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        vault = root / "vault"
+        vault.mkdir()
+        (vault / "Hub.md").write_text(
+            "# Hub\n\n## S\n\nzzhubanchor. [[Peer.md]]\n",
+            encoding="utf-8",
+            newline="",
+        )
+        (vault / "Peer.md").write_text(
+            "# Peer\n\n## S\n\npeer.\n", encoding="utf-8", newline=""
+        )
+        database = root / "index.sqlite"
+        build_index(vault, database, minimum_candidate_score=0.0)
+        executed: list[str] = []
+        with closing(connect(database, readonly=True)) as connection:
+            hub_id = connection.execute(
+                "SELECT id FROM notes WHERE relative_path = 'Hub.md'"
+            ).fetchone()[0]
+            real_execute = connection.execute
+
+            def tracing_execute(sql, parameters=()):
+                executed.append(str(sql))
+                return real_execute(sql, parameters)
+
+            connection.execute = tracing_execute  # type: ignore[method-assign]
+            _stream_connection_edges(
+                connection,
+                [int(hub_id)],
+                ExclusionSet(),
+                include_candidates=False,
+            )
+        edge_queries = [sql for sql in executed if "FROM edges e" in sql]
+        self.assertTrue(edge_queries, executed)
+        self.assertIn(
+            "ORDER BY e.is_verified DESC, e.score DESC, e.id",
+            edge_queries[-1],
+        )
 
 
 if __name__ == "__main__":
