@@ -1463,8 +1463,35 @@ def _md_strings_in(node: ast.AST | None) -> list[str]:
     return found
 
 
-def _collect_joinpath_segments(expr: ast.AST, names: list[str]) -> None:
-    """Collect static arguments from ``Path.joinpath(...)`` receiver chains."""
+def _static_path_bindings(tree: ast.AST) -> dict[str, list[str]]:
+    """Map simple names to path segments from statically resolved assignments."""
+    bindings: dict[str, list[str]] = {}
+
+    def bind(name: str, expr: ast.AST) -> None:
+        segments: list[str] = []
+        _collect_path_segments(expr, segments)
+        if segments:
+            bindings[name] = segments
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    bind(target.id, node.value)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            bind(node.target.id, node.value)
+    return bindings
+
+
+def _collect_path_segments(
+    expr: ast.AST, names: list[str], bindings: dict[str, list[str]] | None = None
+) -> None:
+    """Collect static ``/``, ``joinpath()``, and bound-name path segments."""
+    bindings = bindings or {}
     seen: set[str] = set()
 
     def append(name: str) -> None:
@@ -1474,6 +1501,10 @@ def _collect_joinpath_segments(expr: ast.AST, names: list[str]) -> None:
         names.append(name)
 
     def walk(e: ast.AST) -> None:
+        if isinstance(e, ast.Name) and e.id in bindings:
+            for seg in bindings[e.id]:
+                append(seg)
+            return
         if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute):
             if e.func.attr == "joinpath":
                 walk(e.func.value)
@@ -1487,29 +1518,6 @@ def _collect_joinpath_segments(expr: ast.AST, names: list[str]) -> None:
                         for part in _md_strings_in(arg):
                             append(part)
                 return
-        if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
-            walk(e.left)
-            seg = _static_str(e.right)
-            if seg is not None:
-                append(seg)
-            else:
-                for part in _md_strings_in(e.right):
-                    append(part)
-
-    walk(expr)
-
-
-def _collect_div_path_segments(expr: ast.AST, names: list[str]) -> None:
-    """Collect every statically known ``/`` segment from a Path receiver chain."""
-    seen: set[str] = set()
-
-    def append(name: str) -> None:
-        if not name or name in seen or len(name) > 240:
-            return
-        seen.add(name)
-        names.append(name)
-
-    def walk(e: ast.AST) -> None:
         if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
             walk(e.left)
             seg = _static_str(e.right)
@@ -1548,7 +1556,13 @@ def _pathlike_kwargs(node: ast.Call) -> list[ast.AST]:
     return values
 
 
-def _collect_name_expr(expr: ast.AST, names: list[str]) -> None:
+def _collect_name_expr(
+    expr: ast.AST, names: list[str], bindings: dict[str, list[str]] | None = None
+) -> None:
+    bindings = bindings or {}
+    if isinstance(expr, ast.Name) and expr.id in bindings:
+        names.extend(bindings[expr.id])
+        return
     if (
         isinstance(expr, ast.Constant)
         and isinstance(expr.value, str)
@@ -1561,8 +1575,7 @@ def _collect_name_expr(expr: ast.AST, names: list[str]) -> None:
         names.append(resolved)
         return
     names.extend(_md_strings_in(expr))
-    _collect_div_path_segments(expr, names)
-    _collect_joinpath_segments(expr, names)
+    _collect_path_segments(expr, names, bindings)
 
 
 def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
@@ -1570,6 +1583,7 @@ def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
     calls in ``tree`` — including nested helpers invoked as bare names,
     keyword path arguments, nested concatenations, and Path receivers."""
     names: list[str] = []
+    bindings = _static_path_bindings(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not _is_write_call(node):
             continue
@@ -1580,9 +1594,9 @@ def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
         )
         if helper_path_arg:
             if node.args:
-                _collect_name_expr(node.args[0], names)
+                _collect_name_expr(node.args[0], names, bindings)
             for kw_value in _pathlike_kwargs(node):
-                _collect_name_expr(kw_value, names)
+                _collect_name_expr(kw_value, names, bindings)
         if isinstance(node.func, ast.Attribute) and node.func.attr in (
             "write_text",
             "write_bytes",
@@ -1590,8 +1604,7 @@ def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
         ):
             receiver = node.func.value
             names.extend(_md_strings_in(receiver))
-            _collect_div_path_segments(receiver, names)
-            _collect_joinpath_segments(receiver, names)
+            _collect_path_segments(receiver, names, bindings)
     return names
 
 
@@ -1960,6 +1973,28 @@ def build(vault):
 def build(vault):
     vault.joinpath("CON").mkdir()
     vault.joinpath("CON", "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_collects_variable_assigned_directory_components(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "CON"
+    private.mkdir()
+    (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_collects_joinpath_variable_directory_components(self) -> None:
+        source = '''
+def build(vault):
+    directory = vault.joinpath("CON")
+    directory.mkdir()
+    directory.joinpath("Note.md").write_text("x")
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
