@@ -1519,14 +1519,14 @@ def _scan_branch(
 def _record_write_call(
     node: ast.Call, names: list[str], bindings: dict[str, list[str]]
 ) -> None:
-    helper_path_arg = isinstance(node.func, ast.Name) or (
-        isinstance(node.func, ast.Attribute) and node.func.attr == "write"
-    )
-    if helper_path_arg:
+    # Bare nested helpers take the path as arg0. Attribute ``write`` is a file
+    # handle payload write — do not treat the body as a filename.
+    if isinstance(node.func, ast.Name) and node.func.id == "write":
         if node.args:
             _collect_name_expr(node.args[0], names, bindings)
         for kw_value in _pathlike_kwargs(node):
             _collect_name_expr(kw_value, names, bindings)
+        return
     if isinstance(node.func, ast.Attribute) and node.func.attr in (
         "write_text",
         "write_bytes",
@@ -1535,6 +1535,10 @@ def _record_write_call(
         receiver = node.func.value
         names.extend(_md_strings_in(receiver))
         _collect_path_segments(receiver, names, bindings)
+        return
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "write":
+        # File-handle write: inspect the bound receiver path only.
+        _collect_path_segments(node.func.value, names, bindings)
 
 
 def _scan_writes_in_stmts(
@@ -1573,6 +1577,18 @@ def _scan_writes_in_stmts(
             else:
                 bindings.pop(stmt.target.id, None)
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for deco in stmt.decorator_list:
+                for node in ast.walk(deco):
+                    if isinstance(node, ast.Call) and _is_write_call(node):
+                        _record_write_call(node, names, bindings)
+                _collect_named_expr_bindings(deco, bindings)
+            for default in list(stmt.args.defaults) + list(stmt.args.kw_defaults):
+                if default is None:
+                    continue
+                for node in ast.walk(default):
+                    if isinstance(node, ast.Call) and _is_write_call(node):
+                        _record_write_call(node, names, bindings)
+                _collect_named_expr_bindings(default, bindings)
             _scan_writes_in_stmts(stmt.body, names, dict(bindings))
         elif isinstance(stmt, ast.If):
             for node in ast.walk(stmt.test):
@@ -1629,10 +1645,19 @@ def _scan_writes_in_stmts(
             bindings.update(after)
             _scan_writes_in_stmts(stmt.finalbody, names, bindings)
         elif isinstance(stmt, ast.Match):
+            for node in ast.walk(stmt.subject):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+            _collect_named_expr_bindings(stmt.subject, bindings)
             incoming = dict(bindings)
-            case_maps = [
-                _scan_branch(case.body, names, bindings) for case in stmt.cases
-            ]
+            case_maps = []
+            for case in stmt.cases:
+                if case.guard is not None:
+                    for node in ast.walk(case.guard):
+                        if isinstance(node, ast.Call) and _is_write_call(node):
+                            _record_write_call(node, names, bindings)
+                    _collect_named_expr_bindings(case.guard, bindings)
+                case_maps.append(_scan_branch(case.body, names, bindings))
             bindings.clear()
             bindings.update(_merge_bindings(incoming, *case_maps))
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
@@ -1649,7 +1674,7 @@ def _scan_writes_in_stmts(
                         and ctx.args
                         and isinstance(ctx.func, (ast.Name, ast.Attribute))
                     ):
-                        # nullcontext(path) / similar single-arg wrappers.
+                        # open(path)/nullcontext(path) — bind to the path argument.
                         _bind_target(item.optional_vars, ctx.args[0], bindings)
                     else:
                         _bind_target(item.optional_vars, ctx, bindings)
@@ -2248,12 +2273,19 @@ def build(vault):
     else:
         private = vault / "CON"
         (private / "Note.md").write_text("x")
-    private = vault
-    private /= "CON"
-    (private / "Other.md").write_text("x")
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
+
+    def test_scan_resolves_augassign_path_bindings(self) -> None:
+        source = '''
+def build(vault):
+    private = vault
+    private /= "COM2"
+    (private / "Other.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("COM2", names)
 
     def test_scan_unions_bindings_across_if_branches(self) -> None:
         source = '''
@@ -2318,6 +2350,36 @@ def build(vault):
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
+
+    def test_scan_catches_writes_in_function_defaults(self) -> None:
+        source = '''
+def build(vault):
+    def helper(created=(vault / "CON" / "Note.md").write_text("x")):
+        return created
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_catches_writes_in_match_subject(self) -> None:
+        source = '''
+def build(vault):
+    match (vault / "CON" / "Note.md").write_text("x"):
+        case _:
+            pass
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_does_not_treat_handle_write_payload_as_path(self) -> None:
+        source = '''
+def build(vault):
+    body = "CON"
+    handle = open("Safe.md", "w")
+    handle.write(body)
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertNotIn("CON", names)
 
 
 class ContractVaultInjectionTest(unittest.TestCase):

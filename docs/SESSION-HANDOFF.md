@@ -19,18 +19,16 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: STEWARDSHIP — post-PR #4; fresh `foundry/steward` cut from `main`.**
+**Phase: MILESTONE PROMOTION — PR #5 `foundry/steward` → `main`.**
 
-- Integration branch: **`foundry/steward`** cut from `main` @ `374be23` (PR #4).
-- `foundry/task-contracts` remains **HISTORICAL** (PR #1 lineage). **Never merge
-  it into current work.**
-- Latest adversarial verdict on the promoted tree: cycle **24i** `PASS WITH FIXES`
-  (Medium test-scanner gaps only; no runtime Critical/High).
-- `CHECKPOINT_NOT_APPROVED.md` is **restored** on the fresh steward.
-- Supervisor may be **unpaused** after this cut.
-- `SWARM-RUNBOOK.md` was adopted 2026-08-23 as operating doctrine. **Read its
-  §11 first**: the generated body was rendered for `elevare-agent-factory` and
-  its project facts do not describe this repo.
+- Integration branch: **`foundry/steward`** (scanner stewardship tip). PR #5 open.
+- `foundry/task-contracts` remains **HISTORICAL**. **Never merge it into current work.**
+- Latest adversarial verdict: cycle **26c PASS WITH FIXES** (Medium test-oracle
+  edges only; no runtime Critical/High). GitHub Codex turn 1 remediations in flight.
+- `CHECKPOINT_NOT_APPROVED.md` is **deleted in the promotion commit**.
+- Supervisor is **paused** until merge + fresh steward cut.
+- Next product epic queued: **`recallweave-iyd`** (Atlas viewer.v2 + Cold Trails),
+  blocked on this promotion.
 
 ## 3. Architecture decisions already approved — DO NOT REOPEN
 
@@ -203,9 +201,9 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 |---|---|
 | Repo path | `/Users/josh/particle-workers/recallweave` |
 | Git branch | `foundry/steward` (fresh cut from `main` @ `374be23`) |
-| Marker | **present** |
-| Supervisor | **running** (no `~/.particle-supervisor/PAUSED` marker) |
-| Latest verdict | cycle 26 in progress (branch-union scanner remediation) |
+| Marker | **deleted** for PR #5 promotion |
+| Supervisor | **paused** until merge + fresh cut |
+| Latest verdict | 26c PASS WITH FIXES; turn-1 remediations in flight |
 | Beads authoritative | **yes** — `6ie` promoting; epic `iyd` queued |
 | Resumable without transcript | **yes** |
 
