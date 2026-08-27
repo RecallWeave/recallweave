@@ -95,10 +95,7 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 26 — adversarial gate on `foundry/steward` tip after cycle-25 scanner
-hardening (path bindings, compound statements, AugAssign). Base `main` @
-`374be23`. Delta is tests + docs + beads + checkpoint marker only; no `src/`
-runtime changes expected.
+Cycle 26b — re-gate after branch-union / walrus / tuple binding remediation.
 
-Suite target **494** OK (1 skip). Clean PASS required before PR #5 promotion.
+Suite target **497** OK (1 skip). Clean PASS required before PR #5 promotion.
 <!-- CYCLE-CONTEXT-END -->

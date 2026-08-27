@@ -110,10 +110,11 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- Epic **`recallweave-7o5`** — closed (PR #4 merged 2026-08-24).
-- **`recallweave-86e` in progress** — cycle-25 adversarial gate on path-binding
-  scanner fix (25c PASS WITH FIXES; compound-statement follow-up landed post-cap).
-- Also closed this rotation: `07h`, `94b`, `rm3`, `41d`, `fh2`, `cxn`, `dle`.
+- Epic **`recallweave-iyd`** — Atlas viewer.v2 + Cold Trails foundation (queued;
+  first task `iyd.1` blocked on `6ie` promotion).
+- **`recallweave-6ie` in progress** — cycle-26 gate → PR #5 promote scanner
+  hardening.
+- Closed this rotation: `7a4`, `86e`, `07h`, `94b`, `rm3`, `41d`, `fh2`, `7o5`.
 
 ## 7. Known failure modes and traps
 
@@ -204,8 +205,8 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Git branch | `foundry/steward` (fresh cut from `main` @ `374be23`) |
 | Marker | **present** |
 | Supervisor | **running** (no `~/.particle-supervisor/PAUSED` marker) |
-| Latest verdict | 25c PASS WITH FIXES @ `6d0260a` |
-| Beads authoritative | **yes** — `86e` closing |
+| Latest verdict | cycle 26 in progress (branch-union scanner remediation) |
+| Beads authoritative | **yes** — `6ie` promoting; epic `iyd` queued |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**

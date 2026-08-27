@@ -1471,6 +1471,51 @@ def _resolve_binding_segments(
     return segments
 
 
+def _merge_bindings(*maps: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Union path-segment bindings across mutually exclusive branches."""
+    merged: dict[str, list[str]] = {}
+    for mapping in maps:
+        for key, segs in mapping.items():
+            existing = merged.setdefault(key, [])
+            for seg in segs:
+                if seg not in existing:
+                    existing.append(seg)
+    return merged
+
+
+def _bind_target(
+    target: ast.AST, value: ast.AST, bindings: dict[str, list[str]]
+) -> None:
+    if isinstance(target, ast.Name):
+        segs = _resolve_binding_segments(value, bindings)
+        if segs:
+            bindings[target.id] = segs
+        else:
+            bindings.pop(target.id, None)
+        return
+    if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
+        value, (ast.Tuple, ast.List)
+    ):
+        for left, right in zip(target.elts, value.elts):
+            _bind_target(left, right, bindings)
+
+
+def _collect_named_expr_bindings(node: ast.AST, bindings: dict[str, list[str]]) -> None:
+    for child in ast.walk(node):
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            segs = _resolve_binding_segments(child.value, bindings)
+            if segs:
+                bindings[child.target.id] = segs
+
+
+def _scan_branch(
+    stmts: list[ast.stmt], names: list[str], bindings: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    branch = dict(bindings)
+    _scan_writes_in_stmts(stmts, names, branch)
+    return branch
+
+
 def _record_write_call(
     node: ast.Call, names: list[str], bindings: dict[str, list[str]]
 ) -> None:
@@ -1500,13 +1545,9 @@ def _scan_writes_in_stmts(
             for node in ast.walk(stmt.value):
                 if isinstance(node, ast.Call) and _is_write_call(node):
                     _record_write_call(node, names, bindings)
+            _collect_named_expr_bindings(stmt.value, bindings)
             for target in stmt.targets:
-                if isinstance(target, ast.Name):
-                    segs = _resolve_binding_segments(stmt.value, bindings)
-                    if segs:
-                        bindings[target.id] = segs
-                    else:
-                        bindings.pop(target.id, None)
+                _bind_target(target, stmt.value, bindings)
         elif (
             isinstance(stmt, ast.AnnAssign)
             and isinstance(stmt.target, ast.Name)
@@ -1515,11 +1556,8 @@ def _scan_writes_in_stmts(
             for node in ast.walk(stmt.value):
                 if isinstance(node, ast.Call) and _is_write_call(node):
                     _record_write_call(node, names, bindings)
-            segs = _resolve_binding_segments(stmt.value, bindings)
-            if segs:
-                bindings[stmt.target.id] = segs
-            else:
-                bindings.pop(stmt.target.id, None)
+            _collect_named_expr_bindings(stmt.value, bindings)
+            _bind_target(stmt.target, stmt.value, bindings)
         elif isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
             for node in ast.walk(stmt.value):
                 if isinstance(node, ast.Call) and _is_write_call(node):
@@ -1540,39 +1578,65 @@ def _scan_writes_in_stmts(
             for node in ast.walk(stmt.test):
                 if isinstance(node, ast.Call) and _is_write_call(node):
                     _record_write_call(node, names, bindings)
-            _scan_writes_in_stmts(stmt.body, names, bindings)
-            _scan_writes_in_stmts(stmt.orelse, names, bindings)
+            _collect_named_expr_bindings(stmt.test, bindings)
+            then_map = _scan_branch(stmt.body, names, bindings)
+            else_map = _scan_branch(stmt.orelse, names, bindings)
+            bindings.clear()
+            bindings.update(_merge_bindings(then_map, else_map))
         elif isinstance(stmt, (ast.For, ast.AsyncFor)):
             for node in ast.walk(stmt.iter):
                 if isinstance(node, ast.Call) and _is_write_call(node):
                     _record_write_call(node, names, bindings)
-            _scan_writes_in_stmts(stmt.body, names, bindings)
-            _scan_writes_in_stmts(stmt.orelse, names, bindings)
+            _collect_named_expr_bindings(stmt.iter, bindings)
+            # Body may run zero times; preserve incoming bindings in the union.
+            incoming = dict(bindings)
+            body_map = _scan_branch(stmt.body, names, bindings)
+            else_map = _scan_branch(stmt.orelse, names, bindings)
+            bindings.clear()
+            bindings.update(_merge_bindings(incoming, body_map, else_map))
         elif isinstance(stmt, ast.While):
             for node in ast.walk(stmt.test):
                 if isinstance(node, ast.Call) and _is_write_call(node):
                     _record_write_call(node, names, bindings)
-            _scan_writes_in_stmts(stmt.body, names, bindings)
-            _scan_writes_in_stmts(stmt.orelse, names, bindings)
+            _collect_named_expr_bindings(stmt.test, bindings)
+            incoming = dict(bindings)
+            body_map = _scan_branch(stmt.body, names, bindings)
+            else_map = _scan_branch(stmt.orelse, names, bindings)
+            bindings.clear()
+            bindings.update(_merge_bindings(incoming, body_map, else_map))
         elif isinstance(stmt, ast.Try):
-            _scan_writes_in_stmts(stmt.body, names, bindings)
-            for handler in stmt.handlers:
-                _scan_writes_in_stmts(handler.body, names, bindings)
-            _scan_writes_in_stmts(stmt.orelse, names, bindings)
+            incoming = dict(bindings)
+            body_map = _scan_branch(stmt.body, names, bindings)
+            handler_maps = [
+                _scan_branch(handler.body, names, bindings) for handler in stmt.handlers
+            ]
+            else_map = _scan_branch(stmt.orelse, names, body_map)
+            after = _merge_bindings(incoming, body_map, else_map, *handler_maps)
+            bindings.clear()
+            bindings.update(after)
             _scan_writes_in_stmts(stmt.finalbody, names, bindings)
         elif isinstance(stmt, ast.Match):
-            for case in stmt.cases:
-                _scan_writes_in_stmts(case.body, names, bindings)
+            incoming = dict(bindings)
+            case_maps = [
+                _scan_branch(case.body, names, bindings) for case in stmt.cases
+            ]
+            bindings.clear()
+            bindings.update(_merge_bindings(incoming, *case_maps))
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
             for item in stmt.items:
                 for node in ast.walk(item.context_expr):
                     if isinstance(node, ast.Call) and _is_write_call(node):
                         _record_write_call(node, names, bindings)
+                _collect_named_expr_bindings(item.context_expr, bindings)
             _scan_writes_in_stmts(stmt.body, names, bindings)
         else:
             for node in ast.walk(stmt):
                 if isinstance(node, ast.Call) and _is_write_call(node):
                     _record_write_call(node, names, bindings)
+                if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+                    segs = _resolve_binding_segments(node.value, bindings)
+                    if segs:
+                        bindings[node.target.id] = segs
 
 
 def _collect_path_segments(
@@ -1589,6 +1653,15 @@ def _collect_path_segments(
         names.append(name)
 
     def walk(e: ast.AST) -> None:
+        if isinstance(e, ast.NamedExpr):
+            # Bind the target from the value, then continue collecting from value.
+            value_segs: list[str] = []
+            _collect_path_segments(e.value, value_segs, bindings)
+            if isinstance(e.target, ast.Name) and value_segs:
+                bindings[e.target.id] = list(value_segs)
+            for seg in value_segs:
+                append(seg)
+            return
         if isinstance(e, ast.Name) and e.id in bindings:
             for seg in bindings[e.id]:
                 append(seg)
@@ -2153,6 +2226,44 @@ def build(vault):
     private = vault
     private /= "CON"
     (private / "Other.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_unions_bindings_across_if_branches(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "Safe"
+    if flag:
+        private = vault / "CON"
+    else:
+        private = vault / "Safe"
+    (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Safe", names)
+
+    def test_scan_unions_bindings_across_try_handlers(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "Safe"
+    try:
+        private = vault / "CON"
+    except Exception:
+        private = vault / "Safe"
+    (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_resolves_walrus_and_tuple_path_bindings(self) -> None:
+        source = '''
+def build(vault):
+    if (private := vault / "CON"):
+        (private / "Note.md").write_text("x")
+    left, right = vault / "CON", vault / "Safe"
+    (left / "A.md").write_text("x")
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
