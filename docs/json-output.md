@@ -299,7 +299,93 @@ dormancy, temporal drift, independent rediscovery, or direct Obsidian open
 links from this schema. Those capabilities require a separately reviewed
 `recallweave.viewer.v2`.
 
-## Errors
+## `export-viewer` and `recallweave.viewer.v2` (frozen schema)
+
+Status: **schema frozen for implementation**. Emitters and Atlas consumers may
+implement against this contract; changing any required field below needs a new
+reviewed minor schema bump (`viewer.v2.1+`) or a new major (`viewer.v3`).
+
+`viewer.v2` is a **superset** of `viewer.v1`. A `viewer.v2` document MUST remain
+readable by a `viewer.v1` consumer that ignores unknown fields. A consumer that
+opts into `viewer.v2` MUST reject unknown major versions and MUST NOT invent
+values for absent optional fields.
+
+Both the graph document and the stdout receipt use:
+
+```json
+{
+  "schema_version": "recallweave.viewer.v2"
+}
+```
+
+### Node fields added in v2
+
+Every node from v1 remains. v2 adds:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `created_at` | yes when known from the index; otherwise JSON `null` | UTC ISO-8601 timestamp of note creation as recorded by the index. Never invent a clock value. |
+| `modified_at` | yes when known from the index; otherwise JSON `null` | UTC ISO-8601 timestamp of last indexed content change. |
+| `content_hash` | yes | Hex SHA-256 of the exact note bytes the index hashed for this path. Empty-string hashes are forbidden; use `null` only if the index lacks a hash (legacy indexes). |
+
+Consumers MUST treat timestamps and hashes as **claims about the exporting
+index**, not as live filesystem facts, unless the consumer recomputes them.
+
+### Graph-level fields added in v2
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `vault_name` | no | Optional vault label for constructing `obsidian://open` links. Never a filesystem path. Absent when the operator did not supply one. |
+| `policy_config_sha256` | no | SHA-256 of the exact policy-file bytes applied at index time when `policy_mode` was `config`. MUST NOT include the policy path or policy contents. Absent for `--no-policy` indexes. |
+| `export_history` | yes | Object describing this export relative to prior exports of the same graph destination. |
+
+`export_history` shape:
+
+```json
+{
+  "export_id": "uuid-or-stable-token",
+  "previous_content_hash": null,
+  "node_content_hashes_changed": 0,
+  "node_content_hashes_unchanged": 0,
+  "nodes_added": 0,
+  "nodes_removed": 0
+}
+```
+
+- `previous_content_hash` is the aggregate content digest of the prior approved
+  export when a forced replacement rotates a previous file; otherwise `null`.
+- Counts are derived by comparing per-node `content_hash` and node ids. They are
+  structural facts about the export pair, not claims about author intent.
+
+### Evidence signals (v2)
+
+Candidate `evidence` objects MUST expose distinct signal bags instead of a
+single flattened kind:
+
+```json
+{
+  "citation": "Projects/Decision Memory.md:13-16",
+  "signals": {
+    "lexical_terms": ["reversible", "threshold"],
+    "shared_tags": ["decisions"],
+    "mutual_neighbor_ids": ["Projects/Related.md"]
+  },
+  "explanation": "Candidate only: overlapping signals are not proof of a factual relationship."
+}
+```
+
+v1 fields `shared_terms` and flat `citation` remain for compatibility.
+`signals.lexical_terms` SHOULD match `shared_terms` when both are present.
+Absence of a signal key means “not computed,” not “zero.”
+
+### Out of scope for v2
+
+Contradiction, causality, embedding similarity without shared vocabulary, and
+importance ranking remain out of scope. Dormant / Drift trail types may use
+`created_at` / `modified_at` / `export_history` only after Cold Trails
+implementation tasks land; the schema alone does not authorize those claims.
+
+See also `docs/cold-trails.md` release gates.
 
 Example:
 

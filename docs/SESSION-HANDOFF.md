@@ -19,16 +19,15 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: MILESTONE PROMOTION — PR #5 `foundry/steward` → `main`.**
+**Phase: STEWARDSHIP + product — post-PR #5; epic `recallweave-iyd` active.**
 
-- Integration branch: **`foundry/steward`** (scanner stewardship tip). PR #5 open.
+- Integration branch: **`foundry/steward`** cut from `main` @ `4bd4bcf` (PR #5).
 - `foundry/task-contracts` remains **HISTORICAL**. **Never merge it into current work.**
-- Latest adversarial verdict: cycle **26c PASS WITH FIXES** (Medium test-oracle
-  edges only; no runtime Critical/High). GitHub Codex turn 1 remediations in flight.
-- `CHECKPOINT_NOT_APPROVED.md` is **deleted in the promotion commit**.
-- Supervisor is **paused** until merge + fresh steward cut.
-- Next product epic queued: **`recallweave-iyd`** (Atlas viewer.v2 + Cold Trails),
-  blocked on this promotion.
+- Latest promoted adversarial verdict: cycle **26c PASS WITH FIXES** (scanner
+  stewardship on main).
+- `CHECKPOINT_NOT_APPROVED.md` is **restored** on the fresh steward.
+- Supervisor **unpaused** after this cut.
+- Active epic: **`recallweave-iyd`** Atlas viewer.v2 + Cold Trails foundation.
 
 ## 3. Architecture decisions already approved — DO NOT REOPEN
 
@@ -108,11 +107,10 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- Epic **`recallweave-iyd`** — Atlas viewer.v2 + Cold Trails foundation (queued;
-  first task `iyd.1` blocked on `6ie` promotion).
-- **`recallweave-6ie` in progress** — cycle-26 gate → PR #5 promote scanner
-  hardening.
-- Closed this rotation: `7a4`, `86e`, `07h`, `94b`, `rm3`, `41d`, `fh2`, `7o5`.
+- Epic **`recallweave-iyd`** — Atlas viewer.v2 + Cold Trails foundation.
+  - **`iyd.1` in progress** — freeze viewer.v2 schema (docs).
+  - `iyd.2`–`iyd.4` blocked in sequence (emit, Atlas consume, Cold Trails v1).
+- Closed: `6ie` (PR #5), `7a4`, `86e`, `07h`, `94b`, stewardship-24 queue.
 
 ## 7. Known failure modes and traps
 
@@ -200,11 +198,11 @@ Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 | Check | Value |
 |---|---|
 | Repo path | `/Users/josh/particle-workers/recallweave` |
-| Git branch | `foundry/steward` (fresh cut from `main` @ `374be23`) |
-| Marker | **deleted** for PR #5 promotion |
-| Supervisor | **paused** until merge + fresh cut |
-| Latest verdict | 26c PASS WITH FIXES; turn-1 remediations in flight |
-| Beads authoritative | **yes** — `6ie` promoting; epic `iyd` queued |
+| Git branch | `foundry/steward` (fresh cut from `main` @ `4bd4bcf`) |
+| Marker | **present** |
+| Supervisor | **running** |
+| Latest verdict | 26c PASS WITH FIXES (promoted via PR #5) |
+| Beads authoritative | **yes** — `iyd.1` in progress |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**

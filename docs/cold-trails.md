@@ -38,20 +38,21 @@ Cold Trails implementation waits for:
    refusal;
 4. a separately reviewed `recallweave.viewer.v2` schema.
 
-The proposed `viewer.v2` additions are:
+The **`recallweave.viewer.v2` schema is frozen** in `docs/json-output.md`
+(section “export-viewer and recallweave.viewer.v2”). Required additions:
 
-- `created_at` and `modified_at` per node;
-- `content_hash` plus an explicit export-history model;
-- `vault_name` for optional `obsidian://open` links;
-- a policy-provenance hash, never the policy contents or local policy path;
-- distinct evidence signals such as lexical terms, shared tags, and mutual
-  neighbors rather than a single flattened candidate kind.
+- `created_at` and `modified_at` per node (nullable when unknown);
+- `content_hash` per node plus graph-level `export_history`;
+- optional `vault_name` (label only, never a filesystem path);
+- optional `policy_config_sha256` (never policy path or contents);
+- distinct evidence `signals` (`lexical_terms`, `shared_tags`,
+  `mutual_neighbor_ids`).
 
-Until those fields exist, Atlas cannot honestly claim dormancy, rediscovery,
-drift over time, or a direct source-opening capability. Contradiction,
-causality, semantic similarity without shared vocabulary, and importance
-remain out of scope even for `viewer.v2`; they require a model or human review
-and an explicit trust design.
+Until exporters emit those fields, Atlas cannot honestly claim dormancy,
+rediscovery, drift over time, or a direct source-opening capability.
+Contradiction, causality, semantic similarity without shared vocabulary, and
+importance remain out of scope even for `viewer.v2`; they require a model or
+human review and an explicit trust design.
 
 ## Deterministically supportable trail types
 
