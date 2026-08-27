@@ -1588,7 +1588,20 @@ def _scan_writes_in_stmts(
                 if isinstance(node, ast.Call) and _is_write_call(node):
                     _record_write_call(node, names, bindings)
             _collect_named_expr_bindings(stmt.iter, bindings)
-            # Body may run zero times; preserve incoming bindings in the union.
+            # Conservatively bind loop targets from statically known iterable elements.
+            if isinstance(stmt.iter, (ast.List, ast.Tuple, ast.Set)):
+                collected: dict[str, list[str]] = {}
+                for elt in stmt.iter.elts:
+                    temp = dict(bindings)
+                    _bind_target(stmt.target, elt, temp)
+                    for key, segs in temp.items():
+                        if key not in bindings or segs != bindings.get(key):
+                            existing = collected.setdefault(key, list(bindings.get(key, [])))
+                            for seg in segs:
+                                if seg not in existing:
+                                    existing.append(seg)
+                for key, segs in collected.items():
+                    bindings[key] = segs
             incoming = dict(bindings)
             body_map = _scan_branch(stmt.body, names, bindings)
             else_map = _scan_branch(stmt.orelse, names, bindings)
@@ -1628,6 +1641,18 @@ def _scan_writes_in_stmts(
                     if isinstance(node, ast.Call) and _is_write_call(node):
                         _record_write_call(node, names, bindings)
                 _collect_named_expr_bindings(item.context_expr, bindings)
+                # Conservatively treat `with path_expr as name` as binding name to path_expr.
+                if item.optional_vars is not None:
+                    ctx = item.context_expr
+                    if (
+                        isinstance(ctx, ast.Call)
+                        and ctx.args
+                        and isinstance(ctx.func, (ast.Name, ast.Attribute))
+                    ):
+                        # nullcontext(path) / similar single-arg wrappers.
+                        _bind_target(item.optional_vars, ctx.args[0], bindings)
+                    else:
+                        _bind_target(item.optional_vars, ctx, bindings)
             _scan_writes_in_stmts(stmt.body, names, bindings)
         else:
             for node in ast.walk(stmt):
@@ -2262,8 +2287,34 @@ def build(vault):
 def build(vault):
     if (private := vault / "CON"):
         (private / "Note.md").write_text("x")
-    left, right = vault / "CON", vault / "Safe"
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_resolves_tuple_path_bindings(self) -> None:
+        source = '''
+def build(vault):
+    left, right = vault / "COM1", vault / "Safe"
     (left / "A.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("COM1", names)
+        self.assertNotIn("CON", names)
+
+    def test_scan_binds_for_loop_targets(self) -> None:
+        source = '''
+def build(vault):
+    for private in [vault / "CON"]:
+        (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_binds_with_as_targets(self) -> None:
+        source = '''
+def build(vault):
+    with nullcontext(vault / "CON") as private:
+        (private / "Note.md").write_text("x")
 '''
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)

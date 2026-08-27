@@ -95,7 +95,7 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 26b — re-gate after branch-union / walrus / tuple binding remediation.
+Cycle 26c — final re-gate after for-target / with-as / split-tuple remediation.
 
-Suite target **497** OK (1 skip). Clean PASS required before PR #5 promotion.
+Suite target **500** OK (1 skip). Clean PASS required before PR #5 promotion.
 <!-- CYCLE-CONTEXT-END -->
