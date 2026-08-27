@@ -150,6 +150,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     export_viewer.add_argument("--title")
     export_viewer.add_argument(
+        "--vault-name",
+        dest="vault_name",
+        help="Optional vault label for viewer.v2 (never a filesystem path).",
+    )
+    export_viewer.add_argument(
         "--force",
         action="store_true",
         help="Replace an existing viewer JSON file.",
@@ -263,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
                 include_candidates=not args.verified_only,
                 include_excerpts=args.include_excerpts,
                 title=args.title,
+                vault_name=args.vault_name,
                 force=args.force,
             ),
             "contract": lambda: export_contract(

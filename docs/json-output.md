@@ -16,8 +16,8 @@ Consumers should reject unknown major schema versions. Fields may be added
 within a schema version; consumers should ignore fields they do not use.
 
 `export-viewer` is an exception: both its stdout receipt and the graph document
-use the purpose-specific schema version `recallweave.viewer.v1`, documented
-below.
+use the purpose-specific schema version `recallweave.viewer.v2` (a documented
+superset of `recallweave.viewer.v1`).
 
 ## Citations
 

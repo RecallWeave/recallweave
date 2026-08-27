@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,7 @@ from .index import connect
 from .safe_write import _install_non_replacing, install, prepare_destination, verify_destination
 
 
-VIEWER_SCHEMA_VERSION = "recallweave.viewer.v1"
+VIEWER_SCHEMA_VERSION = "recallweave.viewer.v2"
 MAX_SUMMARY_CHARACTERS = 280
 MAX_EVIDENCE_CHARACTERS = 500
 
@@ -35,11 +37,27 @@ def _excerpt(value: str | None, limit: int) -> str:
     return compact[: limit - 1].rstrip() + "…"
 
 
+def _nullable_timestamp(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _content_hash(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _edge_evidence(
     raw: str,
     *,
     source_path: str,
+    target_path: str,
     include_excerpts: bool,
+    mutual_neighbor_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     try:
         parsed = json.loads(raw)
@@ -96,15 +114,95 @@ def _edge_evidence(
     if target:
         evidence["target_evidence"] = target
     shared_terms = parsed.get("shared_terms")
+    lexical_terms: list[str] = []
     if isinstance(shared_terms, list):
-        evidence["shared_terms"] = [
+        lexical_terms = [
             str(term) for term in shared_terms if isinstance(term, str)
         ][:12]
+        evidence["shared_terms"] = lexical_terms
     explanation = parsed.get("explanation")
     if isinstance(explanation, str):
         evidence["explanation"] = _excerpt(explanation, MAX_EVIDENCE_CHARACTERS)
 
+    shared_tags = parsed.get("shared_tags")
+    tag_terms: list[str] = []
+    if isinstance(shared_tags, list):
+        tag_terms = [str(tag) for tag in shared_tags if isinstance(tag, str)][:12]
+
+    signals: dict[str, Any] = {}
+    if lexical_terms:
+        signals["lexical_terms"] = lexical_terms
+    if tag_terms:
+        signals["shared_tags"] = tag_terms
+    if mutual_neighbor_ids:
+        signals["mutual_neighbor_ids"] = mutual_neighbor_ids[:12]
+    if signals:
+        evidence["signals"] = signals
+
     return evidence
+
+
+def _mutual_neighbors(
+    adjacency: dict[str, set[str]], source: str, target: str
+) -> list[str]:
+    shared = adjacency.get(source, set()) & adjacency.get(target, set())
+    shared.discard(source)
+    shared.discard(target)
+    return sorted(shared)
+
+
+def _aggregate_content_digest(nodes: list[dict[str, Any]]) -> str | None:
+    parts = [
+        f"{node['id']}:{node.get('content_hash') or ''}"
+        for node in sorted(nodes, key=lambda item: str(item["id"]))
+    ]
+    if not parts:
+        return None
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _export_history(
+    previous_document: dict[str, Any] | None, nodes: list[dict[str, Any]]
+) -> dict[str, Any]:
+    current_hashes = {
+        str(node["id"]): node.get("content_hash")
+        for node in nodes
+        if isinstance(node.get("id"), str)
+    }
+    previous_hashes: dict[str, str | None] = {}
+    if isinstance(previous_document, dict):
+        for node in previous_document.get("nodes") or []:
+            if isinstance(node, dict) and isinstance(node.get("id"), str):
+                previous_hashes[str(node["id"])] = node.get("content_hash")
+
+    added = sum(1 for node_id in current_hashes if node_id not in previous_hashes)
+    removed = sum(1 for node_id in previous_hashes if node_id not in current_hashes)
+    changed = 0
+    unchanged = 0
+    for node_id, digest in current_hashes.items():
+        if node_id not in previous_hashes:
+            continue
+        if previous_hashes[node_id] and digest and previous_hashes[node_id] == digest:
+            unchanged += 1
+        else:
+            changed += 1
+
+    previous_digest = None
+    if isinstance(previous_document, dict):
+        prior_nodes = previous_document.get("nodes")
+        if isinstance(prior_nodes, list):
+            previous_digest = _aggregate_content_digest(
+                [n for n in prior_nodes if isinstance(n, dict)]
+            )
+
+    return {
+        "export_id": str(uuid.uuid4()),
+        "previous_content_hash": previous_digest,
+        "node_content_hashes_changed": changed,
+        "node_content_hashes_unchanged": unchanged,
+        "nodes_added": added,
+        "nodes_removed": removed,
+    }
 
 
 def build_viewer_document(
@@ -113,6 +211,8 @@ def build_viewer_document(
     include_candidates: bool = True,
     include_excerpts: bool = False,
     title: str | None = None,
+    vault_name: str | None = None,
+    previous_document: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a bounded, browser-safe graph document from a RecallWeave index."""
 
@@ -120,6 +220,7 @@ def build_viewer_document(
         note_rows = connection.execute(
             """
             SELECT n.id, n.relative_path, n.title, n.tags_json, n.status, n.domain,
+                   n.created_at, n.modified_at, n.content_hash,
                    COUNT(s.id) AS section_count,
                    (
                        SELECT first.text
@@ -148,6 +249,9 @@ def build_viewer_document(
         unresolved = int(
             connection.execute("SELECT COUNT(*) FROM unresolved_links").fetchone()[0]
         )
+        policy_row = connection.execute(
+            "SELECT value FROM meta WHERE key = 'policy_config_sha256'"
+        ).fetchone()
 
     nodes = []
     for row in note_rows:
@@ -164,8 +268,20 @@ def build_viewer_document(
             ),
             "tags": _json_list(str(row["tags_json"])),
             "section_count": int(row["section_count"]),
+            "created_at": _nullable_timestamp(row["created_at"]),
+            "modified_at": _nullable_timestamp(row["modified_at"]),
+            "content_hash": _content_hash(row["content_hash"]),
         }
         nodes.append(node)
+
+    adjacency: dict[str, set[str]] = {node["id"]: set() for node in nodes}
+    for row in edge_rows:
+        if not bool(row["is_verified"]):
+            continue
+        source_path = paths[int(row["source_note_id"])]
+        target_path = paths[int(row["target_note_id"])]
+        adjacency.setdefault(source_path, set()).add(target_path)
+        adjacency.setdefault(target_path, set()).add(source_path)
 
     edges = []
     for row in edge_rows:
@@ -182,7 +298,11 @@ def build_viewer_document(
                 "evidence": _edge_evidence(
                     str(row["evidence_json"]),
                     source_path=source_path,
+                    target_path=target_path,
                     include_excerpts=include_excerpts,
+                    mutual_neighbor_ids=_mutual_neighbors(
+                        adjacency, source_path, target_path
+                    ),
                 ),
             }
         )
@@ -209,7 +329,7 @@ def build_viewer_document(
         export_profile = "graph_metadata"
     else:
         export_profile = "empty_graph"
-    return {
+    document: dict[str, Any] = {
         "schema_version": VIEWER_SCHEMA_VERSION,
         "title": title or f"RecallWeave graph — {database.stem}",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -230,7 +350,13 @@ def build_viewer_document(
             "includes_paths_titles_tags": includes_paths_titles_tags,
             "generated_locally": True,
         },
+        "export_history": _export_history(previous_document, nodes),
     }
+    if vault_name:
+        document["vault_name"] = vault_name
+    if policy_row is not None and str(policy_row[0]).strip():
+        document["policy_config_sha256"] = str(policy_row[0]).strip()
+    return document
 
 
 def export_viewer_graph(
@@ -240,6 +366,7 @@ def export_viewer_graph(
     include_candidates: bool = True,
     include_excerpts: bool = False,
     title: str | None = None,
+    vault_name: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     database = database.expanduser().resolve()
@@ -253,11 +380,22 @@ def export_viewer_graph(
         protected_target_message=protected_message,
     )
 
+    previous_document: dict[str, Any] | None = None
+    if guard.get("output_existed") and output.is_file():
+        try:
+            loaded = json.loads(output.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            previous_document = loaded
+
     document = build_viewer_document(
         database,
         include_candidates=include_candidates,
         include_excerpts=include_excerpts,
         title=title,
+        vault_name=vault_name,
+        previous_document=previous_document,
     )
     verify_destination(
         output,

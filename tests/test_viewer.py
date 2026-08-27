@@ -83,6 +83,49 @@ class ViewerExportTest(unittest.TestCase):
         self.assertIn("passage", excerpt_candidate["evidence"]["source_evidence"])
         self.assertIn("passage", excerpt_candidate["evidence"]["target_evidence"])
 
+    def test_viewer_v2_emits_node_hashes_history_and_signals(self) -> None:
+        document = build_viewer_document(
+            self.database, vault_name="synthetic-vault"
+        )
+        self.assertEqual(document["schema_version"], "recallweave.viewer.v2")
+        self.assertEqual(document["vault_name"], "synthetic-vault")
+        self.assertIn("export_history", document)
+        history = document["export_history"]
+        for key in (
+            "export_id",
+            "previous_content_hash",
+            "node_content_hashes_changed",
+            "node_content_hashes_unchanged",
+            "nodes_added",
+            "nodes_removed",
+        ):
+            self.assertIn(key, history)
+        self.assertIsNone(history["previous_content_hash"])
+        self.assertEqual(history["nodes_added"], len(document["nodes"]))
+        for node in document["nodes"]:
+            self.assertIn("created_at", node)
+            self.assertIn("modified_at", node)
+            self.assertIn("content_hash", node)
+            self.assertTrue(node["content_hash"])
+        candidate = next(edge for edge in document["edges"] if not edge["verified"])
+        self.assertIn("signals", candidate["evidence"])
+        self.assertEqual(
+            candidate["evidence"]["signals"].get("lexical_terms"),
+            candidate["evidence"].get("shared_terms"),
+        )
+
+        output = Path(self.temporary.name) / "v2-graph.json"
+        export_viewer_graph(self.database, output, vault_name="synthetic-vault")
+        again = export_viewer_graph(
+            self.database, output, vault_name="synthetic-vault", force=True
+        )
+        self.assertEqual(again["schema_version"], VIEWER_SCHEMA_VERSION)
+        second = json.loads(output.read_text(encoding="utf-8"))
+        self.assertIsNotNone(second["export_history"]["previous_content_hash"])
+        self.assertGreaterEqual(
+            second["export_history"]["node_content_hashes_unchanged"], 1
+        )
+
     def test_export_refuses_overwrite_without_force(self) -> None:
         output = Path(self.temporary.name) / "graph.json"
         receipt = export_viewer_graph(self.database, output)
