@@ -19,23 +19,16 @@ settled design.
 
 ## 2. Current phase / checkpoint
 
-**Phase: MILESTONE PROMOTION — stewardship hardening PR `foundry/steward` → `main`.**
+**Phase: MILESTONE PROMOTION — PR #5 `foundry/steward` → `main`.**
 
-- Integration branch: **`foundry/steward`** (post-PR #3 lineage). PR #4 open for
-  squash-merge to `main`.
-- `foundry/task-contracts` remains **HISTORICAL** (PR #1 lineage). **Never merge
-  it into current work.**
-- Latest adversarial verdict for this promotion: cycle **24i** `PASS WITH FIXES`
-  at `c1a4ccb` (`.codex-reviews/review-20260824T101232Z.md`); only Medium
-  test-scanner coverage gaps remain — no runtime Critical/High findings.
-  Cycle **24d PASS** at `f3b7fe1` covered an earlier tree only.
-- `CHECKPOINT_NOT_APPROVED.md` is **deleted in this promotion commit**. Do not
-  restore it until after merge, when a fresh steward is cut from the new `main`.
-- Supervisor is **paused** (`~/.particle-supervisor/PAUSED`) until merge
-  completes and the fresh checkpoint is cut. Do not unpause during the open PR.
-- `SWARM-RUNBOOK.md` was adopted 2026-08-23 as operating doctrine. **Read its
-  §11 first**: the generated body was rendered for `elevare-agent-factory` and
-  its project facts do not describe this repo.
+- Integration branch: **`foundry/steward`** (scanner stewardship tip). PR #5 open.
+- `foundry/task-contracts` remains **HISTORICAL**. **Never merge it into current work.**
+- Latest adversarial verdict: cycle **26c PASS WITH FIXES** (Medium test-oracle
+  edges only; no runtime Critical/High). GitHub Codex turn 1 remediations in flight.
+- `CHECKPOINT_NOT_APPROVED.md` is **deleted in the promotion commit**.
+- Supervisor is **paused** until merge + fresh steward cut.
+- Next product epic queued: **`recallweave-iyd`** (Atlas viewer.v2 + Cold Trails),
+  blocked on this promotion.
 
 ## 3. Architecture decisions already approved — DO NOT REOPEN
 
@@ -115,12 +108,11 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 6. Active beads and worker assignments
 
-- Epic **`recallweave-7o5`** — stewardship phase queue after PR #3:
-  1. **`recallweave-rm3` closed**
-  2. **`recallweave-41d` closed** — cycle-24d PASS (`review-20260824T064133Z.md`)
-  3. **`recallweave-fh2` in progress** — promote to main (Codex ≤3; Josh
-     pre-authorized merge)
-- Also closed: `cxn`, `dle`. Supervisor **paused** for promotion.
+- Epic **`recallweave-iyd`** — Atlas viewer.v2 + Cold Trails foundation (queued;
+  first task `iyd.1` blocked on `6ie` promotion).
+- **`recallweave-6ie` in progress** — cycle-26 gate → PR #5 promote scanner
+  hardening.
+- Closed this rotation: `7a4`, `86e`, `07h`, `94b`, `rm3`, `41d`, `fh2`, `7o5`.
 
 ## 7. Known failure modes and traps
 
@@ -178,17 +170,15 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 8. Supervisor / coordinator status
 
-- **Paused for promotion.** `~/.particle-supervisor/PAUSED` is present so the
-  supervisor cannot recreate `CHECKPOINT_NOT_APPROVED.md` while PR #4 is open.
-  Resume only after merge + fresh steward cut from the new `main`.
+- **Running.** Supervisor was unpaused after PR #4 merge and fresh steward cut.
 - **The supervisor owns the routine loop** — integrate, gate, rotate, nudge,
   push, dispatch. Do not hand-drive it in parallel; two dispatchers produce
   duplicate work and lost commits.
 
 ## 9. Review state
 
-- Adversarial gate: cycle **24d PASS** at `f3b7fe1`; cycle **24e** covers
-  post-remediation tree (PR #4 turn 1/2). Marker deleted; supervisor paused.
+- Adversarial gate: cycle **25c PASS WITH FIXES** at `6d0260a` (scanner hardening;
+  no runtime Critical/High). Three remediation cycles consumed (25→25b→25c).
 
 ## 10. Do NOT replan or reconsider
 
@@ -203,18 +193,18 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 Anything not listed here is open to the next planner's judgement.
 
-## 11. Verified state at handoff (2026-08-24 promotion)
+## 11. Verified state at handoff (2026-08-24 post-merge)
 
 Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 
 | Check | Value |
 |---|---|
 | Repo path | `/Users/josh/particle-workers/recallweave` |
-| Git branch | `foundry/steward` (PR #4 → `main`) |
-| Marker | **deleted** for promotion |
+| Git branch | `foundry/steward` (fresh cut from `main` @ `374be23`) |
+| Marker | **deleted** for PR #5 promotion |
 | Supervisor | **paused** until merge + fresh cut |
-| Latest verdict | 24i PASS WITH FIXES @ `c1a4ccb`; Medium scanner gaps only |
-| Beads authoritative | **yes** — open: `fh2` (promote), epic `7o5`; `41d` closed |
+| Latest verdict | 26c PASS WITH FIXES; turn-1 remediations in flight |
+| Beads authoritative | **yes** — `6ie` promoting; epic `iyd` queued |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**

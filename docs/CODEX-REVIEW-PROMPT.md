@@ -95,7 +95,10 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 24i — final promotion-tree gate after boolean format-spec remediation.
+Cycle 26d — GitHub PR #5 turn-1 remediations (defaults/decorators, match
+subject/guards, handle.write payload vs path, split for-else/AugAssign).
 
-Suite target **485** OK (1 skip). PASS required for PR #4 merge.
+Suite target **504** OK (1 skip). Prefer clean PASS; PASS WITH FIXES acceptable
+only when remaining findings are Medium/Low test-oracle coverage with no `src/`
+runtime changes (same bar as merged PR #4).
 <!-- CYCLE-CONTEXT-END -->

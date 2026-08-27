@@ -1463,8 +1463,237 @@ def _md_strings_in(node: ast.AST | None) -> list[str]:
     return found
 
 
-def _collect_joinpath_segments(expr: ast.AST, names: list[str]) -> None:
-    """Collect static arguments from ``Path.joinpath(...)`` receiver chains."""
+def _resolve_binding_segments(
+    expr: ast.AST, bindings: dict[str, list[str]]
+) -> list[str]:
+    segments: list[str] = []
+    _collect_path_segments(expr, segments, bindings)
+    return segments
+
+
+def _merge_bindings(*maps: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Union path-segment bindings across mutually exclusive branches."""
+    merged: dict[str, list[str]] = {}
+    for mapping in maps:
+        for key, segs in mapping.items():
+            existing = merged.setdefault(key, [])
+            for seg in segs:
+                if seg not in existing:
+                    existing.append(seg)
+    return merged
+
+
+def _bind_target(
+    target: ast.AST, value: ast.AST, bindings: dict[str, list[str]]
+) -> None:
+    if isinstance(target, ast.Name):
+        segs = _resolve_binding_segments(value, bindings)
+        if segs:
+            bindings[target.id] = segs
+        else:
+            bindings.pop(target.id, None)
+        return
+    if isinstance(target, (ast.Tuple, ast.List)) and isinstance(
+        value, (ast.Tuple, ast.List)
+    ):
+        for left, right in zip(target.elts, value.elts):
+            _bind_target(left, right, bindings)
+
+
+def _collect_named_expr_bindings(node: ast.AST, bindings: dict[str, list[str]]) -> None:
+    for child in ast.walk(node):
+        if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            segs = _resolve_binding_segments(child.value, bindings)
+            if segs:
+                bindings[child.target.id] = segs
+
+
+def _scan_branch(
+    stmts: list[ast.stmt], names: list[str], bindings: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    branch = dict(bindings)
+    _scan_writes_in_stmts(stmts, names, branch)
+    return branch
+
+
+def _record_write_call(
+    node: ast.Call, names: list[str], bindings: dict[str, list[str]]
+) -> None:
+    # Bare nested helpers take the path as arg0. Attribute ``write`` is a file
+    # handle payload write — do not treat the body as a filename.
+    if isinstance(node.func, ast.Name) and node.func.id == "write":
+        if node.args:
+            _collect_name_expr(node.args[0], names, bindings)
+        for kw_value in _pathlike_kwargs(node):
+            _collect_name_expr(kw_value, names, bindings)
+        return
+    if isinstance(node.func, ast.Attribute) and node.func.attr in (
+        "write_text",
+        "write_bytes",
+        "touch",
+    ):
+        receiver = node.func.value
+        names.extend(_md_strings_in(receiver))
+        _collect_path_segments(receiver, names, bindings)
+        return
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "write":
+        # File-handle write: inspect the bound receiver path only.
+        _collect_path_segments(node.func.value, names, bindings)
+
+
+def _scan_writes_in_stmts(
+    stmts: list[ast.stmt], names: list[str], bindings: dict[str, list[str]]
+) -> None:
+    for stmt in stmts:
+        if isinstance(stmt, ast.Assign):
+            for node in ast.walk(stmt.value):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+            _collect_named_expr_bindings(stmt.value, bindings)
+            for target in stmt.targets:
+                _bind_target(target, stmt.value, bindings)
+        elif (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.value is not None
+        ):
+            for node in ast.walk(stmt.value):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+            _collect_named_expr_bindings(stmt.value, bindings)
+            _bind_target(stmt.target, stmt.value, bindings)
+        elif isinstance(stmt, ast.AugAssign) and isinstance(stmt.target, ast.Name):
+            for node in ast.walk(stmt.value):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+            pseudo = ast.BinOp(
+                left=ast.Name(id=stmt.target.id, ctx=ast.Load()),
+                op=stmt.op,
+                right=stmt.value,
+            )
+            segs = _resolve_binding_segments(pseudo, bindings)
+            if segs:
+                bindings[stmt.target.id] = segs
+            else:
+                bindings.pop(stmt.target.id, None)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for deco in stmt.decorator_list:
+                for node in ast.walk(deco):
+                    if isinstance(node, ast.Call) and _is_write_call(node):
+                        _record_write_call(node, names, bindings)
+                _collect_named_expr_bindings(deco, bindings)
+            for default in list(stmt.args.defaults) + list(stmt.args.kw_defaults):
+                if default is None:
+                    continue
+                for node in ast.walk(default):
+                    if isinstance(node, ast.Call) and _is_write_call(node):
+                        _record_write_call(node, names, bindings)
+                _collect_named_expr_bindings(default, bindings)
+            _scan_writes_in_stmts(stmt.body, names, dict(bindings))
+        elif isinstance(stmt, ast.If):
+            for node in ast.walk(stmt.test):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+            _collect_named_expr_bindings(stmt.test, bindings)
+            then_map = _scan_branch(stmt.body, names, bindings)
+            else_map = _scan_branch(stmt.orelse, names, bindings)
+            bindings.clear()
+            bindings.update(_merge_bindings(then_map, else_map))
+        elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+            for node in ast.walk(stmt.iter):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+            _collect_named_expr_bindings(stmt.iter, bindings)
+            # Conservatively bind loop targets from statically known iterable elements.
+            if isinstance(stmt.iter, (ast.List, ast.Tuple, ast.Set)):
+                collected: dict[str, list[str]] = {}
+                for elt in stmt.iter.elts:
+                    temp = dict(bindings)
+                    _bind_target(stmt.target, elt, temp)
+                    for key, segs in temp.items():
+                        if key not in bindings or segs != bindings.get(key):
+                            existing = collected.setdefault(key, list(bindings.get(key, [])))
+                            for seg in segs:
+                                if seg not in existing:
+                                    existing.append(seg)
+                for key, segs in collected.items():
+                    bindings[key] = segs
+            incoming = dict(bindings)
+            body_map = _scan_branch(stmt.body, names, bindings)
+            else_map = _scan_branch(stmt.orelse, names, bindings)
+            bindings.clear()
+            bindings.update(_merge_bindings(incoming, body_map, else_map))
+        elif isinstance(stmt, ast.While):
+            for node in ast.walk(stmt.test):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+            _collect_named_expr_bindings(stmt.test, bindings)
+            incoming = dict(bindings)
+            body_map = _scan_branch(stmt.body, names, bindings)
+            else_map = _scan_branch(stmt.orelse, names, bindings)
+            bindings.clear()
+            bindings.update(_merge_bindings(incoming, body_map, else_map))
+        elif isinstance(stmt, ast.Try):
+            incoming = dict(bindings)
+            body_map = _scan_branch(stmt.body, names, bindings)
+            handler_maps = [
+                _scan_branch(handler.body, names, bindings) for handler in stmt.handlers
+            ]
+            else_map = _scan_branch(stmt.orelse, names, body_map)
+            after = _merge_bindings(incoming, body_map, else_map, *handler_maps)
+            bindings.clear()
+            bindings.update(after)
+            _scan_writes_in_stmts(stmt.finalbody, names, bindings)
+        elif isinstance(stmt, ast.Match):
+            for node in ast.walk(stmt.subject):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+            _collect_named_expr_bindings(stmt.subject, bindings)
+            incoming = dict(bindings)
+            case_maps = []
+            for case in stmt.cases:
+                if case.guard is not None:
+                    for node in ast.walk(case.guard):
+                        if isinstance(node, ast.Call) and _is_write_call(node):
+                            _record_write_call(node, names, bindings)
+                    _collect_named_expr_bindings(case.guard, bindings)
+                case_maps.append(_scan_branch(case.body, names, bindings))
+            bindings.clear()
+            bindings.update(_merge_bindings(incoming, *case_maps))
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                for node in ast.walk(item.context_expr):
+                    if isinstance(node, ast.Call) and _is_write_call(node):
+                        _record_write_call(node, names, bindings)
+                _collect_named_expr_bindings(item.context_expr, bindings)
+                # Conservatively treat `with path_expr as name` as binding name to path_expr.
+                if item.optional_vars is not None:
+                    ctx = item.context_expr
+                    if (
+                        isinstance(ctx, ast.Call)
+                        and ctx.args
+                        and isinstance(ctx.func, (ast.Name, ast.Attribute))
+                    ):
+                        # open(path)/nullcontext(path) — bind to the path argument.
+                        _bind_target(item.optional_vars, ctx.args[0], bindings)
+                    else:
+                        _bind_target(item.optional_vars, ctx, bindings)
+            _scan_writes_in_stmts(stmt.body, names, bindings)
+        else:
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Call) and _is_write_call(node):
+                    _record_write_call(node, names, bindings)
+                if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+                    segs = _resolve_binding_segments(node.value, bindings)
+                    if segs:
+                        bindings[node.target.id] = segs
+
+
+def _collect_path_segments(
+    expr: ast.AST, names: list[str], bindings: dict[str, list[str]] | None = None
+) -> None:
+    """Collect static ``/``, ``joinpath()``, and bound-name path segments."""
+    bindings = bindings or {}
     seen: set[str] = set()
 
     def append(name: str) -> None:
@@ -1474,6 +1703,19 @@ def _collect_joinpath_segments(expr: ast.AST, names: list[str]) -> None:
         names.append(name)
 
     def walk(e: ast.AST) -> None:
+        if isinstance(e, ast.NamedExpr):
+            # Bind the target from the value, then continue collecting from value.
+            value_segs: list[str] = []
+            _collect_path_segments(e.value, value_segs, bindings)
+            if isinstance(e.target, ast.Name) and value_segs:
+                bindings[e.target.id] = list(value_segs)
+            for seg in value_segs:
+                append(seg)
+            return
+        if isinstance(e, ast.Name) and e.id in bindings:
+            for seg in bindings[e.id]:
+                append(seg)
+            return
         if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute):
             if e.func.attr == "joinpath":
                 walk(e.func.value)
@@ -1487,29 +1729,6 @@ def _collect_joinpath_segments(expr: ast.AST, names: list[str]) -> None:
                         for part in _md_strings_in(arg):
                             append(part)
                 return
-        if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
-            walk(e.left)
-            seg = _static_str(e.right)
-            if seg is not None:
-                append(seg)
-            else:
-                for part in _md_strings_in(e.right):
-                    append(part)
-
-    walk(expr)
-
-
-def _collect_div_path_segments(expr: ast.AST, names: list[str]) -> None:
-    """Collect every statically known ``/`` segment from a Path receiver chain."""
-    seen: set[str] = set()
-
-    def append(name: str) -> None:
-        if not name or name in seen or len(name) > 240:
-            return
-        seen.add(name)
-        names.append(name)
-
-    def walk(e: ast.AST) -> None:
         if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Div):
             walk(e.left)
             seg = _static_str(e.right)
@@ -1548,7 +1767,13 @@ def _pathlike_kwargs(node: ast.Call) -> list[ast.AST]:
     return values
 
 
-def _collect_name_expr(expr: ast.AST, names: list[str]) -> None:
+def _collect_name_expr(
+    expr: ast.AST, names: list[str], bindings: dict[str, list[str]] | None = None
+) -> None:
+    bindings = bindings or {}
+    if isinstance(expr, ast.Name) and expr.id in bindings:
+        names.extend(bindings[expr.id])
+        return
     if (
         isinstance(expr, ast.Constant)
         and isinstance(expr.value, str)
@@ -1561,8 +1786,7 @@ def _collect_name_expr(expr: ast.AST, names: list[str]) -> None:
         names.append(resolved)
         return
     names.extend(_md_strings_in(expr))
-    _collect_div_path_segments(expr, names)
-    _collect_joinpath_segments(expr, names)
+    _collect_path_segments(expr, names, bindings)
 
 
 def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
@@ -1570,28 +1794,8 @@ def _vault_write_fixture_names_from_tree(tree: ast.AST) -> list[str]:
     calls in ``tree`` — including nested helpers invoked as bare names,
     keyword path arguments, nested concatenations, and Path receivers."""
     names: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_write_call(node):
-            continue
-        # Path.write_text/write_bytes: args[0] is file BODY, not the filename.
-        # Only bare/attribute ``write(...)`` helpers take the path as arg0.
-        helper_path_arg = isinstance(node.func, ast.Name) or (
-            isinstance(node.func, ast.Attribute) and node.func.attr == "write"
-        )
-        if helper_path_arg:
-            if node.args:
-                _collect_name_expr(node.args[0], names)
-            for kw_value in _pathlike_kwargs(node):
-                _collect_name_expr(kw_value, names)
-        if isinstance(node.func, ast.Attribute) and node.func.attr in (
-            "write_text",
-            "write_bytes",
-            "touch",
-        ):
-            receiver = node.func.value
-            names.extend(_md_strings_in(receiver))
-            _collect_div_path_segments(receiver, names)
-            _collect_joinpath_segments(receiver, names)
+    body = tree.body if isinstance(tree, ast.Module) else [tree]
+    _scan_writes_in_stmts(body, names, {})
     return names
 
 
@@ -1964,6 +2168,218 @@ def build(vault):
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
         self.assertIn("Note.md", names)
+
+    def test_scan_collects_variable_assigned_directory_components(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "CON"
+    private.mkdir()
+    (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_collects_joinpath_variable_directory_components(self) -> None:
+        source = '''
+def build(vault):
+    directory = vault.joinpath("CON")
+    directory.mkdir()
+    directory.joinpath("Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_resolves_transitive_path_bindings(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "CON"
+    nested = private / "Safe"
+    (nested / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Safe", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_respects_reassignment_order(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "CON"
+    (private / "First.md").write_text("x")
+    private = vault / "Safe"
+    (private / "Second.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Safe", names)
+        self.assertIn("First.md", names)
+        self.assertIn("Second.md", names)
+
+    def test_scan_scopes_bindings_per_function(self) -> None:
+        source = '''
+def build(vault):
+    def reserved():
+        private = vault / "CON"
+        (private / "Bad.md").write_text("x")
+    def safe():
+        private = vault / "Safe"
+        (private / "Ok.md").write_text("x")
+    reserved()
+    safe()
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Safe", names)
+
+    def test_scan_catches_write_on_assignment_rhs(self) -> None:
+        source = '''
+def build(vault):
+    result = (vault / "CON" / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_inherits_enclosing_bindings_in_nested_functions(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "CON"
+    def helper():
+        (private / "Note.md").write_text("x")
+    helper()
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_collects_bindings_inside_while_bodies(self) -> None:
+        source = '''
+def build(vault):
+    while ready():
+        private = vault / "CON"
+        (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_collects_for_else_and_augassign_paths(self) -> None:
+        source = '''
+def build(vault):
+    for item in []:
+        pass
+    else:
+        private = vault / "CON"
+        (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_resolves_augassign_path_bindings(self) -> None:
+        source = '''
+def build(vault):
+    private = vault
+    private /= "COM2"
+    (private / "Other.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("COM2", names)
+
+    def test_scan_unions_bindings_across_if_branches(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "Safe"
+    if flag:
+        private = vault / "CON"
+    else:
+        private = vault / "Safe"
+    (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Safe", names)
+
+    def test_scan_unions_bindings_across_try_handlers(self) -> None:
+        source = '''
+def build(vault):
+    private = vault / "Safe"
+    try:
+        private = vault / "CON"
+    except Exception:
+        private = vault / "Safe"
+    (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_resolves_walrus_path_bindings(self) -> None:
+        source = '''
+def build(vault):
+    if (private := vault / "CON"):
+        (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_resolves_tuple_path_bindings(self) -> None:
+        source = '''
+def build(vault):
+    left, right = vault / "COM1", vault / "Safe"
+    (left / "A.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("COM1", names)
+        self.assertNotIn("CON", names)
+
+    def test_scan_binds_for_loop_targets(self) -> None:
+        source = '''
+def build(vault):
+    for private in [vault / "CON"]:
+        (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_binds_with_as_targets(self) -> None:
+        source = '''
+def build(vault):
+    with nullcontext(vault / "CON") as private:
+        (private / "Note.md").write_text("x")
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_catches_writes_in_function_defaults(self) -> None:
+        source = '''
+def build(vault):
+    def helper(created=(vault / "CON" / "Note.md").write_text("x")):
+        return created
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+        self.assertIn("Note.md", names)
+
+    def test_scan_catches_writes_in_match_subject(self) -> None:
+        source = '''
+def build(vault):
+    match (vault / "CON" / "Note.md").write_text("x"):
+        case _:
+            pass
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertIn("CON", names)
+
+    def test_scan_does_not_treat_handle_write_payload_as_path(self) -> None:
+        source = '''
+def build(vault):
+    body = "CON"
+    handle = open("Safe.md", "w")
+    handle.write(body)
+'''
+        names = _vault_write_fixture_names_from_tree(ast.parse(source))
+        self.assertNotIn("CON", names)
 
 
 class ContractVaultInjectionTest(unittest.TestCase):
