@@ -2282,7 +2282,7 @@ def build(vault):
         names = _vault_write_fixture_names_from_tree(ast.parse(source))
         self.assertIn("CON", names)
 
-    def test_scan_resolves_walrus_and_tuple_path_bindings(self) -> None:
+    def test_scan_resolves_walrus_path_bindings(self) -> None:
         source = '''
 def build(vault):
     if (private := vault / "CON"):
