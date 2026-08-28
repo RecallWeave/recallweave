@@ -303,6 +303,91 @@ test("detects island trails for low-degree nodes with multiple candidates", () =
   assert.equal(island?.trust, "structural");
 });
 
+test("excludes candidates with one-sided or mismatched citations", () => {
+  const nodes = Array.from({ length: 8 }, (_, index) => ({
+    id: `note-${index}.md`,
+    title: `Note ${index}`,
+    path: `note-${index}.md`,
+    domain: index % 2 ? "A" : "B",
+  }));
+  const mixed = buildColdTrails(
+    graph({
+      nodes,
+      edges: [
+        { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+        {
+          id: "c1",
+          source: "note-2.md",
+          target: "note-3.md",
+          verified: false,
+          evidence: {
+            source_evidence: { citation: "note-2.md:10" },
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          },
+        },
+        {
+          id: "c2",
+          source: "note-4.md",
+          target: "note-5.md",
+          verified: false,
+          evidence: citedEvidence("note-4.md", "note-5.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "note-6.md",
+          target: "note-7.md",
+          verified: false,
+          evidence: citedEvidence("note-6.md", "note-7.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "tensor", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(mixed.status, "ok");
+  assert.ok(!mixed.trails.some((trail) => trail.edgeId === "c1"));
+
+  const mismatched = buildColdTrails(
+    graph({
+      nodes,
+      edges: [
+        { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+        {
+          id: "bad",
+          source: "note-2.md",
+          target: "note-3.md",
+          verified: false,
+          evidence: citedEvidence("note-2.md", "note-99.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c2",
+          source: "note-4.md",
+          target: "note-5.md",
+          verified: false,
+          evidence: citedEvidence("note-4.md", "note-5.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "note-6.md",
+          target: "note-7.md",
+          verified: false,
+          evidence: citedEvidence("note-6.md", "note-7.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "tensor", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(mismatched.status, "ok");
+  assert.ok(!mismatched.trails.some((trail) => trail.edgeId === "bad"));
+});
+
 test("refuses candidate trails without valid citations", () => {
   const fixture = graph({
     nodes: Array.from({ length: 8 }, (_, index) => ({

@@ -105,7 +105,8 @@ test("Cold Trails tour dialog meets accessibility and trust boundaries", async (
   assert.match(tour, /aria-modal="true"/);
   assert.match(tour, /aria-live="polite"/);
   assert.match(tour, /trailTrustLabel\(current\.trust\)/);
-  assert.match(tour, /Open source/);
+  assert.match(tour, /label="Source evidence"/);
+  assert.match(tour, /label="Target evidence"/);
   assert.match(tour, /Show on map/);
   assert.doesNotMatch(tour, /obsidian:\/\//);
 

@@ -330,20 +330,18 @@ export function ColdTrailsTour({
             )}
             {edge && (
               <div className="cold-trails-evidence">
-                {edge.evidence?.source_evidence?.passage && (
-                  <p>{edge.evidence.source_evidence.passage}</p>
-                )}
-                {edge.evidence?.target_evidence?.passage && (
-                  <p>{edge.evidence.target_evidence.passage}</p>
-                )}
-                {edge.evidence?.source_evidence?.citation && (
-                  <div className="citation-row">
-                    <code>{edge.evidence.source_evidence.citation}</code>
-                    <button onClick={() => onCopyCitation(edge.evidence!.source_evidence!.citation!)}>
-                      Copy citation
-                    </button>
-                  </div>
-                )}
+                <EvidenceSide
+                  label="Source evidence"
+                  evidence={edge.evidence?.source_evidence}
+                  onCopyCitation={onCopyCitation}
+                  onCopyPath={onCopyPath}
+                />
+                <EvidenceSide
+                  label="Target evidence"
+                  evidence={edge.evidence?.target_evidence}
+                  onCopyCitation={onCopyCitation}
+                  onCopyPath={onCopyPath}
+                />
               </div>
             )}
             <ul className="cold-trails-facts">
@@ -394,6 +392,34 @@ export function ColdTrailsTour({
           <p className="cold-trails-saved-count" role="status">{saved.length} trail{saved.length === 1 ? "" : "s"} saved this session.</p>
         )}
       </div>
+    </div>
+  );
+}
+
+function EvidenceSide({
+  label,
+  evidence,
+  onCopyCitation,
+  onCopyPath,
+}: {
+  label: string;
+  evidence?: { citation?: string; passage?: string };
+  onCopyCitation: (citation: string) => void;
+  onCopyPath: (path: string) => void;
+}) {
+  if (!evidence?.citation && !evidence?.passage) return null;
+  const path = evidence.citation ? citationPath(evidence.citation) : "";
+  return (
+    <div className="evidence-side">
+      <span className="evidence-side-label">{label}</span>
+      {evidence.passage && <p>{evidence.passage}</p>}
+      {evidence.citation && (
+        <div className="citation-row">
+          <code title={evidence.citation}>{evidence.citation}</code>
+          <button onClick={() => onCopyCitation(evidence.citation!)}>Copy citation</button>
+          {path && <button onClick={() => onCopyPath(path)}>Copy path</button>}
+        </div>
+      )}
     </div>
   );
 }

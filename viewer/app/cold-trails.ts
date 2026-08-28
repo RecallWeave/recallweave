@@ -1,4 +1,5 @@
 import {
+  citationPath,
   safeCitation,
   type GraphDocument,
   type GraphEdge,
@@ -120,23 +121,33 @@ function edgeForTrail(graph: GraphDocument, trail: ColdTrail): GraphEdge | undef
 function trailCitations(graph: GraphDocument, trail: ColdTrail): string[] {
   const edge = edgeForTrail(graph, trail);
   if (!edge) return [];
-  const citations = [
-    edge.evidence?.source_evidence?.citation,
-    edge.evidence?.target_evidence?.citation,
-    edge.evidence?.citation,
-  ]
-    .map((value) => safeCitation(value))
-    .filter(Boolean);
-  return [...new Set(citations)];
+  const source = graph.nodes.find((node) => node.id === trail.sourceId);
+  const target = graph.nodes.find((node) => node.id === trail.targetId);
+  if (!source || !target) return [];
+  const sourceCitation = safeCitation(edge.evidence?.source_evidence?.citation);
+  const targetCitation = safeCitation(edge.evidence?.target_evidence?.citation);
+  if (
+    !sourceCitation ||
+    !targetCitation ||
+    !citationMatchesNode(sourceCitation, source) ||
+    !citationMatchesNode(targetCitation, target)
+  ) {
+    return [];
+  }
+  return [sourceCitation, targetCitation];
 }
 
-function candidateHasValidCitation(edge: GraphEdge): boolean {
-  const citations = [
-    edge.evidence?.source_evidence?.citation,
-    edge.evidence?.target_evidence?.citation,
-    edge.evidence?.citation,
-  ];
-  return citations.some((value) => Boolean(safeCitation(value)));
+function citationMatchesNode(citation: string, node: GraphNode): boolean {
+  const path = citationPath(citation);
+  if (!path) return false;
+  return path === node.path || path === node.id;
+}
+
+function candidateHasValidCitation(edge: GraphEdge, source: GraphNode, target: GraphNode): boolean {
+  const sourceCitation = safeCitation(edge.evidence?.source_evidence?.citation);
+  const targetCitation = safeCitation(edge.evidence?.target_evidence?.citation);
+  if (!sourceCitation || !targetCitation) return false;
+  return citationMatchesNode(sourceCitation, source) && citationMatchesNode(targetCitation, target);
 }
 
 export function exportSavedTrailsMarkdown(graph: GraphDocument, trails: ColdTrail[]): string {
@@ -154,6 +165,9 @@ export function exportSavedTrailsMarkdown(graph: GraphDocument, trails: ColdTrai
     trailCitations(graph, trail).forEach((citation) => {
       lines.push(`- Citation: ${markdownInline(citation)}`);
     });
+    if (trail.trust === "candidate" && trail.edgeId && !trailCitations(graph, trail).length) {
+      lines.push("- Provenance: incomplete bilateral citations omitted");
+    }
     if (trail.surpriseTerms.length) {
       lines.push(`- Surprise terms: ${trail.surpriseTerms.map((term) => markdownInline(term)).join(", ")}`);
     }
@@ -334,7 +348,7 @@ function scoreCandidateTrail(
 
   const evidence = evidenceScore(edge);
   if (evidence < EVIDENCE_FLOOR) return null;
-  if (!candidateHasValidCitation(edge)) return null;
+  if (!candidateHasValidCitation(edge, source, target)) return null;
 
   const novelty = authoredPathWithinHops(adjacency, edge.source, edge.target, 3) ? 0 : 1;
   const distance = distanceScore(source, target, interDomainCounts);
