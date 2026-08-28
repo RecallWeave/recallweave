@@ -59,6 +59,48 @@ function pairKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
+export function trailPairKey(trail: ColdTrail): string {
+  if (trail.nodeId) return `node:${trail.nodeId}`;
+  return pairKey(trail.sourceId, trail.targetId);
+}
+
+export function trailTypeLabel(type: TrailType): string {
+  switch (type) {
+    case "unwritten_link":
+      return "Unwritten link";
+    case "distant_neighbors":
+      return "Distant neighbors";
+    case "bridge":
+      return "Bridge";
+    case "island":
+      return "Island";
+    case "reinforced":
+      return "Reinforced";
+    default:
+      return type;
+  }
+}
+
+export function exportSavedTrailsMarkdown(graph: GraphDocument, trails: ColdTrail[]): string {
+  const nodeTitle = (id: string) => graph.nodes.find((node) => node.id === id)?.title || id;
+  const lines = ["# Cold Trails session export", ""];
+  trails.forEach((trail, index) => {
+    lines.push(`## ${index + 1}. ${trailTypeLabel(trail.type)}`);
+    lines.push(`- Trust: ${trail.trust === "candidate" ? "CANDIDATE - NOT A FACT" : "AUTHORED LINK"}`);
+    if (trail.nodeId) {
+      lines.push(`- Note: ${nodeTitle(trail.nodeId)}`);
+    } else {
+      lines.push(`- Notes: ${nodeTitle(trail.sourceId)} ↔ ${nodeTitle(trail.targetId)}`);
+    }
+    if (trail.surpriseTerms.length) {
+      lines.push(`- Surprise terms: ${trail.surpriseTerms.join(", ")}`);
+    }
+    trail.structuralFacts.forEach((fact) => lines.push(`- ${fact}`));
+    lines.push("");
+  });
+  return lines.join("\n");
+}
+
 function tokenize(value: string): Set<string> {
   return new Set(
     value
@@ -486,6 +528,17 @@ export function buildColdTrails(
 
   for (const trail of ordered) {
     if (selected.length >= DEFAULT_TOUR_LENGTH) break;
+    if (
+      trail.sourceId &&
+      trail.targetId &&
+      trail.sourceId !== trail.targetId &&
+      feedback.shownPairs.has(pairKey(trail.sourceId, trail.targetId))
+    ) {
+      continue;
+    }
+    if (trail.nodeId && feedback.shownPairs.has(`node:${trail.nodeId}`)) {
+      continue;
+    }
     const typeCount = localFeedback.usedTypes.get(trail.type) || 0;
     if (typeCount >= 2) continue;
     const endpointIds = trail.nodeId ? [trail.nodeId] : [trail.sourceId, trail.targetId];
@@ -504,8 +557,11 @@ export function buildColdTrails(
     localFeedback.usedTypes.set(trail.type, typeCount + 1);
     endpointIds.forEach((id) => localFeedback.usedNodeIds.add(id));
     endpointDomains.forEach((item) => localFeedback.usedDomains.add(item));
-    if (trail.sourceId && trail.targetId) {
+    if (trail.sourceId && trail.targetId && trail.sourceId !== trail.targetId) {
       localFeedback.shownPairs.add(pairKey(trail.sourceId, trail.targetId));
+    }
+    if (trail.nodeId) {
+      localFeedback.shownPairs.add(`node:${trail.nodeId}`);
     }
   }
 

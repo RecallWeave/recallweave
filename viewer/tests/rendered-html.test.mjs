@@ -96,6 +96,27 @@ test("inline script parsing respects quoted greater-than characters", () => {
   );
 });
 
+test("Cold Trails tour dialog meets accessibility and trust boundaries", async () => {
+  const tour = await readFile(
+    new URL("../app/components/ColdTrailsTour.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(tour, /role="dialog"/);
+  assert.match(tour, /aria-modal="true"/);
+  assert.match(tour, /aria-live="polite"/);
+  assert.match(tour, /CANDIDATE - NOT A FACT/);
+  assert.match(tour, /Open source/);
+  assert.match(tour, /Show on map/);
+  assert.doesNotMatch(tour, /obsidian:\/\//);
+
+  const explorer = await readFile(
+    new URL("../app/components/GraphExplorer.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(explorer, /Cold Trails/);
+  assert.match(explorer, /ColdTrailsTour/);
+});
+
 test("client import and keyboard focus guards remain wired", async () => {
   const source = await readFile(
     new URL("../app/components/GraphExplorer.tsx", import.meta.url),

@@ -20,6 +20,7 @@ import {
   importDiagnosticMessage,
   normalizeGraph,
 } from "../graph-data";
+import { ColdTrailsTour } from "./ColdTrailsTour";
 
 type PositionedNode = GraphNode & {
   x: number;
@@ -113,6 +114,9 @@ export function GraphExplorer() {
   const [copyStatus, setCopyStatus] = useState("");
   const [nodeNavigatorFocusId, setNodeNavigatorFocusId] = useState<string | null>(null);
   const [resetKey, setResetKey] = useState(0);
+  const [coldTrailsOpen, setColdTrailsOpen] = useState(false);
+  const [mapFocusIds, setMapFocusIds] = useState<string[]>([]);
+  const [mapFocusKey, setMapFocusKey] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -260,6 +264,21 @@ export function GraphExplorer() {
     return copyToClipboard(path, "Path copied.");
   }
 
+  function copyPlainPath(path: string) {
+    if (!path) {
+      setCopyStatus("No path available to copy.");
+      return;
+    }
+    return copyToClipboard(path, "Path copied.");
+  }
+
+  function showTrailOnMap(nodeIds: string[]) {
+    if (!nodeIds.length) return;
+    setSelectedId(nodeIds[0]);
+    setMapFocusIds(nodeIds);
+    setMapFocusKey((value) => value + 1);
+  }
+
   function moveNodeNavigatorFocus(
     event: ReactKeyboardEvent<HTMLButtonElement>,
     currentId: string,
@@ -354,6 +373,11 @@ export function GraphExplorer() {
           <button className="ghost-button" onClick={() => resetExplorer()}>
             Reset Atlas
           </button>
+          {graph && (
+            <button className="ghost-button" onClick={() => setColdTrailsOpen(true)}>
+              Cold Trails
+            </button>
+          )}
           <button className="primary-button" onClick={() => fileRef.current?.click()}>
             Load your graph
           </button>
@@ -472,6 +496,8 @@ export function GraphExplorer() {
                 domain={domain}
                 selectedId={selectedId}
                 resetKey={resetKey}
+                focusNodeIds={mapFocusIds}
+                focusKey={mapFocusKey}
                 onSelect={(id) => selectNode(id)}
               />
             )}
@@ -666,6 +692,17 @@ export function GraphExplorer() {
         </span>
         <span>Open source · local first · candidate connections are never facts</span>
       </footer>
+      {graph && (
+        <ColdTrailsTour
+          graph={graph}
+          open={coldTrailsOpen}
+          onClose={() => setColdTrailsOpen(false)}
+          onShowOnMap={showTrailOnMap}
+          onCopyPath={copyPlainPath}
+          onCopyCitation={copyCitation}
+          onStatus={setCopyStatus}
+        />
+      )}
     </div>
   );
 }
@@ -769,6 +806,8 @@ function GraphCanvas({
   domain,
   selectedId,
   resetKey,
+  focusNodeIds = [],
+  focusKey = 0,
   onSelect,
 }: {
   nodes: PositionedNode[];
@@ -777,6 +816,8 @@ function GraphCanvas({
   domain: string;
   selectedId: string | null;
   resetKey: number;
+  focusNodeIds?: string[];
+  focusKey?: number;
   onSelect: (id: string | null) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -794,6 +835,32 @@ function GraphCanvas({
     transform.current = { x: 0, y: 0, scale: 1 };
     drawRef.current();
   }, [resetKey]);
+
+  useEffect(() => {
+    if (!focusNodeIds.length) return;
+    const points = focusNodeIds
+      .map((id) => nodeMap.get(id))
+      .filter((node): node is PositionedNode => Boolean(node));
+    if (!points.length) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const minX = Math.min(...points.map((node) => node.x));
+    const maxX = Math.max(...points.map((node) => node.x));
+    const minY = Math.min(...points.map((node) => node.y));
+    const maxY = Math.max(...points.map((node) => node.y));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const span = Math.max(maxX - minX, maxY - minY, 140);
+    const baseScale = Math.min(rect.width / 1080, rect.height / 680) * 0.92;
+    const fitScale = Math.min(2.2, (Math.min(rect.width, rect.height) * 0.5) / (span * baseScale));
+    transform.current = {
+      x: -baseScale * fitScale * (cx - 540),
+      y: -baseScale * fitScale * (cy - 340),
+      scale: fitScale,
+    };
+    drawRef.current();
+  }, [focusKey, focusNodeIds, nodeMap]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

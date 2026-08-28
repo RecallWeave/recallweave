@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { VIEWER_SCHEMA_V2 } from "../app/graph-data.ts";
-import { buildColdTrails, refusalMessage } from "../app/cold-trails.ts";
+import { buildColdTrails, exportSavedTrailsMarkdown, refusalMessage } from "../app/cold-trails.ts";
 
 function graph(overrides = {}) {
   return {
@@ -25,6 +25,48 @@ function graph(overrides = {}) {
     ...overrides,
   };
 }
+
+test("exports saved trail markdown for session handoff", () => {
+  const hashA = "a".repeat(64);
+  const graph = {
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "a.md", title: "Alpha", path: "a.md", content_hash: hashA },
+      { id: "b.md", title: "Beta", path: "b.md", content_hash: hashA },
+    ],
+    edges: [],
+    privacy: { export_profile: "graph_metadata" },
+    import_diagnostics: {
+      duplicate_nodes_dropped: 0,
+      duplicate_edges_dropped: 0,
+      dangling_edges_dropped: 0,
+    },
+  };
+  const markdown = exportSavedTrailsMarkdown(graph, [
+    {
+      type: "unwritten_link",
+      trust: "candidate",
+      sourceId: "a.md",
+      targetId: "b.md",
+      surpriseTerms: ["ripple"],
+      score: 0.5,
+      scoreBreakdown: {
+        novelty: 1,
+        distance: 1,
+        evidence: 0.3,
+        centrality: 0.2,
+        structure: 0,
+        penalties: 0,
+        total: 0.5,
+      },
+      headline: "Candidate only",
+      structuralFacts: ["No authored path within three hops."],
+    },
+  ]);
+  assert.match(markdown, /# Cold Trails session export/);
+  assert.match(markdown, /CANDIDATE - NOT A FACT/);
+  assert.match(markdown, /Alpha/);
+});
 
 test("refuses graphs that are too small or lack candidates", () => {
   const tiny = buildColdTrails(
