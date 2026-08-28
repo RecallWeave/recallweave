@@ -722,8 +722,10 @@ test("formatAtlasProvenanceClaims surfaces conflicted and valid export history",
     },
   });
   assert.equal(conflicted.export_history?.claim_conflict, true);
-  const conflictClaims = formatAtlasProvenanceClaims(conflicted);
-  assert.match(conflictClaims, /export history conflicts with loaded graph/);
+  assert.match(
+    formatAtlasProvenanceClaims(conflicted),
+    /export history conflicts with loaded graph/,
+  );
 
   const omitted = normalizeGraph({
     schema_version: VIEWER_SCHEMA_V2,
