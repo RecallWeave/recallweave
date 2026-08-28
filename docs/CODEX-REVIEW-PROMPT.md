@@ -95,11 +95,12 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 32 — post-PR #10 stewardship on `foundry/steward` (fresh cut `b93e82e` from
-`2c67665`): render `AtlasProvenanceChrome` via `renderToStaticMarkup` for valid,
-conflicted, and omitted-prior export history; GraphExplorer mounts the component.
-Base: merged PR #10 squash `2c67665` on `main`.
+Cycle 32b — remediations after cycle-32 FAIL (`review-20260828T175053Z.md`):
+update rendered-html guard so `Index claims:` is asserted on
+`AtlasProvenanceChrome.ts` after extraction from GraphExplorer. Prior tip
+`e15cf4d`. Base: merged PR #10 squash `2c67665` on `main`.
 
-Suite target **511** Python OK (1 skip) plus viewer JS tests. Prefer clean PASS;
-PASS WITH FIXES only for remaining Low. Max 3 review turns this cycle.
+Suite target **511** Python OK (1 skip) plus full viewer `npm test`. Prefer
+clean PASS; PASS WITH FIXES only for remaining Low. Max 3 review turns (this is
+turn 2).
 <!-- CYCLE-CONTEXT-END -->
