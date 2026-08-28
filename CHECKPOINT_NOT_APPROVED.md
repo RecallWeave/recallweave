@@ -6,7 +6,7 @@ automatically whenever the local suite is green and the tree is clean.
 
 **Do not merge, promote, release, or deploy from this branch.**
 
-- Latest adversarial review verdict: **pending** (fresh steward cut after PR #6 merge)
+- Latest adversarial review verdict: **pending** (cycle 28a context ready; post-PR #6 Bugbot + Cold Trails v2 timestamp trails on steward)
 - Promotion to `main` happens only through a milestone pull request with human
   merge approval, and only after the adversarial review returns PASS.
 - A failing or absent review does **not** block this checkpoint, because the

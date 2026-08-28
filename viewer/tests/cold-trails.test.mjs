@@ -684,7 +684,12 @@ test("allows two same-domain trails before exhausting the domain touch limit", (
 });
 
 function isStructuralTrail(trail) {
-  return trail.type === "bridge" || trail.type === "island" || trail.type === "dormant";
+  return (
+    trail.type === "bridge" ||
+    trail.type === "island" ||
+    trail.type === "dormant" ||
+    trail.type === "drift"
+  );
 }
 
 test("requires three covered domains when the eligible pool spans three", () => {
@@ -860,6 +865,87 @@ test("detects parallel invention from near-simultaneous cross-domain candidates"
   assert.ok(parallel);
   assert.equal(parallel?.trust, "candidate");
   assert.match(parallel?.structuralFacts.join(" ") ?? "", /created_at/);
+});
+
+test("detects drift trails from long-lived notes with candidate edges", () => {
+  const fixture = graph({
+    nodes: [
+      {
+        id: "hub.md",
+        title: "Hub",
+        path: "hub.md",
+        domain: "Core",
+        created_at: "2026-07-01T00:00:00Z",
+        modified_at: "2026-07-02T00:00:00Z",
+      },
+      {
+        id: "core-b.md",
+        title: "Core B",
+        path: "core-b.md",
+        domain: "Core",
+        created_at: "2026-07-01T00:00:00Z",
+        modified_at: "2026-07-02T00:00:00Z",
+      },
+      {
+        id: "drift.md",
+        title: "Drift note",
+        path: "drift.md",
+        domain: "Archive",
+        created_at: "2024-01-01T00:00:00Z",
+        modified_at: "2025-06-01T00:00:00Z",
+      },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "core-b.md", verified: true },
+      {
+        id: "c1",
+        source: "drift.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("drift.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "n5.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("n5.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+    export_history: {
+      export_id: "export-2",
+      previous_content_hash: "a".repeat(64),
+      node_content_hashes_changed: 2,
+      node_content_hashes_unchanged: 6,
+      nodes_added: 0,
+      nodes_removed: 0,
+    },
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  const drift = result.trails.find((trail) => trail.type === "drift");
+  assert.ok(drift);
+  assert.equal(drift?.nodeId, "drift.md");
+  assert.match(drift?.structuralFacts.join(" ") ?? "", /created_at/);
+  assert.match(drift?.structuralFacts.join(" ") ?? "", /export history/i);
 });
 
 test("reported scores match the weighted scoring formula", () => {

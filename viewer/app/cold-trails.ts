@@ -13,7 +13,8 @@ export type TrailType =
   | "island"
   | "reinforced"
   | "dormant"
-  | "parallel_invention";
+  | "parallel_invention"
+  | "drift";
 
 export type TrailTrust = "authored" | "candidate" | "structural";
 
@@ -66,6 +67,7 @@ const EVIDENCE_FLOOR = 0.25;
 const DEFAULT_TOUR_LENGTH = 6;
 const DORMANT_MIN_DAYS = 180;
 const PARALLEL_MAX_DAY_GAP = 14;
+const DRIFT_MIN_DAYS = 90;
 const MS_PER_DAY = 86_400_000;
 
 function parseUtcTimestamp(value: string | null | undefined): Date | null {
@@ -128,6 +130,8 @@ export function trailTypeLabel(type: TrailType): string {
       return "Dormant";
     case "parallel_invention":
       return "Parallel invention";
+    case "drift":
+      return "Drift";
     default:
       return type;
   }
@@ -686,11 +690,15 @@ function dormantTrails(
   return graph.nodes
     .filter((node) => {
       const days = daysSince(node.modified_at, nowMs);
-      return (
-        days !== null &&
-        days >= DORMANT_MIN_DAYS &&
-        (candidateCounts.get(node.id) || 0) >= 1
-      );
+      if (days === null || days < DORMANT_MIN_DAYS) return false;
+      if ((candidateCounts.get(node.id) || 0) < 1) return false;
+      const created = parseUtcTimestamp(node.created_at);
+      const modified = parseUtcTimestamp(node.modified_at);
+      if (created && modified) {
+        const spanDays = (modified.getTime() - created.getTime()) / MS_PER_DAY;
+        if (spanDays >= DRIFT_MIN_DAYS) return false;
+      }
+      return true;
     })
     .map((node) => {
       const days = daysSince(node.modified_at, nowMs) || 0;
@@ -722,6 +730,67 @@ function dormantTrails(
           `Observed modified_at ${node.modified_at}; ${Math.floor(days)} days before this tour.`,
           `${candidateCounts.get(node.id) || 0} candidate edge(s) still touch this note.`,
         ],
+      };
+    });
+}
+
+function driftTrails(
+  graph: GraphDocument,
+  degrees: Map<string, number>,
+  p90: number,
+): ColdTrail[] {
+  const candidateCounts = new Map<string, number>();
+  candidateEdges(graph).forEach((edge) => {
+    candidateCounts.set(edge.source, (candidateCounts.get(edge.source) || 0) + 1);
+    candidateCounts.set(edge.target, (candidateCounts.get(edge.target) || 0) + 1);
+  });
+  const historyChanged = graph.export_history?.node_content_hashes_changed || 0;
+  return graph.nodes
+    .filter((node) => {
+      const created = parseUtcTimestamp(node.created_at);
+      const modified = parseUtcTimestamp(node.modified_at);
+      if (!created || !modified) return false;
+      const spanDays = (modified.getTime() - created.getTime()) / MS_PER_DAY;
+      return spanDays >= DRIFT_MIN_DAYS && (candidateCounts.get(node.id) || 0) >= 1;
+    })
+    .map((node) => {
+      const created = parseUtcTimestamp(node.created_at)!;
+      const modified = parseUtcTimestamp(node.modified_at)!;
+      const spanDays = (modified.getTime() - created.getTime()) / MS_PER_DAY;
+      const centrality = centralityScore(node.id, node.id, degrees, p90);
+      const historyBonus = historyChanged > 0 ? 0.2 : 0;
+      const breakdown = {
+        novelty: 0,
+        distance: 0,
+        evidence: 0,
+        centrality,
+        structure: Math.min(1, 0.5 + historyBonus + ageFactor(spanDays) * 0.3),
+        penalties: 0,
+      };
+      const total = weightedTotal(breakdown);
+      const facts = [
+        `Observed created_at ${node.created_at} and modified_at ${node.modified_at} (${Math.floor(spanDays)} days apart).`,
+        `${candidateCounts.get(node.id) || 0} candidate edge(s) touch this note.`,
+      ];
+      if (graph.export_history?.previous_content_hash) {
+        facts.push(
+          `Export history reports ${historyChanged} node content hash change(s) since previous_content_hash.`,
+        );
+      }
+      return {
+        type: "drift" as const,
+        trust: "structural" as const,
+        sourceId: node.id,
+        targetId: node.id,
+        nodeId: node.id,
+        surpriseTerms: [],
+        score: total,
+        scoreBreakdown: {
+          ...breakdown,
+          total,
+        },
+        headline: "This note's content window drifted far from its creation date.",
+        structuralFacts: facts,
       };
     });
 }
@@ -924,7 +993,12 @@ function pickTrail(
 }
 
 function isStructuralTrail(trail: ColdTrail): boolean {
-  return trail.type === "bridge" || trail.type === "island" || trail.type === "dormant";
+  return (
+    trail.type === "bridge" ||
+    trail.type === "island" ||
+    trail.type === "dormant" ||
+    trail.type === "drift"
+  );
 }
 
 function selectTourTrails(
@@ -950,7 +1024,11 @@ function selectTourTrails(
     : null;
 
   const phases: Array<(trail: ColdTrail) => boolean> = [
-    (trail) => trail.type === "bridge" || trail.type === "island" || trail.type === "dormant",
+    (trail) =>
+      trail.type === "bridge" ||
+      trail.type === "island" ||
+      trail.type === "dormant" ||
+      trail.type === "drift",
     (trail) => trail.type === "unwritten_link" || trail.type === "distant_neighbors",
     (trail) => trail.type === "unwritten_link" || trail.type === "distant_neighbors",
     (trail) => {
@@ -1120,6 +1198,7 @@ export function buildColdTrails(
     ...bridgeTrails(graph, nodes, degrees, p90),
     ...islandTrails(graph, degrees, p90),
     ...dormantTrails(graph, degrees, p90),
+    ...driftTrails(graph, degrees, p90),
   ];
 
   if (includeCandidates) {

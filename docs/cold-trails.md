@@ -65,9 +65,10 @@ The first implementation should support five types:
 | Reinforced | Candidate has at least two independent signals | Structural fact plus weighted prompt |
 | Dormant | A note with valid `modified_at` at least 180 days old that still has candidate edges | Structural fact naming the observed timestamp |
 | Parallel invention | Candidate pair across domains with `created_at` within 14 days and at least two surprise terms | Structural timestamps plus lexical prompt |
+| Drift | A note whose `modified_at` is at least 90 days after `created_at`, still touched by candidates; mentions `export_history` change counts when present | Structural fact naming observed timestamps |
 
-Later trail type still pending: Drift. These additions must state exactly which
-observed fields triggered them.
+All timestamp and history trail types must state exactly which observed fields
+triggered them.
 
 ## Surprise qualification
 
