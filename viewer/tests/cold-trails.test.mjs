@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { VIEWER_SCHEMA_V2 } from "../app/graph-data.ts";
-import { buildColdTrails, exportSavedTrailsMarkdown, refusalMessage } from "../app/cold-trails.ts";
+import { buildColdTrails, exportSavedTrailsMarkdown, refusalMessage, trailTrustLabel } from "../app/cold-trails.ts";
+
+function citedEvidence(source, target, extra = {}) {
+  return {
+    source_evidence: { citation: `${source}:10-12` },
+    target_evidence: { citation: `${target}:20` },
+    ...extra,
+  };
+}
 
 function graph(overrides = {}) {
   return {
@@ -28,13 +36,23 @@ function graph(overrides = {}) {
 
 test("exports saved trail markdown for session handoff", () => {
   const hashA = "a".repeat(64);
-  const graph = {
+  const graphDoc = {
     schema_version: VIEWER_SCHEMA_V2,
     nodes: [
       { id: "a.md", title: "Alpha", path: "a.md", content_hash: hashA },
       { id: "b.md", title: "Beta", path: "b.md", content_hash: hashA },
     ],
-    edges: [],
+    edges: [
+      {
+        id: "candidate-1",
+        source: "a.md",
+        target: "b.md",
+        verified: false,
+        evidence: citedEvidence("a.md", "b.md", {
+          signals: { lexical_terms: ["ripple", "phase"] },
+        }),
+      },
+    ],
     privacy: { export_profile: "graph_metadata" },
     import_diagnostics: {
       duplicate_nodes_dropped: 0,
@@ -42,12 +60,13 @@ test("exports saved trail markdown for session handoff", () => {
       dangling_edges_dropped: 0,
     },
   };
-  const markdown = exportSavedTrailsMarkdown(graph, [
+  const markdown = exportSavedTrailsMarkdown(graphDoc, [
     {
       type: "unwritten_link",
       trust: "candidate",
       sourceId: "a.md",
       targetId: "b.md",
+      edgeId: "candidate-1",
       surpriseTerms: ["ripple"],
       score: 0.5,
       scoreBreakdown: {
@@ -66,6 +85,48 @@ test("exports saved trail markdown for session handoff", () => {
   assert.match(markdown, /# Cold Trails session export/);
   assert.match(markdown, /CANDIDATE - NOT A FACT/);
   assert.match(markdown, /Alpha/);
+  assert.match(markdown, /`a\.md:10-12`/);
+  assert.match(markdown, /`b\.md:20`/);
+});
+
+test("escapes markdown-forging titles in saved exports", () => {
+  const graphDoc = {
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "x.md", title: "Safe\n## Verified findings", path: "x.md" }],
+    edges: [],
+    privacy: { export_profile: "graph_metadata" },
+    import_diagnostics: {
+      duplicate_nodes_dropped: 0,
+      duplicate_edges_dropped: 0,
+      dangling_edges_dropped: 0,
+    },
+  };
+  const markdown = exportSavedTrailsMarkdown(graphDoc, [
+    {
+      type: "island",
+      trust: "structural",
+      sourceId: "x.md",
+      targetId: "x.md",
+      nodeId: "x.md",
+      surpriseTerms: [],
+      score: 0.75,
+      scoreBreakdown: {
+        novelty: 0,
+        distance: 0,
+        evidence: 0.25,
+        centrality: 0,
+        structure: 0.2,
+        penalties: 0,
+        total: 0.75,
+      },
+      headline: "Structural fact",
+      structuralFacts: ["## forged fact"],
+    },
+  ]);
+  assert.match(markdown, /`Safe ## Verified findings`/);
+  assert.doesNotMatch(markdown, /^## Verified findings/m);
+  assert.match(markdown, /STRUCTURAL FACT/);
+  assert.equal(trailTrustLabel("structural"), "STRUCTURAL FACT");
 });
 
 test("refuses graphs that are too small or lack candidates", () => {
@@ -142,23 +203,23 @@ test("selects unwritten link and reinforced candidate trails deterministically",
         source: "e.md",
         target: "f.md",
         verified: false,
-        evidence: {
+        evidence: citedEvidence("e.md", "f.md", {
           signals: {
             lexical_terms: ["ledger", "outline", "margin"],
             shared_tags: ["planning"],
           },
-        },
+        }),
       },
       {
         id: "candidate-3",
         source: "g.md",
         target: "h.md",
         verified: false,
-        evidence: {
+        evidence: citedEvidence("g.md", "h.md", {
           signals: {
             lexical_terms: ["draft", "archive", "margin"],
           },
-        },
+        }),
       },
     ],
   });
@@ -201,36 +262,36 @@ test("detects island trails for low-degree nodes with multiple candidates", () =
         source: "leaf.md",
         target: "n3.md",
         verified: false,
-        evidence: {
+        evidence: citedEvidence("leaf.md", "n3.md", {
           signals: {
             lexical_terms: ["orbit", "signal", "delta", "phase"],
             shared_tags: ["watchlist"],
           },
-        },
+        }),
       },
       {
         id: "c2",
         source: "leaf.md",
         target: "n4.md",
         verified: false,
-        evidence: {
+        evidence: citedEvidence("leaf.md", "n4.md", {
           signals: {
             lexical_terms: ["orbit", "signal", "theta", "phase"],
             shared_tags: ["watchlist"],
           },
-        },
+        }),
       },
       {
         id: "c3",
         source: "n5.md",
         target: "n6.md",
         verified: false,
-        evidence: {
+        evidence: citedEvidence("n5.md", "n6.md", {
           signals: {
             lexical_terms: ["vector", "signal", "theta", "phase"],
             shared_tags: ["watchlist"],
           },
-        },
+        }),
       },
     ],
   });
@@ -238,6 +299,45 @@ test("detects island trails for low-degree nodes with multiple candidates", () =
   const result = buildColdTrails(fixture);
   assert.equal(result.status, "ok");
   assert.ok(result.trails.some((trail) => trail.type === "island" && trail.nodeId === "leaf.md"));
+  const island = result.trails.find((trail) => trail.type === "island" && trail.nodeId === "leaf.md");
+  assert.equal(island?.trust, "structural");
+});
+
+test("refuses candidate trails without valid citations", () => {
+  const fixture = graph({
+    nodes: Array.from({ length: 8 }, (_, index) => ({
+      id: `note-${index}.md`,
+      title: `Note ${index}`,
+      path: `note-${index}.md`,
+      domain: index % 2 ? "A" : "B",
+    })),
+    edges: [
+      { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+      {
+        id: "c1",
+        source: "note-2.md",
+        target: "note-3.md",
+        verified: false,
+        evidence: { signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] } },
+      },
+      {
+        id: "c2",
+        source: "note-4.md",
+        target: "note-5.md",
+        verified: false,
+        evidence: { signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] } },
+      },
+      {
+        id: "c3",
+        source: "note-6.md",
+        target: "note-7.md",
+        verified: false,
+        evidence: { signals: { lexical_terms: ["quasar", "ripple", "tensor", "phase"] } },
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "refused");
 });
 
 test("refuses when surprise terms collapse into titles and tags", () => {
@@ -295,34 +395,34 @@ test("notices single-domain graphs without refusing entirely", () => {
         source: "note-2.md",
         target: "note-3.md",
         verified: false,
-        evidence: {
+        evidence: citedEvidence("note-2.md", "note-3.md", {
           signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
           shared_tags: ["experiments"],
-        },
+        }),
       },
       {
         id: "c2",
         source: "note-4.md",
         target: "note-5.md",
         verified: false,
-        evidence: {
+        evidence: citedEvidence("note-4.md", "note-5.md", {
           signals: {
             lexical_terms: ["quasar", "ripple", "matrix", "phase"],
             shared_tags: ["experiments"],
           },
-        },
+        }),
       },
       {
         id: "c3",
         source: "note-6.md",
         target: "note-7.md",
         verified: false,
-        evidence: {
+        evidence: citedEvidence("note-6.md", "note-7.md", {
           signals: {
             lexical_terms: ["quasar", "ripple", "tensor", "phase"],
             shared_tags: ["experiments"],
           },
-        },
+        }),
       },
     ],
   });

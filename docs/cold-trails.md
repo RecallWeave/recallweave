@@ -1,9 +1,7 @@
 # Cold Trails: guided discovery design
 
-> Status: design-only roadmap artifact. Cold Trails is not implemented in
-> RecallWeave Atlas. This document defines a testable product contract; it does
-> not authorize changing canonical notes, activating an assistant, or treating
-> candidate connections as facts.
+> Status: **v1 shipped in Atlas** (deterministic selection engine + guided tour UI).
+> This document defines the product contract; canonical notes remain untouched.
 
 ## Purpose
 

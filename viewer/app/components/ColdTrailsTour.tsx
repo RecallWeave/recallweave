@@ -11,6 +11,7 @@ import {
   buildColdTrails,
   exportSavedTrailsMarkdown,
   trailPairKey,
+  trailTrustLabel,
   trailTypeLabel,
   type ColdTrail,
   type ColdTrailsFeedback,
@@ -307,12 +308,12 @@ export function ColdTrailsTour({
             <p>{result.message}</p>
           </div>
         ) : current ? (
-          <article className={`cold-trails-card ${current.trust === "candidate" ? "candidate" : "authored"}`}>
+          <article className={`cold-trails-card ${current.trust === "candidate" ? "candidate" : current.trust === "structural" ? "structural" : "authored"}`}>
             <div className="cold-trails-card-meta">
               <span>Trail {index + 1} of {trails.length}</span>
               <span className="cold-trails-badge">{trailTypeLabel(current.type)}</span>
               <span className={`cold-trails-trust ${current.trust}`}>
-                {current.trust === "candidate" ? "CANDIDATE - NOT A FACT" : "AUTHORED LINK"}
+                {trailTrustLabel(current.trust)}
               </span>
             </div>
             <h3>{current.headline}</h3>

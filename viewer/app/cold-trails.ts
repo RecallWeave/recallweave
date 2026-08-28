@@ -1,4 +1,9 @@
-import type { GraphDocument, GraphEdge, GraphNode } from "./graph-data";
+import {
+  safeCitation,
+  type GraphDocument,
+  type GraphEdge,
+  type GraphNode,
+} from "./graph-data.ts";
 
 export type TrailType =
   | "unwritten_link"
@@ -7,7 +12,7 @@ export type TrailType =
   | "island"
   | "reinforced";
 
-export type TrailTrust = "authored" | "candidate";
+export type TrailTrust = "authored" | "candidate" | "structural";
 
 export type ScoreBreakdown = {
   novelty: number;
@@ -81,21 +86,78 @@ export function trailTypeLabel(type: TrailType): string {
   }
 }
 
+export function trailTrustLabel(trust: TrailTrust): string {
+  switch (trust) {
+    case "candidate":
+      return "CANDIDATE - NOT A FACT";
+    case "structural":
+      return "STRUCTURAL FACT";
+    case "authored":
+      return "AUTHORED LINK";
+    default:
+      return trust;
+  }
+}
+
+function markdownScalar(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/`/g, "\\`")
+    .replace(/\r/g, "")
+    .replace(/\n/g, " ")
+    .trim();
+}
+
+function markdownInline(value: string): string {
+  return `\`${markdownScalar(value).replace(/`/g, "'")}\``;
+}
+
+function edgeForTrail(graph: GraphDocument, trail: ColdTrail): GraphEdge | undefined {
+  if (!trail.edgeId) return undefined;
+  return graph.edges.find((edge) => edge.id === trail.edgeId);
+}
+
+function trailCitations(graph: GraphDocument, trail: ColdTrail): string[] {
+  const edge = edgeForTrail(graph, trail);
+  if (!edge) return [];
+  const citations = [
+    edge.evidence?.source_evidence?.citation,
+    edge.evidence?.target_evidence?.citation,
+    edge.evidence?.citation,
+  ]
+    .map((value) => safeCitation(value))
+    .filter(Boolean);
+  return [...new Set(citations)];
+}
+
+function candidateHasValidCitation(edge: GraphEdge): boolean {
+  const citations = [
+    edge.evidence?.source_evidence?.citation,
+    edge.evidence?.target_evidence?.citation,
+    edge.evidence?.citation,
+  ];
+  return citations.some((value) => Boolean(safeCitation(value)));
+}
+
 export function exportSavedTrailsMarkdown(graph: GraphDocument, trails: ColdTrail[]): string {
-  const nodeTitle = (id: string) => graph.nodes.find((node) => node.id === id)?.title || id;
+  const nodeTitle = (id: string) =>
+    markdownInline(graph.nodes.find((node) => node.id === id)?.title || id);
   const lines = ["# Cold Trails session export", ""];
   trails.forEach((trail, index) => {
-    lines.push(`## ${index + 1}. ${trailTypeLabel(trail.type)}`);
-    lines.push(`- Trust: ${trail.trust === "candidate" ? "CANDIDATE - NOT A FACT" : "AUTHORED LINK"}`);
+    lines.push(`## ${index + 1}. ${markdownScalar(trailTypeLabel(trail.type))}`);
+    lines.push(`- Trust: ${trailTrustLabel(trail.trust)}`);
     if (trail.nodeId) {
       lines.push(`- Note: ${nodeTitle(trail.nodeId)}`);
     } else {
-      lines.push(`- Notes: ${nodeTitle(trail.sourceId)} ↔ ${nodeTitle(trail.targetId)}`);
+      lines.push(`- Notes: ${nodeTitle(trail.sourceId)} / ${nodeTitle(trail.targetId)}`);
     }
+    trailCitations(graph, trail).forEach((citation) => {
+      lines.push(`- Citation: ${markdownInline(citation)}`);
+    });
     if (trail.surpriseTerms.length) {
-      lines.push(`- Surprise terms: ${trail.surpriseTerms.join(", ")}`);
+      lines.push(`- Surprise terms: ${trail.surpriseTerms.map((term) => markdownInline(term)).join(", ")}`);
     }
-    trail.structuralFacts.forEach((fact) => lines.push(`- ${fact}`));
+    trail.structuralFacts.forEach((fact) => lines.push(`- Fact: ${markdownInline(fact)}`));
     lines.push("");
   });
   return lines.join("\n");
@@ -272,6 +334,7 @@ function scoreCandidateTrail(
 
   const evidence = evidenceScore(edge);
   if (evidence < EVIDENCE_FLOOR) return null;
+  if (!candidateHasValidCitation(edge)) return null;
 
   const novelty = authoredPathWithinHops(adjacency, edge.source, edge.target, 3) ? 0 : 1;
   const distance = distanceScore(source, target, interDomainCounts);
@@ -365,7 +428,7 @@ function bridgeTrails(graph: GraphDocument, nodes: Map<string, GraphNode>): Cold
     if (neighborDomains.size >= 2) {
       trails.push({
         type: "bridge",
-        trust: "authored",
+        trust: "structural",
         sourceId: node.id,
         targetId: node.id,
         nodeId: node.id,
@@ -410,7 +473,7 @@ function islandTrails(graph: GraphDocument): ColdTrail[] {
     )
     .map((node) => ({
       type: "island" as const,
-      trust: "authored" as const,
+      trust: "structural" as const,
       sourceId: node.id,
       targetId: node.id,
       nodeId: node.id,

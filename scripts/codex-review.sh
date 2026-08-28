@@ -60,6 +60,10 @@ print "running test suite for the reviewer -> $suite"
   PYTHONPATH=src "$venv/bin/python" -W error::ResourceWarning -m unittest discover -s tests 2>&1
   print "\n# python3 -m compileall -q src"
   python3 -m compileall -q src 2>&1 && print "compileall: OK"
+  if [[ -f viewer/package.json ]]; then
+    print "\n# (cd viewer && npm test)"
+    (cd viewer && npm test) 2>&1 && print "viewer tests: OK"
+  fi
 } > "$suite" 2>&1
 print "  $(tail -3 "$suite" | tr '\n' ' ')"
 

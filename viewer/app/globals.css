@@ -1172,6 +1172,14 @@ button {
   color: var(--signal);
 }
 
+.cold-trails-card.structural {
+  border-color: rgba(124, 168, 255, 0.45);
+}
+
+.cold-trails-trust.structural {
+  color: var(--blue);
+}
+
 .cold-trails-trust.candidate {
   color: var(--aqua);
 }
