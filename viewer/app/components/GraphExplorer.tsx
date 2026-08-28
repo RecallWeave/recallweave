@@ -15,6 +15,8 @@ import {
   GraphEdge,
   GraphNode,
   MAX_FILE_BYTES,
+  VIEWER_SCHEMA_V2,
+  citationPath,
   importDiagnosticMessage,
   normalizeGraph,
 } from "../graph-data";
@@ -75,8 +77,15 @@ function buildLayout(graph: GraphDocument): PositionedNode[] {
 
 function evidenceText(edge: GraphEdge): string {
   if (edge.evidence?.explanation) return edge.evidence.explanation;
+  const signals = edge.evidence?.signals;
+  if (signals?.lexical_terms?.length) {
+    return `Shared language: ${signals.lexical_terms.join(", ")}`;
+  }
   if (edge.evidence?.shared_terms?.length) {
     return `Shared language: ${edge.evidence.shared_terms.join(", ")}`;
+  }
+  if (signals?.shared_tags?.length) {
+    return `Shared tags: ${signals.shared_tags.join(", ")}`;
   }
   return edge.verified
     ? "Authored in the source note."
@@ -213,14 +222,14 @@ export function GraphExplorer() {
     }
   }
 
-  async function copyCitation(citation: string) {
+  async function copyToClipboard(text: string, successMessage: string) {
     try {
       if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
-      await navigator.clipboard.writeText(citation);
-      setCopyStatus("Citation copied.");
+      await navigator.clipboard.writeText(text);
+      setCopyStatus(successMessage);
     } catch {
       const textarea = document.createElement("textarea");
-      textarea.value = citation;
+      textarea.value = text;
       textarea.setAttribute("readonly", "");
       textarea.style.position = "fixed";
       textarea.style.opacity = "0";
@@ -229,13 +238,26 @@ export function GraphExplorer() {
       try {
         setCopyStatus(
           document.execCommand("copy")
-            ? "Citation copied."
-            : "Copy failed. Select the citation text instead.",
+            ? successMessage
+            : "Copy failed. Select the text instead.",
         );
       } finally {
         textarea.remove();
       }
     }
+  }
+
+  function copyCitation(citation: string) {
+    return copyToClipboard(citation, "Citation copied.");
+  }
+
+  function copyPath(citation: string) {
+    const path = citationPath(citation);
+    if (!path) {
+      setCopyStatus("Could not derive a safe path from that citation.");
+      return;
+    }
+    return copyToClipboard(path, "Path copied.");
   }
 
   function moveNodeNavigatorFocus(
@@ -292,6 +314,26 @@ export function GraphExplorer() {
     : "Load an export to inspect its privacy profile";
   const privacyConflictDetail = graph?.privacy.metadata_conflict
     ? `Declared profile: ${graph.privacy.declared_export_profile}; inspected content: ${graph.privacy.export_profile}.`
+    : "";
+  const exportHistoryDetail = graph?.export_history
+    ? [
+        `export ${graph.export_history.export_id}`,
+        graph.export_history.previous_content_hash
+          ? "follows prior export"
+          : "first export claim",
+        `${graph.export_history.nodes_added} added · ${graph.export_history.nodes_removed} removed`,
+        `${graph.export_history.node_content_hashes_changed} hash changes · ${graph.export_history.node_content_hashes_unchanged} unchanged`,
+        graph.export_history.claim_conflict ? "export history conflicts with loaded graph" : "",
+      ].filter(Boolean).join(" · ")
+    : "";
+  const provenanceClaims = graph?.schema_version === VIEWER_SCHEMA_V2
+    ? [
+        graph.vault_label_claim ? `vault label claim: ${graph.vault_label_claim}` : "",
+        graph.policy_config_sha256_claim
+          ? "policy digest claim present"
+          : "",
+        exportHistoryDetail ? `export history claim: ${exportHistoryDetail}` : "",
+      ].filter(Boolean).join(" · ")
     : "";
 
   return (
@@ -366,6 +408,9 @@ export function GraphExplorer() {
             {graph?.privacy.includes_passage_text && " Review before screen sharing or sending this file."}
             {privacyConflictDetail && (
               <span className="privacy-conflict-detail"> {privacyConflictDetail}</span>
+            )}
+            {provenanceClaims && (
+              <span className="privacy-provenance-detail"> Index claims: {provenanceClaims}.</span>
             )}
           </span>
         </div>
@@ -472,6 +517,19 @@ export function GraphExplorer() {
                   </div>
                   <h3 ref={detailHeadingRef} tabIndex={-1}>{selected.title}</h3>
                   <div className="node-path" title={selected.path}>{selected.path}</div>
+                  {graph.schema_version === VIEWER_SCHEMA_V2 && (
+                    <div className="node-provenance-claims" role="note">
+                      {selected.content_hash && (
+                        <span>Content hash claim: {selected.content_hash.slice(0, 12)}…</span>
+                      )}
+                      {selected.created_at && (
+                        <span>Created claim: {selected.created_at}</span>
+                      )}
+                      {selected.modified_at && (
+                        <span>Modified claim: {selected.modified_at}</span>
+                      )}
+                    </div>
+                  )}
                   <p className="node-summary">
                     {selected.summary || "No summary was included in this graph export."}
                   </p>
@@ -491,6 +549,7 @@ export function GraphExplorer() {
                     positioned={positioned}
                     onSelect={(id) => selectNode(id, true)}
                     onCopyCitation={copyCitation}
+                    onCopyPath={copyPath}
                   />
                   <ConnectionGroup
                     title="Candidate connections"
@@ -499,6 +558,7 @@ export function GraphExplorer() {
                     positioned={positioned}
                     onSelect={(id) => selectNode(id, true)}
                     onCopyCitation={copyCitation}
+                    onCopyPath={copyPath}
                   />
                   {selectedConnections.length === 0 && (
                     <p className="no-connections">No visible connections for this note under the current edge filters.</p>
@@ -617,6 +677,7 @@ function ConnectionGroup({
   positioned,
   onSelect,
   onCopyCitation,
+  onCopyPath,
 }: {
   title: string;
   edges: GraphEdge[];
@@ -624,6 +685,7 @@ function ConnectionGroup({
   positioned: PositionedNode[];
   onSelect: (id: string) => void;
   onCopyCitation: (citation: string) => void;
+  onCopyPath: (citation: string) => void;
 }) {
   if (!edges.length) return null;
   return (
@@ -657,11 +719,13 @@ function ConnectionGroup({
                 label="Source evidence"
                 evidence={edge.evidence?.source_evidence}
                 onCopyCitation={onCopyCitation}
+                onCopyPath={onCopyPath}
               />
               <EvidenceSide
                 label="Target evidence"
                 evidence={edge.evidence?.target_evidence}
                 onCopyCitation={onCopyCitation}
+                onCopyPath={onCopyPath}
               />
             </article>
           );
@@ -675,10 +739,12 @@ function EvidenceSide({
   label,
   evidence,
   onCopyCitation,
+  onCopyPath,
 }: {
   label: string;
   evidence?: { citation?: string; passage?: string };
   onCopyCitation: (citation: string) => void;
+  onCopyPath: (citation: string) => void;
 }) {
   if (!evidence?.citation && !evidence?.passage) return null;
   return (
@@ -689,6 +755,7 @@ function EvidenceSide({
         <div className="citation-row">
           <code title={evidence.citation}>{evidence.citation}</code>
           <button onClick={() => onCopyCitation(evidence.citation!)}>Copy citation</button>
+          <button onClick={() => onCopyPath(evidence.citation!)}>Copy path</button>
         </div>
       )}
     </div>

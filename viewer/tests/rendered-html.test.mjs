@@ -112,9 +112,11 @@ test("client import and keyboard focus guards remain wired", async () => {
   assert.match(source, /aria-live="polite" aria-atomic="true"/);
   assert.match(source, /moveNodeNavigatorFocus/);
   assert.match(source, /document\.execCommand\("copy"\)/);
+  assert.match(source, /Copy path/);
+  assert.match(source, /Index claims:/);
   assert.match(source, /source file claims local generation/);
   assert.match(source, /Declared profile:.*inspected content:/);
-  assert.doesNotMatch(source, /obsidianUrl|Open in Obsidian|vault_name/);
+  assert.doesNotMatch(source, /obsidianUrl|Open in Obsidian|obsidian:\/\//);
   assert.match(source, /resetExplorer\(true\)/);
   assert.match(source, /searchRef\.current\?\.focus\(\)/);
 });
@@ -134,7 +136,7 @@ test("runtime source and production bundles contain no direct vault navigation",
   ].join("\n");
   assert.doesNotMatch(
     sources,
-    /obsidian:\/\/|vault_name|open in obsidian/iu,
+    /obsidian:\/\/|open in obsidian/iu,
   );
 });
 

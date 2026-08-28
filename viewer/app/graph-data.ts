@@ -1,12 +1,7 @@
-export type GraphNode = {
-  id: string;
-  title: string;
-  path: string;
-  status?: string;
-  domain?: string;
-  summary?: string;
-  tags?: string[];
-  section_count?: number;
+export type GraphEvidenceSignals = {
+  lexical_terms?: string[];
+  shared_tags?: string[];
+  mutual_neighbor_ids?: string[];
 };
 
 export type GraphEvidence = {
@@ -14,6 +9,7 @@ export type GraphEvidence = {
   explanation?: string;
   source_text?: string;
   shared_terms?: string[];
+  signals?: GraphEvidenceSignals;
   source_evidence?: GraphEvidenceSide;
   target_evidence?: GraphEvidenceSide;
 };
@@ -33,18 +29,49 @@ export type GraphEdge = {
   evidence?: GraphEvidence;
 };
 
+export type GraphNode = {
+  id: string;
+  title: string;
+  path: string;
+  status?: string;
+  domain?: string;
+  summary?: string;
+  tags?: string[];
+  section_count?: number;
+  created_at?: string | null;
+  modified_at?: string | null;
+  content_hash?: string | null;
+};
+
+export type ExportHistoryClaims = {
+  export_id: string;
+  previous_content_hash: string | null;
+  node_content_hashes_changed: number;
+  node_content_hashes_unchanged: number;
+  nodes_added: number;
+  nodes_removed: number;
+  claim_conflict: boolean;
+};
+
 export type ImportDiagnostics = {
   duplicate_nodes_dropped: number;
   duplicate_edges_dropped: number;
   dangling_edges_dropped: number;
 };
 
+export const VIEWER_SCHEMA_V1 = "recallweave.viewer.v1";
+export const VIEWER_SCHEMA_V2 = "recallweave.viewer.v2";
+export const SUPPORTED_VIEWER_SCHEMAS = new Set([VIEWER_SCHEMA_V1, VIEWER_SCHEMA_V2]);
+
 export type GraphDocument = {
-  schema_version: "recallweave.viewer.v1";
+  schema_version: typeof VIEWER_SCHEMA_V1 | typeof VIEWER_SCHEMA_V2;
   title?: string;
   generated_at?: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
+  vault_label_claim?: string;
+  policy_config_sha256_claim?: string;
+  export_history?: ExportHistoryClaims;
   privacy: {
     export_profile: string;
     declared_export_profile: string;
@@ -106,8 +133,49 @@ export function safeCitation(value: unknown): string {
   return cleaned;
 }
 
+export function citationPath(citation: string): string {
+  const validated = safeCitation(citation);
+  if (!validated) return "";
+  return validated.replace(/:[1-9]\d*(?:-[1-9]\d*)?$/u, "");
+}
+
+const SHA256_HEX = /^[a-f0-9]{64}$/u;
+
+export function safeContentHash(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || !SHA256_HEX.test(normalized)) return null;
+  return normalized;
+}
+
+export function safeIsoTimestamp(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return null;
+  const cleaned = safeText(value, "");
+  if (!cleaned || cleaned !== value) return null;
+  const parsed = Date.parse(cleaned);
+  if (!Number.isFinite(parsed)) return null;
+  return cleaned;
+}
+
+export function safeVaultLabel(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const label = safeLabel(value).slice(0, 120);
+  if (!label) return "";
+  if (/[/\\:]|obsidian|^\./iu.test(label)) return "";
+  if (/\.\./u.test(label)) return "";
+  return label;
+}
+
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number {
+  const number = finiteNumber(value);
+  if (number === undefined || !Number.isSafeInteger(number) || number < 0) return 0;
+  return number;
 }
 
 function evidenceSide(value: unknown): GraphEvidenceSide {
@@ -119,14 +187,69 @@ function evidenceSide(value: unknown): GraphEvidenceSide {
   };
 }
 
+function evidenceSignals(value: unknown): GraphEvidenceSignals | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const lexical_terms = Array.isArray(raw.lexical_terms)
+    ? raw.lexical_terms.map((term) => safeLabel(term)).filter(Boolean).slice(0, 24)
+    : [];
+  const shared_tags = Array.isArray(raw.shared_tags)
+    ? raw.shared_tags.map((tag) => safeLabel(tag)).filter(Boolean).slice(0, 24)
+    : [];
+  const mutual_neighbor_ids = Array.isArray(raw.mutual_neighbor_ids)
+    ? raw.mutual_neighbor_ids.map((id) => safeIdentifier(id)).filter(Boolean).slice(0, 24)
+    : [];
+  if (!lexical_terms.length && !shared_tags.length && !mutual_neighbor_ids.length) {
+    return undefined;
+  }
+  return {
+    lexical_terms: lexical_terms.length ? lexical_terms : undefined,
+    shared_tags: shared_tags.length ? shared_tags : undefined,
+    mutual_neighbor_ids: mutual_neighbor_ids.length ? mutual_neighbor_ids : undefined,
+  };
+}
+
+function parseExportHistory(
+  value: unknown,
+  nodes: GraphNode[],
+): ExportHistoryClaims | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const export_id = safeIdentifier(raw.export_id);
+  if (!export_id) return undefined;
+  const previous_content_hash = safeContentHash(raw.previous_content_hash);
+  const node_content_hashes_changed = nonNegativeInteger(raw.node_content_hashes_changed);
+  const node_content_hashes_unchanged = nonNegativeInteger(raw.node_content_hashes_unchanged);
+  const nodes_added = nonNegativeInteger(raw.nodes_added);
+  const nodes_removed = nonNegativeInteger(raw.nodes_removed);
+  const hashedNodes = nodes.filter((node) => node.content_hash).length;
+  const hashCountMismatch =
+    node_content_hashes_changed + node_content_hashes_unchanged !== hashedNodes;
+  const firstExportMismatch =
+    previous_content_hash === null && nodes_added !== nodes.length;
+  return {
+    export_id,
+    previous_content_hash,
+    node_content_hashes_changed,
+    node_content_hashes_unchanged,
+    nodes_added,
+    nodes_removed,
+    claim_conflict: hashCountMismatch || firstExportMismatch,
+  };
+}
+
 export function normalizeGraph(value: unknown): GraphDocument {
   if (!value || typeof value !== "object") {
     throw new Error("That file is not a RecallWeave graph.");
   }
   const raw = value as Record<string, unknown>;
-  if (raw.schema_version !== "recallweave.viewer.v1") {
-    throw new Error("Unsupported graph format. Expected recallweave.viewer.v1.");
+  const schemaVersion = raw.schema_version;
+  if (!SUPPORTED_VIEWER_SCHEMAS.has(schemaVersion as typeof VIEWER_SCHEMA_V1)) {
+    throw new Error(
+      "Unsupported graph format. Expected recallweave.viewer.v1 or recallweave.viewer.v2.",
+    );
   }
+  const isV2 = schemaVersion === VIEWER_SCHEMA_V2;
   if (!Array.isArray(raw.nodes) || !Array.isArray(raw.edges)) {
     throw new Error("The graph must contain nodes and edges.");
   }
@@ -154,7 +277,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
       return;
     }
     nodeIds.add(id);
-    nodes.push({
+    const normalized: GraphNode = {
       id,
       title: safeLabel(node.title, id),
       path: safeIdentifier(node.path, id),
@@ -165,7 +288,13 @@ export function normalizeGraph(value: unknown): GraphDocument {
         ? node.tags.map((tag) => safeLabel(tag)).filter(Boolean).slice(0, 24)
         : [],
       section_count: finiteNumber(node.section_count),
-    });
+    };
+    if (isV2) {
+      normalized.created_at = safeIsoTimestamp(node.created_at);
+      normalized.modified_at = safeIsoTimestamp(node.modified_at);
+      normalized.content_hash = safeContentHash(node.content_hash);
+    }
+    nodes.push(normalized);
   });
 
   const edgeIds = new Set<string>();
@@ -200,6 +329,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
       return;
     }
     edgeIds.add(id);
+    const signals = isV2 ? evidenceSignals(evidence.signals) : undefined;
     edges.push({
       id,
       source,
@@ -216,6 +346,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
         shared_terms: Array.isArray(evidence.shared_terms)
           ? evidence.shared_terms.map((term) => safeLabel(term)).filter(Boolean).slice(0, 12)
           : [],
+        signals,
       },
     });
   });
@@ -238,6 +369,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
   const includesNoteDerivedTerms = edges.some(
     (edge) =>
       Boolean(edge.evidence?.shared_terms?.length) ||
+      Boolean(edge.evidence?.signals?.lexical_terms?.length) ||
       Boolean(edge.evidence?.explanation),
   );
   const includesPathsTitlesTags = nodes.some(
@@ -275,12 +407,21 @@ export function normalizeGraph(value: unknown): GraphDocument {
       ? (raw.diagnostics as Record<string, unknown>)
       : null;
 
+  const vault_label_claim = isV2 ? safeVaultLabel(raw.vault_name) : undefined;
+  const policy_config_sha256_claim = isV2
+    ? safeContentHash(raw.policy_config_sha256) ?? undefined
+    : undefined;
+  const export_history = isV2 ? parseExportHistory(raw.export_history, nodes) : undefined;
+
   return {
-    schema_version: "recallweave.viewer.v1",
+    schema_version: isV2 ? VIEWER_SCHEMA_V2 : VIEWER_SCHEMA_V1,
     title: safeLabel(raw.title, "Loaded knowledge graph"),
     generated_at: safeLabel(raw.generated_at),
     nodes,
     edges,
+    vault_label_claim: vault_label_claim || undefined,
+    policy_config_sha256_claim,
+    export_history,
     privacy: {
       export_profile: actualExportProfile,
       declared_export_profile: declaredExportProfile,
