@@ -975,9 +975,9 @@ test("normalizeGraph load path feeds AtlasExportPrivacyChrome the same way Graph
     "utf8",
   );
   assert.ok(
-    explorerSource.indexOf("graphFromLoadedFileText") <
-      explorerSource.indexOf("setGraph(next)"),
-    "loadFile must parse via graphFromLoadedFileText before setting graph state",
+    explorerSource.indexOf("loadGraphFromFile") <
+      explorerSource.indexOf("setGraph(result.graph)"),
+    "loadFile must parse via loadGraphFromFile before setting graph state",
   );
   assert.match(explorerSource, /<AtlasExportPrivacyChrome\s+graph=\{graph\}\s*\/>/);
 

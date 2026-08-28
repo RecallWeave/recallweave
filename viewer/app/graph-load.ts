@@ -13,3 +13,27 @@ export function assertGraphFileWithinLimit(byteLength: number): void {
     );
   }
 }
+
+export type LoadedGraphFile = {
+  size: number;
+  text: () => Promise<string>;
+};
+
+export type LoadGraphFileResult =
+  | { ok: true; graph: GraphDocument }
+  | { ok: false; error: string };
+
+/** Shared loadFile body: size-check + parse, without mutating UI state. */
+export async function loadGraphFromFile(
+  file: LoadedGraphFile,
+): Promise<LoadGraphFileResult> {
+  try {
+    assertGraphFileWithinLimit(file.size);
+    return { ok: true, graph: graphFromLoadedFileText(await file.text()) };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Could not load that graph.",
+    };
+  }
+}

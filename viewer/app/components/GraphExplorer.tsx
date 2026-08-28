@@ -19,7 +19,7 @@ import {
   importDiagnosticMessage,
   normalizeGraph,
 } from "../graph-data";
-import { assertGraphFileWithinLimit, graphFromLoadedFileText } from "../graph-load";
+import { loadGraphFromFile } from "../graph-load";
 import { AtlasExportPrivacyChrome } from "./AtlasExportPrivacyChrome";
 import { ColdTrailsTour } from "./ColdTrailsTour";
 
@@ -218,11 +218,14 @@ export function GraphExplorer({
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      assertGraphFileWithinLimit(file.size);
-      const next = graphFromLoadedFileText(await file.text());
+      const result = await loadGraphFromFile(file);
+      if (!result.ok) {
+        setLoadError(result.error);
+        return;
+      }
       userLoadedRef.current = true;
       sampleAbortRef.current?.abort();
-      setGraph(next);
+      setGraph(result.graph);
       resetExplorer(false);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Could not load that graph.");
