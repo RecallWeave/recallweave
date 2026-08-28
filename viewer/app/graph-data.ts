@@ -162,6 +162,8 @@ export function utcEpochMicros(value: string): bigint | null {
   const hour = Number(match[4]);
   const minute = Number(match[5]);
   const second = Number(match[6]);
+  // Date.UTC remaps years 0–99 into 1900–1999; reject those and other out-of-range years.
+  if (year < 1000 || year > 9999) return null;
   if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) {
     return null;
   }
@@ -170,8 +172,11 @@ export function utcEpochMicros(value: string): bigint | null {
   const tz = match[8];
   let offsetMinutes = 0;
   if (tz !== "Z") {
+    const offsetHour = Number(tz.slice(1, 3));
+    const offsetMinute = Number(tz.slice(4, 6));
+    if (offsetHour > 23 || offsetMinute > 59) return null;
     const sign = tz.startsWith("-") ? -1 : 1;
-    offsetMinutes = sign * (Number(tz.slice(1, 3)) * 60 + Number(tz.slice(4, 6)));
+    offsetMinutes = sign * (offsetHour * 60 + offsetMinute);
   }
   const secondMs = Date.UTC(year, month - 1, day, hour, minute, second) - offsetMinutes * 60_000;
   if (!Number.isFinite(secondMs)) return null;

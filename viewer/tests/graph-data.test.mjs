@@ -633,7 +633,13 @@ test("rejects non-UTC and malformed graph generated_at instead of preserving lab
     "2026-08-28T00:00:00",
     "2026-02-30T00:00:00Z",
   ];
-  for (const generated_at of cases) {
+  for (const generated_at of [
+    ...cases,
+    "2026-01-01T00:00:00+99:99",
+    "2026-01-01T00:00:00+24:00",
+    "0099-01-01T00:00:00Z",
+    "0000-01-01T00:00:00Z",
+  ]) {
     const normalized = normalizeGraph(graph({ generated_at }));
     assert.equal(
       normalized.generated_at,

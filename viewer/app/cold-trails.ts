@@ -25,6 +25,7 @@ export type ScoreBreakdown = {
   evidence: number;
   centrality: number;
   structure: number;
+  ageBonus: number;
   penalties: number;
   total: number;
 };
@@ -100,7 +101,9 @@ function ageFactor(days: number | null): number {
   return Math.min(days / 365, 1);
 }
 
-export function weightedTotal(breakdown: Omit<ScoreBreakdown, "total">): number {
+export function weightedTotal(
+  breakdown: Omit<ScoreBreakdown, "total" | "ageBonus">,
+): number {
   return Math.max(
     0,
     0.3 * breakdown.novelty +
@@ -500,6 +503,7 @@ function scoreCandidateTrail(
     evidence,
     centrality,
     structure,
+    ageBonus,
     penalties,
   };
   // Age contributes up to 0.15 outside the weighted structure term.
@@ -622,6 +626,7 @@ function bridgeTrails(
         evidence: 0,
         centrality,
         structure: 1,
+        ageBonus: 0,
         penalties: 0,
       };
       const total = weightedTotal(breakdown);
@@ -677,6 +682,7 @@ function islandTrails(
         evidence: 0,
         centrality,
         structure: 1,
+        ageBonus: 0,
         penalties: 0,
       };
       const total = weightedTotal(breakdown);
@@ -734,6 +740,7 @@ function dormantTrails(
         evidence: 0,
         centrality,
         structure: Math.min(1, 0.4 + age),
+        ageBonus: 0,
         penalties: 0,
       };
       const total = weightedTotal(breakdown);
@@ -792,6 +799,7 @@ function driftTrails(
         evidence: 0,
         centrality,
         structure: Math.min(1, 0.5 + historyBonus + ageFactor(spanDays) * 0.3),
+        ageBonus: 0,
         penalties: 0,
       };
       const total = weightedTotal(breakdown);
@@ -889,9 +897,10 @@ function applyStructuralPenalties(
     evidence: trail.scoreBreakdown.evidence,
     centrality: trail.scoreBreakdown.centrality,
     structure: trail.scoreBreakdown.structure,
+    ageBonus: trail.scoreBreakdown.ageBonus,
     penalties,
   };
-  const total = weightedTotal(breakdown);
+  const total = Math.max(0, weightedTotal(breakdown) + breakdown.ageBonus);
   return {
     ...trail,
     score: total,

@@ -95,12 +95,12 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 28d — PR #7 milestone review after Codex connector remediations
+Cycle 28e — PR #7 milestone review after invalid-offset and ageBonus remediations
 (`4c7993b`): fractional timestamps, timezone-less exporter rejection,
 Bridge/Island opening contract, Show-another/keyboard hardening, Drift
 history conflict gating. Base: merged PR #6 squash `43730aa` on `main`.
 
-Suite target **508** Python OK (1 skip) plus **55** viewer JS tests
+Suite target **509** Python OK (1 skip) plus **56** viewer JS tests
 (`npm test` in `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only
 when remaining findings are Medium/Low with no Critical/High security, privacy,
 evidence-integrity, or reproducibility defect.

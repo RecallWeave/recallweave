@@ -391,6 +391,7 @@ export function ColdTrailsTour({
                   <li>Evidence: {current.scoreBreakdown.evidence.toFixed(2)}</li>
                   <li>Centrality: {current.scoreBreakdown.centrality.toFixed(2)}</li>
                   <li>Structure: {current.scoreBreakdown.structure.toFixed(2)}</li>
+                  <li>Age bonus: {current.scoreBreakdown.ageBonus.toFixed(2)}</li>
                   <li>Penalties: {current.scoreBreakdown.penalties.toFixed(2)}</li>
                   <li>Total: {current.scoreBreakdown.total.toFixed(2)}</li>
                 </ul>

@@ -76,6 +76,7 @@ test("exports saved trail markdown for session handoff", () => {
         evidence: 0.3,
         centrality: 0.2,
         structure: 0,
+        ageBonus: 0,
         penalties: 0,
         total: 0.5,
       },
@@ -127,6 +128,7 @@ test("escapes markdown-forging titles in saved exports", () => {
         evidence: 0.25,
         centrality: 0,
         structure: 0.2,
+        ageBonus: 0,
         penalties: 0,
         total: 0.75,
       },
@@ -1148,22 +1150,20 @@ test("reported scores match the weighted scoring formula", () => {
   const result = buildColdTrails(fixture);
   assert.equal(result.status, "ok");
   for (const trail of result.trails) {
-    const { novelty, distance, evidence, centrality, structure, penalties, total } =
+    const { novelty, distance, evidence, centrality, structure, ageBonus, penalties, total } =
       trail.scoreBreakdown;
-    const weighted =
-      Math.max(
-        0,
-        0.3 * novelty +
-          0.25 * distance +
-          0.25 * evidence +
-          0.1 * centrality +
-          0.1 * structure -
-          penalties,
-      );
-    // Age may add up to 0.15 outside the weighted structure term; allow that gap.
-    assert.ok(total + 1e-9 >= weighted);
-    assert.ok(total - weighted <= 0.15 + 1e-9);
-    assert.equal(trail.score, total);
+    const expected = Math.max(
+      0,
+      0.3 * novelty +
+        0.25 * distance +
+        0.25 * evidence +
+        0.1 * centrality +
+        0.1 * structure -
+        penalties +
+        ageBonus,
+    );
+    assert.equal(total, expected);
+    assert.equal(trail.score, expected);
   }
 });
 
