@@ -585,6 +585,10 @@ function endpointDomainsForTrail(trail: ColdTrail, nodes: Map<string, GraphNode>
   return endpointIdsForTrail(trail).map((id) => nodes.get(id)?.domain || "Unclassified");
 }
 
+function touchedDomainsForTrail(trail: ColdTrail, nodes: Map<string, GraphNode>): string[] {
+  return [...new Set(endpointDomainsForTrail(trail, nodes))];
+}
+
 function applyStructuralPenalties(
   trail: ColdTrail,
   feedback: ColdTrailsFeedback,
@@ -635,7 +639,7 @@ function domainTouchOverflow(
   nodes: Map<string, GraphNode>,
   domainTouchCounts: Map<string, number>,
 ): boolean {
-  return endpointDomainsForTrail(trail, nodes).some((domain) => {
+  return touchedDomainsForTrail(trail, nodes).some((domain) => {
     return (domainTouchCounts.get(domain) || 0) + 1 > 2;
   });
 }
@@ -675,7 +679,7 @@ function applyTrailSelection(
   const typeCount = feedback.usedTypes.get(trail.type) || 0;
   feedback.usedTypes.set(trail.type, typeCount + 1);
   endpointIdsForTrail(trail).forEach((id) => feedback.usedNodeIds.add(id));
-  endpointDomainsForTrail(trail, nodes).forEach((domain) => {
+  touchedDomainsForTrail(trail, nodes).forEach((domain) => {
     feedback.usedDomains.add(domain);
     feedback.domainTouchCounts.set(domain, (feedback.domainTouchCounts.get(domain) || 0) + 1);
   });
@@ -727,10 +731,18 @@ function rescorePool(
 
 function pickTrail(
   candidates: ColdTrail[],
-  prefer: (trail: ColdTrail) => boolean = () => true,
+  prefer?: (trail: ColdTrail) => boolean,
 ): ColdTrail | undefined {
-  const preferred = candidates.filter(prefer);
-  return (preferred.length ? preferred : candidates)[0];
+  if (!candidates.length) return undefined;
+  if (prefer) {
+    const preferred = candidates.filter(prefer);
+    if (preferred.length) return preferred[0];
+  }
+  return candidates[0];
+}
+
+function isStructuralTrail(trail: ColdTrail): boolean {
+  return trail.type === "bridge" || trail.type === "island";
 }
 
 function selectTourTrails(
@@ -804,16 +816,18 @@ function selectTourTrails(
     );
     const eligible = rescored.filter((trail) => isTrailEligible(trail, localFeedback, nodes, degrees, p95));
     if (!eligible.length) break;
-    let chosen = eligible[0];
+    const fillEligible = eligible.filter((trail) => !isStructuralTrail(trail));
+    if (!fillEligible.length) break;
+    let chosen = fillEligible[0];
     if (domains.size >= 3) {
       const covered = new Set(
-        selected.flatMap((trail) => endpointDomainsForTrail(trail, nodes)),
+        selected.flatMap((trail) => touchedDomainsForTrail(trail, nodes)),
       );
       if (covered.size < 3) {
         chosen =
-          eligible.find((trail) =>
-            endpointDomainsForTrail(trail, nodes).some((domain) => !covered.has(domain)),
-          ) || eligible[0];
+          fillEligible.find((trail) =>
+            touchedDomainsForTrail(trail, nodes).some((domain) => !covered.has(domain)),
+          ) || fillEligible[0];
       }
     }
     selected.push(chosen);
@@ -903,6 +917,15 @@ export function buildColdTrails(
   );
 
   if (!selected.length) {
+    return {
+      status: "refused",
+      reason: "insufficient_eligible_trails",
+      message: refusalMessage("insufficient_eligible_trails"),
+    };
+  }
+
+  const structuralSelected = selected.some((trail) => isStructuralTrail(trail));
+  if (!structuralSelected || !isStructuralTrail(selected[0])) {
     return {
       status: "refused",
       reason: "insufficient_eligible_trails",

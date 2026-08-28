@@ -367,6 +367,7 @@ test("excludes candidates with one-sided or mismatched citations", () => {
       nodes,
       edges: [
         { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+        { id: "auth-bridge", source: "note-0.md", target: "note-2.md", verified: true },
         {
           id: "c1",
           source: "note-2.md",
@@ -406,6 +407,7 @@ test("excludes candidates with one-sided or mismatched citations", () => {
       nodes,
       edges: [
         { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+        { id: "auth-bridge", source: "note-0.md", target: "note-2.md", verified: true },
         {
           id: "bad",
           source: "note-2.md",
@@ -528,6 +530,15 @@ test("notices single-domain graphs without refusing entirely", () => {
     edges: [
       { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
       {
+        id: "c0",
+        source: "note-2.md",
+        target: "note-4.md",
+        verified: false,
+        evidence: citedEvidence("note-2.md", "note-4.md", {
+          signals: { lexical_terms: ["orbit", "signal", "delta", "phase"] },
+        }),
+      },
+      {
         id: "c1",
         source: "note-2.md",
         target: "note-3.md",
@@ -567,7 +578,114 @@ test("notices single-domain graphs without refusing entirely", () => {
   const result = buildColdTrails(fixture);
   assert.equal(result.status, "ok");
   assert.match(result.notice ?? "", /only one domain/i);
+  assert.ok(result.trails.some((trail) => trail.type === "island"));
+  assert.ok(isStructuralTrail(result.trails[0]));
 });
+
+test("refuses candidate-only tours when no structural trail exists", () => {
+  const result = buildColdTrails(
+    graph({
+      nodes: Array.from({ length: 8 }, (_, index) => ({
+        id: `note-${index}.md`,
+        title: `Note ${index}`,
+        path: `note-${index}.md`,
+        domain: "Only",
+      })),
+      edges: [
+        { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+        {
+          id: "c1",
+          source: "note-2.md",
+          target: "note-3.md",
+          verified: false,
+          evidence: citedEvidence("note-2.md", "note-3.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c2",
+          source: "note-4.md",
+          target: "note-5.md",
+          verified: false,
+          evidence: citedEvidence("note-4.md", "note-5.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "note-6.md",
+          target: "note-7.md",
+          verified: false,
+          evidence: citedEvidence("note-6.md", "note-7.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "tensor", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(result.status, "refused");
+});
+
+test("allows two same-domain trails before exhausting the domain touch limit", () => {
+  const result = buildColdTrails(
+    graph({
+      nodes: [
+        { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+        { id: "core-b.md", title: "Core B", path: "core-b.md", domain: "Core" },
+        { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+        { id: "only-b.md", title: "Only B", path: "only-b.md", domain: "Only" },
+        { id: "only-c.md", title: "Only C", path: "only-c.md", domain: "Only" },
+        { id: "only-d.md", title: "Only D", path: "only-d.md", domain: "Only" },
+        { id: "only-e.md", title: "Only E", path: "only-e.md", domain: "Only" },
+        { id: "only-f.md", title: "Only F", path: "only-f.md", domain: "Only" },
+      ],
+      edges: [
+        { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+        { id: "auth-2", source: "hub.md", target: "core-b.md", verified: true },
+        {
+          id: "c1",
+          source: "only-b.md",
+          target: "only-c.md",
+          verified: false,
+          evidence: citedEvidence("only-b.md", "only-c.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c2",
+          source: "only-d.md",
+          target: "only-e.md",
+          verified: false,
+          evidence: citedEvidence("only-d.md", "only-e.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "only-f.md",
+          target: "edge.md",
+          verified: false,
+          evidence: {
+            source_evidence: { citation: "only-f.md:10" },
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          },
+        },
+      ],
+    }),
+  );
+  assert.equal(result.status, "ok");
+  assert.ok(isStructuralTrail(result.trails[0]));
+  const onlyDomainCandidates = result.trails.filter(
+    (trail) =>
+      trail.trust === "candidate" &&
+      [trail.sourceId, trail.targetId].every((id) => id.startsWith("only-")),
+  );
+  assert.ok(onlyDomainCandidates.length >= 2);
+});
+
+function isStructuralTrail(trail) {
+  return trail.type === "bridge" || trail.type === "island";
+}
 
 test("reported scores match the weighted scoring formula", () => {
   const fixture = graph({
