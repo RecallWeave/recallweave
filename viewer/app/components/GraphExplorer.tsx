@@ -17,10 +17,10 @@ import {
   MAX_FILE_BYTES,
   VIEWER_SCHEMA_V2,
   citationPath,
-  formatAtlasProvenanceClaims,
   importDiagnosticMessage,
   normalizeGraph,
 } from "../graph-data";
+import { AtlasProvenanceChrome } from "./AtlasProvenanceChrome";
 import { ColdTrailsTour } from "./ColdTrailsTour";
 
 type PositionedNode = GraphNode & {
@@ -336,7 +336,6 @@ export function GraphExplorer() {
   const privacyConflictDetail = graph?.privacy.metadata_conflict
     ? `Declared profile: ${graph.privacy.declared_export_profile}; inspected content: ${graph.privacy.export_profile}.`
     : "";
-  const provenanceClaims = graph ? formatAtlasProvenanceClaims(graph) : "";
 
   return (
     <div className="app-shell">
@@ -420,9 +419,7 @@ export function GraphExplorer() {
             {privacyConflictDetail && (
               <span className="privacy-conflict-detail"> {privacyConflictDetail}</span>
             )}
-            {provenanceClaims && (
-              <span className="privacy-provenance-detail"> Index claims: {provenanceClaims}.</span>
-            )}
+            {graph ? <AtlasProvenanceChrome graph={graph} /> : null}
           </span>
         </div>
         {(loadError || diagnosticMessage) && (

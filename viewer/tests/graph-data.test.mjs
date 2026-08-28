@@ -4,7 +4,6 @@ import test from "node:test";
 
 import {
   citationPath,
-  formatAtlasProvenanceClaims,
   formatExportHistoryDetail,
   importDiagnosticMessage,
   normalizeGraph,
@@ -688,7 +687,11 @@ test("formatExportHistoryDetail includes conflict wording only when claims disag
   assert.match(conflicted, /export history conflicts with loaded graph/);
 });
 
-test("formatAtlasProvenanceClaims surfaces conflicted and valid export history", () => {
+test("AtlasProvenanceChrome renders conflicted and valid export history", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AtlasProvenanceChrome } = await import("../app/components/AtlasProvenanceChrome.ts");
+
   const valid = normalizeGraph({
     schema_version: VIEWER_SCHEMA_V2,
     nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
@@ -702,11 +705,13 @@ test("formatAtlasProvenanceClaims surfaces conflicted and valid export history",
       nodes_removed: 0,
     },
   });
-  const validClaims = formatAtlasProvenanceClaims(valid);
-  assert.match(validClaims, /export history claim:/);
-  assert.match(validClaims, /export-ok/);
-  assert.match(validClaims, /first export claim/);
-  assert.doesNotMatch(validClaims, /export history conflicts with loaded graph/);
+  const validHtml = renderToStaticMarkup(
+    createElement(AtlasProvenanceChrome, { graph: valid }),
+  );
+  assert.match(validHtml, /privacy-provenance-detail/);
+  assert.match(validHtml, /export-ok/);
+  assert.match(validHtml, /first export claim/);
+  assert.doesNotMatch(validHtml, /export history conflicts with loaded graph/);
 
   const conflicted = normalizeGraph({
     schema_version: VIEWER_SCHEMA_V2,
@@ -722,10 +727,10 @@ test("formatAtlasProvenanceClaims surfaces conflicted and valid export history",
     },
   });
   assert.equal(conflicted.export_history?.claim_conflict, true);
-  assert.match(
-    formatAtlasProvenanceClaims(conflicted),
-    /export history conflicts with loaded graph/,
+  const conflictHtml = renderToStaticMarkup(
+    createElement(AtlasProvenanceChrome, { graph: conflicted }),
   );
+  assert.match(conflictHtml, /export history conflicts with loaded graph/);
 
   const omitted = normalizeGraph({
     schema_version: VIEWER_SCHEMA_V2,
@@ -739,13 +744,13 @@ test("formatAtlasProvenanceClaims surfaces conflicted and valid export history",
       nodes_removed: 0,
     },
   });
-  assert.match(
-    formatAtlasProvenanceClaims(omitted),
-    /export history conflicts with loaded graph/,
+  const omittedHtml = renderToStaticMarkup(
+    createElement(AtlasProvenanceChrome, { graph: omitted }),
   );
+  assert.match(omittedHtml, /export history conflicts with loaded graph/);
 });
 
-test("GraphExplorer wires formatAtlasProvenanceClaims into provenance chrome", async () => {
+test("GraphExplorer mounts AtlasProvenanceChrome for provenance chrome", async () => {
   const { readFile } = await import("node:fs/promises");
   const { fileURLToPath } = await import("node:url");
   const path = await import("node:path");
@@ -754,8 +759,8 @@ test("GraphExplorer wires formatAtlasProvenanceClaims into provenance chrome", a
     "../app/components/GraphExplorer.tsx",
   );
   const source = await readFile(sourcePath, "utf8");
-  assert.match(source, /formatAtlasProvenanceClaims\s*\(/);
-  assert.match(source, /privacy-provenance-detail/);
+  assert.match(source, /<AtlasProvenanceChrome\b/);
+  assert.match(source, /graph=\{graph\}/);
 });
 
 test("citationPath extracts the note path from validated citations", () => {
