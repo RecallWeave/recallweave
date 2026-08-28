@@ -1,9 +1,7 @@
 # Cold Trails: guided discovery design
 
-> Status: design-only roadmap artifact. Cold Trails is not implemented in
-> RecallWeave Atlas. This document defines a testable product contract; it does
-> not authorize changing canonical notes, activating an assistant, or treating
-> candidate connections as facts.
+> Status: **v1 shipped in Atlas** (deterministic selection engine + guided tour UI).
+> This document defines the product contract; canonical notes remain untouched.
 
 ## Purpose
 
@@ -38,20 +36,21 @@ Cold Trails implementation waits for:
    refusal;
 4. a separately reviewed `recallweave.viewer.v2` schema.
 
-The proposed `viewer.v2` additions are:
+The **`recallweave.viewer.v2` schema is frozen** in `docs/json-output.md`
+(section “export-viewer and recallweave.viewer.v2”). Required additions:
 
-- `created_at` and `modified_at` per node;
-- `content_hash` plus an explicit export-history model;
-- `vault_name` for optional `obsidian://open` links;
-- a policy-provenance hash, never the policy contents or local policy path;
-- distinct evidence signals such as lexical terms, shared tags, and mutual
-  neighbors rather than a single flattened candidate kind.
+- `created_at` and `modified_at` per node (nullable when unknown);
+- `content_hash` per node plus graph-level `export_history`;
+- optional `vault_name` (label only, never a filesystem path);
+- optional `policy_config_sha256` (never policy path or contents);
+- distinct evidence `signals` (`lexical_terms`, `shared_tags`,
+  `mutual_neighbor_ids`).
 
-Until those fields exist, Atlas cannot honestly claim dormancy, rediscovery,
-drift over time, or a direct source-opening capability. Contradiction,
-causality, semantic similarity without shared vocabulary, and importance
-remain out of scope even for `viewer.v2`; they require a model or human review
-and an explicit trust design.
+Until exporters emit those fields, Atlas cannot honestly claim dormancy,
+rediscovery, drift over time, or a direct source-opening capability.
+Contradiction, causality, semantic similarity without shared vocabulary, and
+importance remain out of scope even for `viewer.v2`; they require a model or
+human review and an explicit trust design.
 
 ## Deterministically supportable trail types
 
@@ -113,8 +112,8 @@ score =
   exists.
 - `distance`: `0.0` for one domain, `0.6` for different routinely connected
   domains, and `1.0` for different domains with at most one existing crossing.
-- `evidence`: `0.4 * min(shared_terms / 6, 1)`, plus `0.3` for a cited source
-  passage, `0.2` for shared tags, and
+- `evidence`: `0.4 * min(shared_terms / 6, 1)`, plus `0.3` when both endpoint
+  passages are cited, `0.2` for shared tags, and
   `0.1 * min(mutual_neighbors / 3, 1)`.
 - `centrality`: the larger endpoint degree divided by the 90th percentile,
   capped at `1.0`. This is connectedness, not importance.
@@ -141,8 +140,9 @@ Age is applied to the older endpoint and is never described as importance.
 A candidate trail is eligible only when:
 
 - both endpoints exist;
-- it has at least three shared terms, a cited source passage, or shared tags;
-- its citation matches `path:line` or `path:line-line`;
+- it has at least three shared terms, bilateral cited passages, or shared tags;
+- both endpoint citations match `path:line` or `path:line-line` and their
+  respective node paths;
 - evidence score is at least `0.25`;
 - it has at least two surprise terms.
 
@@ -156,7 +156,7 @@ Select greedily and rescore after every choice:
 - six trails by default;
 - at most two of any trail type;
 - at most two touching one domain;
-- at least three domains when the graph has three or more;
+- at least three domains when three or more domains are represented by eligible trails;
 - at least one Bridge or Island structural trail;
 - no node appears twice;
 - nodes above the 95th degree percentile are ineligible except for Bridge.
@@ -198,8 +198,7 @@ candidate styling because the weaker trust class wins.
 - **Save** adds a citation-rich item to a local session list.
 - **Dismiss** affects future ranking only.
 - **Explain** reveals all signals and the exact score.
-- **Open source** uses an encoded `obsidian://open` link only when a reviewed
-  `vault_name` is present; otherwise it copies the relative path.
+- **Open source** copies the relative note path (Atlas does not emit direct vault navigation links).
 - **Show me another** deterministically excludes already shown trails.
 - **Show on map** frames both endpoints on the canvas.
 - **End tour** offers a local Markdown export of saved trails.

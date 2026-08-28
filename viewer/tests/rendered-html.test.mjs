@@ -96,6 +96,28 @@ test("inline script parsing respects quoted greater-than characters", () => {
   );
 });
 
+test("Cold Trails tour dialog meets accessibility and trust boundaries", async () => {
+  const tour = await readFile(
+    new URL("../app/components/ColdTrailsTour.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(tour, /role="dialog"/);
+  assert.match(tour, /aria-modal="true"/);
+  assert.match(tour, /aria-live="polite"/);
+  assert.match(tour, /trailTrustLabel\(current\.trust\)/);
+  assert.match(tour, /label="Source evidence"/);
+  assert.match(tour, /label="Target evidence"/);
+  assert.match(tour, /Show on map/);
+  assert.doesNotMatch(tour, /obsidian:\/\//);
+
+  const explorer = await readFile(
+    new URL("../app/components/GraphExplorer.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(explorer, /Cold Trails/);
+  assert.match(explorer, /ColdTrailsTour/);
+});
+
 test("client import and keyboard focus guards remain wired", async () => {
   const source = await readFile(
     new URL("../app/components/GraphExplorer.tsx", import.meta.url),
@@ -112,9 +134,11 @@ test("client import and keyboard focus guards remain wired", async () => {
   assert.match(source, /aria-live="polite" aria-atomic="true"/);
   assert.match(source, /moveNodeNavigatorFocus/);
   assert.match(source, /document\.execCommand\("copy"\)/);
+  assert.match(source, /Copy path/);
+  assert.match(source, /Index claims:/);
   assert.match(source, /source file claims local generation/);
   assert.match(source, /Declared profile:.*inspected content:/);
-  assert.doesNotMatch(source, /obsidianUrl|Open in Obsidian|vault_name/);
+  assert.doesNotMatch(source, /obsidianUrl|Open in Obsidian|obsidian:\/\//);
   assert.match(source, /resetExplorer\(true\)/);
   assert.match(source, /searchRef\.current\?\.focus\(\)/);
 });
@@ -134,7 +158,7 @@ test("runtime source and production bundles contain no direct vault navigation",
   ].join("\n");
   assert.doesNotMatch(
     sources,
-    /obsidian:\/\/|vault_name|open in obsidian/iu,
+    /obsidian:\/\/|open in obsidian/iu,
   );
 });
 

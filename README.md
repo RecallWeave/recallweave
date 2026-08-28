@@ -188,9 +188,9 @@ passages in the graph file. Open [viewer/README.md](viewer/README.md) for local
 viewer setup. Atlas reads a selected graph in browser memory; its application
 code does not upload the file.
 
-The planned [Cold Trails](docs/cold-trails.md) guided tour is design-only. It
-will not be implemented until the viewer foundation and the proposed
-`recallweave.viewer.v2` provenance fields are reviewed.
+[Cold Trails](docs/cold-trails.md) is a deterministic guided tour in Atlas for
+high-value graph discoveries. It runs locally in the browser and never writes
+back to your vault.
 
 ## Task contracts
 

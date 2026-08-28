@@ -1097,6 +1097,181 @@ button {
   }
 }
 
+.cold-trails-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 8, 8, 0.72);
+}
+
+.cold-trails-backdrop-dismiss {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.cold-trails-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(760px, 100%);
+  max-height: min(90vh, 920px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(21, 27, 26, 0.98), rgba(16, 21, 21, 0.98));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.cold-trails-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.cold-trails-header h2 {
+  margin: 6px 0 0;
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+
+.cold-trails-refusal {
+  padding: 16px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  background: rgba(255, 121, 108, 0.06);
+}
+
+.cold-trails-card {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.cold-trails-card.candidate {
+  border-style: dashed;
+  border-color: rgba(112, 229, 211, 0.45);
+}
+
+.cold-trails-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cold-trails-badge {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(217, 255, 114, 0.12);
+  color: var(--signal);
+}
+
+.cold-trails-card.structural {
+  border-color: rgba(124, 168, 255, 0.45);
+}
+
+.cold-trails-trust.structural {
+  color: var(--blue);
+}
+
+.cold-trails-trust.candidate {
+  color: var(--aqua);
+}
+
+.cold-trails-trust.authored {
+  color: var(--paper);
+}
+
+.cold-trails-card h3 {
+  margin: 0 0 14px;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.cold-trails-endpoints {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.cold-trails-endpoints.single {
+  grid-template-columns: 1fr;
+}
+
+.cold-trails-endpoint {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cold-trails-endpoint-title,
+.cold-trails-endpoint-domain {
+  display: block;
+}
+
+.cold-trails-endpoint-title {
+  font-weight: 650;
+}
+
+.cold-trails-endpoint-domain {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cold-trails-surprise,
+.cold-trails-evidence,
+.cold-trails-breakdown {
+  margin-top: 14px;
+}
+
+.cold-trails-facts {
+  margin: 14px 0 0;
+  padding-left: 18px;
+  color: #c8d0cb;
+}
+
+.cold-trails-caveat,
+.cold-trails-notice,
+.cold-trails-saved-count {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cold-trails-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+@media (max-width: 720px) {
+  .cold-trails-endpoints {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

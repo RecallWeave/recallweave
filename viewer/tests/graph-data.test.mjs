@@ -3,12 +3,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  citationPath,
   importDiagnosticMessage,
   normalizeGraph,
   safeCitation,
+  safeContentHash,
   safeIdentifier,
   safeLabel,
   safeText,
+  safeVaultLabel,
+  VIEWER_SCHEMA_V2,
 } from "../app/graph-data.ts";
 
 function graph(overrides = {}) {
@@ -409,10 +413,180 @@ test("uses the empty graph privacy profile when no content is displayed", () => 
   assert.equal(normalized.privacy.metadata_conflict, false);
 });
 
+test("accepts validated vault label claims and rejects path-like vault names", () => {
+  const accepted = normalizeGraph(
+    graph({
+      schema_version: VIEWER_SCHEMA_V2,
+      vault_name: "Research Vault",
+      export_history: {
+        export_id: "export-1",
+        previous_content_hash: null,
+        node_content_hashes_changed: 0,
+        node_content_hashes_unchanged: 0,
+        nodes_added: 2,
+        nodes_removed: 0,
+      },
+    }),
+  );
+  assert.equal(accepted.vault_label_claim, "Research Vault");
+  assert.equal("vault_name" in accepted, false);
+
+  const rejected = normalizeGraph(
+    graph({
+      schema_version: VIEWER_SCHEMA_V2,
+      vault_name: "../secrets",
+      export_history: {
+        export_id: "export-2",
+        previous_content_hash: null,
+        node_content_hashes_changed: 0,
+        node_content_hashes_unchanged: 0,
+        nodes_added: 2,
+        nodes_removed: 0,
+      },
+    }),
+  );
+  assert.equal(rejected.vault_label_claim, undefined);
+});
+
+test("normalizes viewer.v2 provenance claims and reconciles export history", () => {
+  const hashA = "a".repeat(64);
+  const hashB = "b".repeat(64);
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      {
+        id: "a.md",
+        title: "A",
+        path: "a.md",
+        created_at: "2026-01-02T03:04:05Z",
+        modified_at: "2026-01-03T03:04:05Z",
+        content_hash: hashA,
+      },
+      {
+        id: "b.md",
+        title: "B",
+        path: "b.md",
+        created_at: null,
+        modified_at: null,
+        content_hash: hashB,
+      },
+    ],
+    edges: [
+      {
+        id: "candidate",
+        source: "a.md",
+        target: "b.md",
+        verified: false,
+        evidence: {
+          source_evidence: { citation: "a.md:10-12" },
+          target_evidence: { citation: "b.md:20" },
+          signals: {
+            lexical_terms: ["system", "map"],
+            shared_tags: ["decisions"],
+            mutual_neighbor_ids: ["Projects/Related.md"],
+          },
+        },
+      },
+    ],
+    policy_config_sha256: "c".repeat(64),
+    export_history: {
+      export_id: "export-v2",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 2,
+      nodes_removed: 0,
+    },
+    privacy: {
+      export_profile: "graph_metadata_and_note_derived_terms",
+      metadata_only: false,
+      includes_excerpts: false,
+      includes_passage_text: false,
+      includes_note_derived_terms: true,
+      includes_paths_titles_tags: true,
+    },
+  });
+
+  assert.equal(normalized.schema_version, VIEWER_SCHEMA_V2);
+  assert.equal(normalized.nodes[0].content_hash, hashA);
+  assert.equal(normalized.nodes[0].created_at, "2026-01-02T03:04:05Z");
+  assert.equal(normalized.policy_config_sha256_claim, "c".repeat(64));
+  assert.equal(normalized.export_history?.claim_conflict, false);
+  assert.deepEqual(normalized.edges[0].evidence.signals, {
+    lexical_terms: ["system", "map"],
+    shared_tags: ["decisions"],
+    mutual_neighbor_ids: ["Projects/Related.md"],
+  });
+
+  const conflict = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: hashA }],
+    edges: [],
+    export_history: {
+      export_id: "export-conflict",
+      previous_content_hash: "b".repeat(64),
+      node_content_hashes_changed: 3,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 0,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(conflict.export_history?.claim_conflict, true);
+});
+
+test("flags subsequent export with missing overlap counters", () => {
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) },
+      { id: "b.md", title: "B", path: "b.md", content_hash: "b".repeat(64) },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "second-export",
+      previous_content_hash: "c".repeat(64),
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 0,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(normalized.export_history?.claim_conflict, true);
+});
+
+test("accepts producer-shaped first export history", () => {
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) },
+      { id: "b.md", title: "B", path: "b.md", content_hash: "b".repeat(64) },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "first-export",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 2,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(normalized.export_history?.claim_conflict, false);
+});
+
+test("citationPath extracts the note path from validated citations", () => {
+  assert.equal(citationPath("Folder/Note.md:12"), "Folder/Note.md");
+  assert.equal(citationPath("Folder/Note.md:12-18"), "Folder/Note.md");
+  assert.equal(citationPath("Folder/Note.md:18-12"), "");
+  assert.equal(safeContentHash(""), null);
+  assert.equal(safeContentHash("not-a-hash"), null);
+  assert.equal(safeContentHash("A".repeat(64)), "a".repeat(64));
+  assert.equal(safeVaultLabel("obsidian vault"), "");
+});
+
 test("ignores unsupported vault names and treats local generation as a source claim", () => {
   const normalized = normalizeGraph(
     graph({
-      vault_name: "Unreviewed vault",
       privacy: {
         export_profile: "graph_metadata",
         metadata_only: true,
@@ -424,7 +598,7 @@ test("ignores unsupported vault names and treats local generation as a source cl
       },
     }),
   );
-  assert.equal("vault_name" in normalized, false);
+  assert.equal(normalized.vault_label_claim, undefined);
   assert.equal(normalized.privacy.source_claims_generated_locally, true);
 });
 
