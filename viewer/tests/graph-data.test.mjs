@@ -895,6 +895,115 @@ test("AtlasExportPrivacyChrome renders GraphExplorer provenance chrome", async (
   assert.doesNotMatch(emptyBanner, /privacy-provenance-detail/);
 });
 
+test("AtlasExportPrivacyChrome exact SSR for passage and metadata-conflict banners", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AtlasExportPrivacyChrome } = await import(
+    "../app/components/AtlasExportPrivacyChrome.ts"
+  );
+
+  const passage = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    privacy: undefined,
+    nodes: [
+      {
+        id: "a.md",
+        title: "A",
+        path: "a.md",
+        content_hash: "a".repeat(64),
+        summary: "Note-derived passage text",
+      },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "export-passage",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(passage.privacy.includes_passage_text, true);
+  assert.equal(passage.privacy.metadata_conflict, false);
+  assert.equal(
+    renderToStaticMarkup(createElement(AtlasExportPrivacyChrome, { graph: passage })),
+    '<div class="export-privacy contains-excerpts" role="status"><span class="export-privacy-icon" aria-hidden="true"></span><span><strong>Possible excerpts detected</strong><span class="privacy-detail">paths, titles, tags · passages · profile: graph_with_bounded_passage_text</span> Review before screen sharing or sending this file.<span class="privacy-provenance-detail"> Index claims: export history claim: export export-passage · first export claim · 1 added · 0 removed · 0 hash changes · 0 unchanged.</span></span></div>',
+  );
+
+  const conflict = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    privacy: { includes_excerpts: false },
+    nodes: [
+      {
+        id: "a.md",
+        title: "A",
+        path: "a.md",
+        content_hash: "a".repeat(64),
+        summary: "Unexpected excerpt",
+      },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "export-conflict-banner",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(conflict.privacy.metadata_conflict, true);
+  assert.equal(
+    renderToStaticMarkup(createElement(AtlasExportPrivacyChrome, { graph: conflict })),
+    '<div class="export-privacy contains-excerpts" role="status"><span class="export-privacy-icon" aria-hidden="true"></span><span><strong>Export privacy flags conflict with displayed content</strong><span class="privacy-detail">paths, titles, tags · passages · profile: graph_with_bounded_passage_text</span> Review before screen sharing or sending this file.<span class="privacy-conflict-detail"> Declared profile: undeclared; inspected content: graph_with_bounded_passage_text.</span><span class="privacy-provenance-detail"> Index claims: export history claim: export export-conflict-banner · first export claim · 1 added · 0 removed · 0 hash changes · 0 unchanged.</span></span></div>',
+  );
+});
+
+test("normalizeGraph load path feeds AtlasExportPrivacyChrome the same way GraphExplorer does", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const { AtlasExportPrivacyChrome } = await import(
+    "../app/components/AtlasExportPrivacyChrome.ts"
+  );
+
+  const explorerSource = await readFile(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../app/components/GraphExplorer.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    explorerSource.indexOf("const next = normalizeGraph(parsed)") <
+      explorerSource.indexOf("setGraph(next)"),
+    "loadFile must normalize before setting graph state",
+  );
+  assert.match(explorerSource, /<AtlasExportPrivacyChrome\s+graph=\{graph\}\s*\/>/);
+
+  // Mirror the post-loadFile UI: normalize untrusted JSON, then render the banner GraphExplorer mounts.
+  const raw = {
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+    export_history: {
+      export_id: "loaded-export",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  };
+  const loaded = normalizeGraph(raw);
+  const html = renderToStaticMarkup(
+    createElement(AtlasExportPrivacyChrome, { graph: loaded }),
+  );
+  assert.match(html, /loaded-export/);
+  assert.match(html, /privacy-provenance-detail/);
+  assert.match(html, /first export claim/);
+});
+
 test("citationPath extracts the note path from validated citations", () => {
   assert.equal(citationPath("Folder/Note.md:12"), "Folder/Note.md");
   assert.equal(citationPath("Folder/Note.md:12-18"), "Folder/Note.md");
