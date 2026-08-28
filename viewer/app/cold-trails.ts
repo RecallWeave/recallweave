@@ -83,6 +83,13 @@ function daysSince(value: string | null | undefined, nowMs: number): number | nu
   return Math.max(0, (nowMs - parsed.getTime()) / MS_PER_DAY);
 }
 
+function daysBetween(a: string | null | undefined, b: string | null | undefined): number | null {
+  const left = parseUtcTimestamp(a);
+  const right = parseUtcTimestamp(b);
+  if (!left || !right) return null;
+  return Math.abs(left.getTime() - right.getTime()) / MS_PER_DAY;
+}
+
 function ageFactor(days: number | null): number {
   if (days === null) return 0;
   return Math.min(days / 365, 1);
@@ -550,7 +557,6 @@ function classifyCandidateEdge(
   adjacency: Map<string, Set<string>>,
   nodes: Map<string, GraphNode>,
   interDomainCounts: Map<string, number>,
-  nowMs: number,
 ): TrailType[] {
   const source = nodes.get(edge.source);
   const target = nodes.get(edge.target);
@@ -558,13 +564,11 @@ function classifyCandidateEdge(
   const types: TrailType[] = [];
   const sourceDomain = source.domain || "Unclassified";
   const targetDomain = target.domain || "Unclassified";
-  const sourceCreated = daysSince(source.created_at, nowMs);
-  const targetCreated = daysSince(target.created_at, nowMs);
+  const createdGapDays = daysBetween(source.created_at, target.created_at);
   const isParallel =
-    sourceCreated !== null &&
-    targetCreated !== null &&
+    createdGapDays !== null &&
     sourceDomain !== targetDomain &&
-    Math.abs(sourceCreated - targetCreated) <= PARALLEL_MAX_DAY_GAP &&
+    createdGapDays <= PARALLEL_MAX_DAY_GAP &&
     surpriseTerms(source, target, edge).length >= 2;
   if (isParallel) {
     types.push("parallel_invention");
@@ -1235,7 +1239,6 @@ export function buildColdTrails(
         adjacency,
         nodes,
         interDomainCounts,
-        referenceMs,
       );
       types.forEach((type) => {
         const trail = scoreCandidateTrail(

@@ -868,6 +868,59 @@ test("detects parallel invention from near-simultaneous cross-domain candidates"
   assert.match(parallel?.structuralFacts.join(" ") ?? "", /created_at/);
 });
 
+test("refuses parallel invention for future timestamps years apart", () => {
+  const fixture = graph({
+    generated_at: "2026-08-28T00:00:00Z",
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: "2030-01-01T00:00:00Z" },
+      { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: "2040-01-01T00:00:00Z" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+      {
+        id: "parallel",
+        source: "alpha.md",
+        target: "beta.md",
+        verified: false,
+        evidence: citedEvidence("alpha.md", "beta.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "n5.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("n5.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(!result.trails.some((trail) => trail.type === "parallel_invention"));
+  assert.ok(
+    !result.trails.some((trail) => (trail.structuralFacts || []).join(" ").includes("within 14 days")),
+  );
+});
+
 test("detects drift trails from long-lived notes with candidate edges", () => {
   const fixture = graph({
     nodes: [

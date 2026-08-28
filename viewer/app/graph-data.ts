@@ -155,12 +155,31 @@ const UTC_ISO_TIMESTAMP =
 export function safeIsoTimestamp(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
+  if (value !== value.trim()) return null;
   const cleaned = value.trim();
-  if (!cleaned || cleaned !== value.trim()) return null;
-  if (!UTC_ISO_TIMESTAMP.test(cleaned)) return null;
+  const match = UTC_ISO_TIMESTAMP.exec(cleaned);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return null;
   const parsed = Date.parse(cleaned);
   if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed).toISOString().replace(/\.\d{3}Z$/u, "Z");
+  const asUtc = new Date(parsed);
+  if (
+    asUtc.getUTCFullYear() !== year ||
+    asUtc.getUTCMonth() + 1 !== month ||
+    asUtc.getUTCDate() !== day ||
+    asUtc.getUTCHours() !== hour ||
+    asUtc.getUTCMinutes() !== minute ||
+    asUtc.getUTCSeconds() !== second
+  ) {
+    return null;
+  }
+  return asUtc.toISOString().replace(/\.\d{3}Z$/u, "Z");
 }
 
 export function safeVaultLabel(value: unknown): string {

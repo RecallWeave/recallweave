@@ -54,7 +54,8 @@ human review and an explicit trust design.
 
 ## Deterministically supportable trail types
 
-The first implementation should support five types:
+The first implementation supported five types. Timestamp-backed trails now bring
+the supported set to eight:
 
 | Type | Eligibility | Claim class |
 | --- | --- | --- |
