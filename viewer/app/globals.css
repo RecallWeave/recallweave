@@ -1108,7 +1108,19 @@ button {
   background: rgba(4, 8, 8, 0.72);
 }
 
+.cold-trails-backdrop-dismiss {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: default;
+}
+
 .cold-trails-dialog {
+  position: relative;
+  z-index: 1;
   width: min(760px, 100%);
   max-height: min(90vh, 920px);
   overflow: auto;

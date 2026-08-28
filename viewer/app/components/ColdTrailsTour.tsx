@@ -280,13 +280,20 @@ export function ColdTrailsTour({
   }
 
   return (
-    <div className="cold-trails-backdrop" onClick={onClose}>
+    <div className="cold-trails-backdrop">
+      <button
+        type="button"
+        className="cold-trails-backdrop-dismiss"
+        aria-label="Close Cold Trails"
+        onClick={onClose}
+      />
       <div
         ref={dialogRef}
         className="cold-trails-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="cold-trails-title"
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
         onKeyDown={handleDialogKeyDown}
       >
