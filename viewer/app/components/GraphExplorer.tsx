@@ -14,12 +14,12 @@ import {
   GraphDocument,
   GraphEdge,
   GraphNode,
-  MAX_FILE_BYTES,
   VIEWER_SCHEMA_V2,
   citationPath,
   importDiagnosticMessage,
   normalizeGraph,
 } from "../graph-data";
+import { assertGraphFileWithinLimit, graphFromLoadedFileText } from "../graph-load";
 import { AtlasExportPrivacyChrome } from "./AtlasExportPrivacyChrome";
 import { ColdTrailsTour } from "./ColdTrailsTour";
 
@@ -104,8 +104,13 @@ function nodeMatches(node: GraphNode, query: string, domain: string): boolean {
   return queryMatch && (domain === "All domains" || node.domain === domain);
 }
 
-export function GraphExplorer() {
-  const [graph, setGraph] = useState<GraphDocument | null>(null);
+export function GraphExplorer({
+  initialGraph = null,
+}: {
+  /** Seeded graph for tests; skips the bundled sample fetch when set. */
+  initialGraph?: GraphDocument | null;
+} = {}) {
+  const [graph, setGraph] = useState<GraphDocument | null>(initialGraph);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [showVerified, setShowVerified] = useState(true);
@@ -123,10 +128,11 @@ export function GraphExplorer() {
   const searchRef = useRef<HTMLInputElement>(null);
   const detailHeadingRef = useRef<HTMLHeadingElement>(null);
   const nodeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
-  const userLoadedRef = useRef(false);
+  const userLoadedRef = useRef(Boolean(initialGraph));
   const sampleAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    if (initialGraph) return;
     const controller = new AbortController();
     sampleAbortRef.current = controller;
     fetch("/sample-graph.json", { signal: controller.signal })
@@ -146,7 +152,7 @@ export function GraphExplorer() {
         }
       });
     return () => controller.abort();
-  }, []);
+  }, [initialGraph]);
 
   const positioned = useMemo(() => (graph ? buildLayout(graph) : []), [graph]);
   const domains = useMemo(
@@ -212,11 +218,8 @@ export function GraphExplorer() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      if (file.size > MAX_FILE_BYTES) {
-        throw new Error(`That file is larger than the ${MAX_FILE_BYTES / 1024 / 1024} MB viewer limit.`);
-      }
-      const parsed = JSON.parse(await file.text());
-      const next = normalizeGraph(parsed);
+      assertGraphFileWithinLimit(file.size);
+      const next = graphFromLoadedFileText(await file.text());
       userLoadedRef.current = true;
       sampleAbortRef.current?.abort();
       setGraph(next);
