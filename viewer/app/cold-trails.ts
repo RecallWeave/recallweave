@@ -337,7 +337,15 @@ export function validatedMutualNeighbors(
   const claimed = edge.evidence?.signals?.mutual_neighbor_ids || [];
   const sourceNeighbors = adjacency.get(edge.source) || new Set();
   const targetNeighbors = adjacency.get(edge.target) || new Set();
-  return claimed.filter((id) => sourceNeighbors.has(id) && targetNeighbors.has(id));
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  claimed.forEach((id) => {
+    if (seen.has(id)) return;
+    if (!sourceNeighbors.has(id) || !targetNeighbors.has(id)) return;
+    seen.add(id);
+    unique.push(id);
+  });
+  return unique;
 }
 
 function referenceNowMs(graph: GraphDocument, nowMs?: number): number | null {
@@ -588,7 +596,8 @@ function classifyCandidateEdge(
     createdGapDays !== null &&
     sourceDomain !== targetDomain &&
     createdGapDays <= PARALLEL_MAX_DAY_GAP &&
-    surpriseTerms(source, target, edge).length >= 2;
+    surpriseTerms(source, target, edge).length >= 2 &&
+    surpriseConditionCount(source, target, edge, adjacency, interDomainCounts) >= 2;
   if (isParallel) {
     types.push("parallel_invention");
   } else if (!authoredPathWithinHops(adjacency, edge.source, edge.target, 3)) {
@@ -734,8 +743,6 @@ function dormantTrails(
       const days = daysSince(node.modified_at, nowMs);
       if (days === null || days < DORMANT_MIN_DAYS) return false;
       if ((candidateCounts.get(node.id) || 0) < 1) return false;
-      const spanDays = daysFromTo(node.created_at, node.modified_at);
-      if (spanDays !== null && spanDays >= DRIFT_MIN_DAYS) return false;
       return true;
     })
     .map((node) => {

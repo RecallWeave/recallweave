@@ -54,11 +54,11 @@ def _nullable_timestamp(value: object) -> str | None:
             parsed = datetime.fromisoformat(text[:-1] + "+00:00")
         else:
             parsed = datetime.fromisoformat(text)
-    except ValueError:
+        if parsed.tzinfo is None:
+            return None
+        utc = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        return None
-    utc = parsed.astimezone(timezone.utc).replace(tzinfo=None)
     return utc.isoformat() + "Z"
 
 

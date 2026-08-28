@@ -487,7 +487,8 @@ class NullableTimestampTest(unittest.TestCase):
             "2026-01-01T12:00:00Z",
         )
 
-    def test_preserves_nonzero_fractional_seconds(self) -> None:
+    def test_overflowing_timezone_conversion_is_unknown(self) -> None:
+        self.assertIsNone(_nullable_timestamp("0001-01-01T00:00:00+23:59"))
         self.assertEqual(
             _nullable_timestamp("2026-06-15T00:00:00.001Z"),
             "2026-06-15T00:00:00.001000Z",

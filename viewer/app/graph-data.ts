@@ -180,13 +180,22 @@ export function utcEpochMicros(value: string): bigint | null {
   }
   const secondMs = Date.UTC(year, month - 1, day, hour, minute, second) - offsetMinutes * 60_000;
   if (!Number.isFinite(secondMs)) return null;
-  const microsPart = BigInt((match[7] || "").padEnd(6, "0").slice(0, 6) || "0");
+  const fracDigits = match[7] || "";
+  // Accept at most microsecond precision; do not silently truncate nanoseconds.
+  if (fracDigits.length > 6) return null;
+  const microsPart = BigInt(fracDigits.padEnd(6, "0").slice(0, 6) || "0");
   return BigInt(secondMs) * BigInt(1000) + microsPart;
 }
 
 function formatUtcMicros(epochMicros: bigint): string {
-  const microsInSecond = epochMicros % BigInt(1_000_000);
-  const secondMs = Number((epochMicros - microsInSecond) / BigInt(1000));
+  const million = BigInt(1_000_000);
+  let microsInSecond = epochMicros % million;
+  let secondEpochMicros = epochMicros - microsInSecond;
+  if (microsInSecond < BigInt(0)) {
+    microsInSecond += million;
+    secondEpochMicros -= million;
+  }
+  const secondMs = Number(secondEpochMicros / BigInt(1000));
   const asUtc = new Date(secondMs);
   const base = asUtc.toISOString().replace(/\.\d{3}Z$/u, "Z").replace(/Z$/u, "");
   if (microsInSecond === BigInt(0)) return `${base}Z`;
@@ -201,7 +210,10 @@ export function safeIsoTimestamp(value: unknown): string | null {
   const cleaned = value.trim();
   const epoch = utcEpochMicros(cleaned);
   if (epoch === null) return null;
-  return formatUtcMicros(epoch);
+  const formatted = formatUtcMicros(epoch);
+  // Reject conversions that cannot round-trip (e.g. offset crossing year 1000).
+  if (utcEpochMicros(formatted) !== epoch) return null;
+  return formatted;
 }
 
 export function safeVaultLabel(value: unknown): string {
