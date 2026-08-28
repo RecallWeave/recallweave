@@ -13,6 +13,8 @@ import {
   trailPairKey,
   trailTrustLabel,
   trailTypeLabel,
+  validatedMutualNeighbors,
+  validatedSharedTags,
   type ColdTrail,
   type ColdTrailsFeedback,
   type ColdTrailsResult,
@@ -90,6 +92,17 @@ export function ColdTrailsTour({
     () => new Map(graph.nodes.map((node) => [node.id, node])),
     [graph.nodes],
   );
+  const authoredAdjacency = useMemo(() => {
+    const adjacency = new Map<string, Set<string>>();
+    graph.nodes.forEach((node) => adjacency.set(node.id, new Set()));
+    graph.edges
+      .filter((item) => item.verified)
+      .forEach((item) => {
+        adjacency.get(item.source)?.add(item.target);
+        adjacency.get(item.target)?.add(item.source);
+      });
+    return adjacency;
+  }, [graph.edges, graph.nodes]);
 
   useEffect(() => {
     if (!open) return;
@@ -377,17 +390,29 @@ export function ColdTrailsTour({
                   <li>Penalties: {current.scoreBreakdown.penalties.toFixed(2)}</li>
                   <li>Total: {current.scoreBreakdown.total.toFixed(2)}</li>
                 </ul>
-                {edge?.evidence?.signals && (
+                {edge?.evidence?.signals && current.sourceId && current.targetId && (
                   <>
                     <span className="section-label">Evidence signals</span>
                     <ul>
                       {(edge.evidence.signals.lexical_terms || []).map((term) => (
                         <li key={`term-${term}`}>Lexical: {term}</li>
                       ))}
-                      {(edge.evidence.signals.shared_tags || []).map((tag) => (
+                      {validatedSharedTags(
+                        nodeById.get(current.sourceId) || {
+                          id: current.sourceId,
+                          title: "",
+                          path: "",
+                        },
+                        nodeById.get(current.targetId) || {
+                          id: current.targetId,
+                          title: "",
+                          path: "",
+                        },
+                        edge,
+                      ).map((tag) => (
                         <li key={`tag-${tag}`}>Shared tag: {tag}</li>
                       ))}
-                      {(edge.evidence.signals.mutual_neighbor_ids || []).map((id) => (
+                      {validatedMutualNeighbors(edge, authoredAdjacency).map((id) => (
                         <li key={`neighbor-${id}`}>Mutual neighbor: {id}</li>
                       ))}
                     </ul>

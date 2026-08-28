@@ -294,7 +294,7 @@ function edgeIndex(graph: GraphDocument): Map<string, GraphEdge> {
   return new Map(graph.edges.map((edge) => [edge.id, edge]));
 }
 
-function validatedSharedTags(source: GraphNode, target: GraphNode, edge: GraphEdge): string[] {
+export function validatedSharedTags(source: GraphNode, target: GraphNode, edge: GraphEdge): string[] {
   const claimed = edge.evidence?.signals?.shared_tags || [];
   const sourceTags = new Set((source.tags || []).map((tag) => tag.toLowerCase()));
   const targetTags = new Set((target.tags || []).map((tag) => tag.toLowerCase()));
@@ -303,7 +303,7 @@ function validatedSharedTags(source: GraphNode, target: GraphNode, edge: GraphEd
   );
 }
 
-function validatedMutualNeighbors(
+export function validatedMutualNeighbors(
   edge: GraphEdge,
   adjacency: Map<string, Set<string>>,
 ): string[] {
@@ -311,6 +311,21 @@ function validatedMutualNeighbors(
   const sourceNeighbors = adjacency.get(edge.source) || new Set();
   const targetNeighbors = adjacency.get(edge.target) || new Set();
   return claimed.filter((id) => sourceNeighbors.has(id) && targetNeighbors.has(id));
+}
+
+function referenceNowMs(graph: GraphDocument, nowMs?: number): number {
+  if (typeof nowMs === "number" && Number.isFinite(nowMs)) return nowMs;
+  const generated = parseUtcTimestamp(graph.generated_at ?? null);
+  if (generated) return generated.getTime();
+  let latest = 0;
+  for (const node of graph.nodes) {
+    latest = Math.max(
+      latest,
+      parseUtcTimestamp(node.modified_at)?.getTime() || 0,
+      parseUtcTimestamp(node.created_at)?.getTime() || 0,
+    );
+  }
+  return latest;
 }
 
 function authoredPathWithinHops(
@@ -435,6 +450,7 @@ function scoreCandidateTrail(
   p90: number,
   interDomainCounts: Map<string, number>,
   nodes: Map<string, GraphNode>,
+  nowMs: number,
 ): ColdTrail | null {
   const source = nodes.get(edge.source);
   const target = nodes.get(edge.target);
@@ -452,8 +468,8 @@ function scoreCandidateTrail(
   const centrality = centralityScore(edge.source, edge.target, degrees, p90);
   const structure = type === "bridge" || type === "island" ? 0.2 : 0;
   const olderDays = Math.max(
-    daysSince(source.modified_at, Date.now()) ?? 0,
-    daysSince(target.modified_at, Date.now()) ?? 0,
+    daysSince(source.modified_at, nowMs) ?? 0,
+    daysSince(target.modified_at, nowMs) ?? 0,
   );
   const ageBonus = 0.15 * ageFactor(olderDays > 0 ? olderDays : null);
   let penalties = 0;
@@ -534,6 +550,7 @@ function classifyCandidateEdge(
   adjacency: Map<string, Set<string>>,
   nodes: Map<string, GraphNode>,
   interDomainCounts: Map<string, number>,
+  nowMs: number,
 ): TrailType[] {
   const source = nodes.get(edge.source);
   const target = nodes.get(edge.target);
@@ -541,8 +558,8 @@ function classifyCandidateEdge(
   const types: TrailType[] = [];
   const sourceDomain = source.domain || "Unclassified";
   const targetDomain = target.domain || "Unclassified";
-  const sourceCreated = daysSince(source.created_at, Date.now());
-  const targetCreated = daysSince(target.created_at, Date.now());
+  const sourceCreated = daysSince(source.created_at, nowMs);
+  const targetCreated = daysSince(target.created_at, nowMs);
   const isParallel =
     sourceCreated !== null &&
     targetCreated !== null &&
@@ -680,7 +697,7 @@ function dormantTrails(
   graph: GraphDocument,
   degrees: Map<string, number>,
   p90: number,
-  nowMs: number = Date.now(),
+  nowMs: number = 0,
 ): ColdTrail[] {
   const candidateCounts = new Map<string, number>();
   candidateEdges(graph).forEach((edge) => {
@@ -953,6 +970,7 @@ function rescorePool(
   interDomainCounts: Map<string, number>,
   nodes: Map<string, GraphNode>,
   edgesById: Map<string, GraphEdge>,
+  nowMs: number,
 ): ColdTrail[] {
   const selectedKeys = new Set(selected.map((trail) => trailIdentity(trail)));
   const rescored: ColdTrail[] = [];
@@ -971,6 +989,7 @@ function rescorePool(
         p90,
         interDomainCounts,
         nodes,
+        nowMs,
       );
       if (rescoredTrail) rescored.push(rescoredTrail);
     } else {
@@ -1011,6 +1030,7 @@ function selectTourTrails(
   p95: number,
   interDomainCounts: Map<string, number>,
   eligibleDomains: Set<string>,
+  nowMs: number,
 ): ColdTrail[] {
   const selected: ColdTrail[] = [];
   const localFeedback = cloneFeedback(feedback);
@@ -1053,6 +1073,7 @@ function selectTourTrails(
       interDomainCounts,
       nodes,
       edgesById,
+      nowMs,
     );
     const eligible = rescored.filter((trail) => {
       if (!phase(trail) || !isTrailEligible(trail, localFeedback, nodes, degrees, p95)) {
@@ -1102,6 +1123,7 @@ function selectTourTrails(
       interDomainCounts,
       nodes,
       edgesById,
+      nowMs,
     );
     const eligible = rescored.filter((trail) => isTrailEligible(trail, localFeedback, nodes, degrees, p95));
     if (!eligible.length) break;
@@ -1135,6 +1157,7 @@ function eligibleDomainsInPool(
   p90: number,
   p95: number,
   interDomainCounts: Map<string, number>,
+  nowMs: number,
 ): Set<string> {
   const adjacency = authoredAdjacency(graph);
   const edgesById = edgeIndex(graph);
@@ -1149,6 +1172,7 @@ function eligibleDomainsInPool(
     interDomainCounts,
     nodes,
     edgesById,
+    nowMs,
   );
   const eligibleDomains = new Set<string>();
   rescored.forEach((trail) => {
@@ -1170,6 +1194,7 @@ export function buildColdTrails(
     usedSurpriseTerms: new Set(),
     domainTouchCounts: new Map(),
   },
+  nowMs?: number,
 ): ColdTrailsResult {
   if (graph.nodes.length < 8) {
     return { status: "refused", reason: "graph_too_small", message: refusalMessage("graph_too_small") };
@@ -1183,6 +1208,7 @@ export function buildColdTrails(
     };
   }
 
+  const referenceMs = referenceNowMs(graph, nowMs);
   const nodes = nodeMap(graph);
   const adjacency = authoredAdjacency(graph);
   const degrees = degreeMap(graph);
@@ -1197,13 +1223,20 @@ export function buildColdTrails(
   const pool: ColdTrail[] = [
     ...bridgeTrails(graph, nodes, degrees, p90),
     ...islandTrails(graph, degrees, p90),
-    ...dormantTrails(graph, degrees, p90),
+    ...dormantTrails(graph, degrees, p90, referenceMs),
     ...driftTrails(graph, degrees, p90),
   ];
 
   if (includeCandidates) {
     candidates.forEach((edge) => {
-      const types = classifyCandidateEdge(graph, edge, adjacency, nodes, interDomainCounts);
+      const types = classifyCandidateEdge(
+        graph,
+        edge,
+        adjacency,
+        nodes,
+        interDomainCounts,
+        referenceMs,
+      );
       types.forEach((type) => {
         const trail = scoreCandidateTrail(
           graph,
@@ -1215,6 +1248,7 @@ export function buildColdTrails(
           p90,
           interDomainCounts,
           nodes,
+          referenceMs,
         );
         if (trail) pool.push(trail);
       });
@@ -1243,6 +1277,7 @@ export function buildColdTrails(
     p90,
     p95,
     interDomainCounts,
+    referenceMs,
   );
 
   const selected = selectTourTrails(
@@ -1255,6 +1290,7 @@ export function buildColdTrails(
     p95,
     interDomainCounts,
     eligibleDomains,
+    referenceMs,
   );
 
   if (!selected.length) {

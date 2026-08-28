@@ -149,14 +149,18 @@ export function safeContentHash(value: unknown): string | null {
   return normalized;
 }
 
+const UTC_ISO_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
+
 export function safeIsoTimestamp(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
-  const cleaned = safeText(value, "");
-  if (!cleaned || cleaned !== value) return null;
+  const cleaned = value.trim();
+  if (!cleaned || cleaned !== value.trim()) return null;
+  if (!UTC_ISO_TIMESTAMP.test(cleaned)) return null;
   const parsed = Date.parse(cleaned);
   if (!Number.isFinite(parsed)) return null;
-  return cleaned;
+  return new Date(parsed).toISOString().replace(/\.\d{3}Z$/u, "Z");
 }
 
 export function safeVaultLabel(value: unknown): string {
