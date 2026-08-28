@@ -789,7 +789,7 @@ test("AtlasProvenanceChrome renders conflicted and valid export history", async 
   assert.match(hostileHtml, /&lt;\/span&gt;&lt;script&gt;/i);
 });
 
-test("GraphExplorer mounts AtlasProvenanceChrome for provenance chrome", async () => {
+test("GraphExplorer mounts AtlasExportPrivacyChrome for provenance chrome", async () => {
   const { readFile } = await import("node:fs/promises");
   const { fileURLToPath } = await import("node:url");
   const path = await import("node:path");
@@ -798,8 +798,101 @@ test("GraphExplorer mounts AtlasProvenanceChrome for provenance chrome", async (
     "../app/components/GraphExplorer.tsx",
   );
   const source = await readFile(sourcePath, "utf8");
-  assert.match(source, /<AtlasProvenanceChrome\b/);
+  assert.match(source, /AtlasExportPrivacyChrome/);
+  assert.match(source, /<AtlasExportPrivacyChrome\b/);
   assert.match(source, /graph=\{graph\}/);
+});
+
+test("AtlasExportPrivacyChrome renders GraphExplorer provenance chrome", async () => {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { AtlasExportPrivacyChrome } = await import(
+    "../app/components/AtlasExportPrivacyChrome.ts"
+  );
+  const { AtlasProvenanceChrome } = await import("../app/components/AtlasProvenanceChrome.ts");
+
+  const valid = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+    export_history: {
+      export_id: "export-ok",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  });
+  const expectedValidChrome = renderToStaticMarkup(
+    createElement(AtlasProvenanceChrome, { graph: valid }),
+  );
+  assert.equal(
+    expectedValidChrome,
+    '<span class="privacy-provenance-detail"> Index claims: export history claim: export export-ok · first export claim · 1 added · 0 removed · 0 hash changes · 0 unchanged.</span>',
+  );
+  const validBanner = renderToStaticMarkup(
+    createElement(AtlasExportPrivacyChrome, { graph: valid }),
+  );
+  assert.ok(
+    validBanner.includes(expectedValidChrome),
+    "valid provenance chrome must appear inside GraphExplorer privacy banner",
+  );
+  assert.match(validBanner, /export-privacy/);
+  assert.match(validBanner, /structure-only/);
+  assert.doesNotMatch(validBanner, /export history conflicts with loaded graph/);
+
+  const conflicted = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+    export_history: {
+      export_id: "export-bad",
+      previous_content_hash: "b".repeat(64),
+      node_content_hashes_changed: 9,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 0,
+      nodes_removed: 0,
+    },
+  });
+  const expectedConflictChrome = renderToStaticMarkup(
+    createElement(AtlasProvenanceChrome, { graph: conflicted }),
+  );
+  assert.equal(
+    expectedConflictChrome,
+    '<span class="privacy-provenance-detail"> Index claims: export history claim: export export-bad · follows prior export · 0 added · 0 removed · 9 hash changes · 0 unchanged · export history conflicts with loaded graph.</span>',
+  );
+  const conflictBanner = renderToStaticMarkup(
+    createElement(AtlasExportPrivacyChrome, { graph: conflicted }),
+  );
+  assert.ok(
+    conflictBanner.includes(expectedConflictChrome),
+    "conflict provenance chrome must appear inside GraphExplorer privacy banner",
+  );
+
+  const omitted = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+    export_history: {
+      export_id: "omitted-prior",
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  });
+  const omittedBanner = renderToStaticMarkup(
+    createElement(AtlasExportPrivacyChrome, { graph: omitted }),
+  );
+  assert.match(omittedBanner, /export history conflicts with loaded graph/);
+  assert.match(omittedBanner, /privacy-provenance-detail/);
+
+  const emptyBanner = renderToStaticMarkup(
+    createElement(AtlasExportPrivacyChrome, { graph: null }),
+  );
+  assert.match(emptyBanner, /Load an export to inspect its privacy profile/);
+  assert.doesNotMatch(emptyBanner, /privacy-provenance-detail/);
 });
 
 test("citationPath extracts the note path from validated citations", () => {
