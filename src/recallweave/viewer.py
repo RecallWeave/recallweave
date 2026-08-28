@@ -180,6 +180,42 @@ def _aggregate_content_digest(nodes: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+def _valid_previous_viewer_nodes(
+    previous_document: dict[str, Any] | None,
+) -> list[dict[str, Any]] | None:
+    """Return prior nodes only when the previous document is a usable predecessor.
+
+    A recognized schema with no valid unique node IDs must not become export
+    history: hashing the empty survivor list invents a prior digest.
+    """
+    if not isinstance(previous_document, dict):
+        return None
+    if previous_document.get("schema_version") not in {
+        "recallweave.viewer.v1",
+        "recallweave.viewer.v2",
+    }:
+        return None
+    raw_nodes = previous_document.get("nodes")
+    if not isinstance(raw_nodes, list) or not raw_nodes:
+        return None
+    validated: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in raw_nodes:
+        if not isinstance(item, dict):
+            return None
+        node_id = item.get("id")
+        if not isinstance(node_id, str) or not node_id.strip():
+            return None
+        if node_id in seen_ids:
+            return None
+        seen_ids.add(node_id)
+        content_hash = item.get("content_hash")
+        if content_hash is not None and not isinstance(content_hash, str):
+            return None
+        validated.append(item)
+    return validated or None
+
+
 def _normalize_vault_label(value: str | None) -> str | None:
     if value is None:
         return None
@@ -201,11 +237,11 @@ def _export_history(
         for node in nodes
         if isinstance(node.get("id"), str)
     }
+    prior_nodes = _valid_previous_viewer_nodes(previous_document)
     previous_hashes: dict[str, str | None] = {}
-    if isinstance(previous_document, dict):
-        for node in previous_document.get("nodes") or []:
-            if isinstance(node, dict) and isinstance(node.get("id"), str):
-                previous_hashes[str(node["id"])] = node.get("content_hash")
+    if prior_nodes is not None:
+        for node in prior_nodes:
+            previous_hashes[str(node["id"])] = node.get("content_hash")
 
     added = sum(1 for node_id in current_hashes if node_id not in previous_hashes)
     removed = sum(1 for node_id in previous_hashes if node_id not in current_hashes)
@@ -219,13 +255,9 @@ def _export_history(
         else:
             changed += 1
 
-    previous_digest = None
-    if isinstance(previous_document, dict):
-        prior_nodes = previous_document.get("nodes")
-        if isinstance(prior_nodes, list):
-            previous_digest = _aggregate_content_digest(
-                [n for n in prior_nodes if isinstance(n, dict) and isinstance(n.get("id"), str)]
-            )
+    previous_digest = (
+        _aggregate_content_digest(prior_nodes) if prior_nodes is not None else None
+    )
 
     return {
         "export_id": str(uuid.uuid4()),
@@ -423,10 +455,7 @@ def export_viewer_graph(
             loaded = json.loads(output.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, UnicodeError):
             loaded = None
-        if isinstance(loaded, dict) and loaded.get("schema_version") in {
-            "recallweave.viewer.v1",
-            "recallweave.viewer.v2",
-        }:
+        if isinstance(loaded, dict) and _valid_previous_viewer_nodes(loaded) is not None:
             previous_document = loaded
 
     document = build_viewer_document(

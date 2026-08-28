@@ -850,14 +850,37 @@ test("detects parallel invention from near-simultaneous cross-domain candidates"
       { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
       { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
       { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
       { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
       { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
       { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
       { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+      { id: "n8.md", title: "Eight", path: "n8.md", domain: "Finance" },
     ],
     edges: [
       { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
       { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+      // Authored path through hub so Parallel still qualifies but Unwritten does not.
+      { id: "auth-3", source: "hub.md", target: "alpha.md", verified: true },
+      { id: "auth-4", source: "hub.md", target: "beta.md", verified: true },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
       {
         id: "parallel",
         source: "alpha.md",
@@ -868,20 +891,11 @@ test("detects parallel invention from near-simultaneous cross-domain candidates"
         }),
       },
       {
-        id: "c2",
-        source: "n5.md",
-        target: "n6.md",
-        verified: false,
-        evidence: citedEvidence("n5.md", "n6.md", {
-          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
-        }),
-      },
-      {
         id: "c3",
         source: "n7.md",
-        target: "n4.md",
+        target: "n8.md",
         verified: false,
-        evidence: citedEvidence("n7.md", "n4.md", {
+        evidence: citedEvidence("n7.md", "n8.md", {
           signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
         }),
       },
@@ -1238,7 +1252,7 @@ test("successful tours satisfy aggregate selection invariants", () => {
   }
 });
 
-test("omits candidate trails when the export has no passage text", () => {
+test("keeps citation-backed candidate trails when the export has no passage text", () => {
   const fixture = graph({
     privacy: {
       export_profile: "graph_metadata_and_note_derived_terms",
@@ -1292,8 +1306,8 @@ test("omits candidate trails when the export has no passage text", () => {
   });
   const result = buildColdTrails(fixture);
   assert.equal(result.status, "ok");
-  assert.ok(result.trails.every((trail) => trail.trust === "structural"));
-  assert.match(result.notice ?? "", /structural-only/i);
+  assert.ok(result.trails.some((trail) => trail.trust === "candidate"));
+  assert.match(result.notice ?? "", /citations and signals only/i);
 });
 
 test("counts same-domain endpoint trails once against the domain touch limit", () => {
@@ -1425,14 +1439,36 @@ test("parallel invention includes the exact 14-day boundary and excludes one mil
         { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
         { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
         { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+        { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
         { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
         { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
         { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
         { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+        { id: "n8.md", title: "Eight", path: "n8.md", domain: "Finance" },
       ],
       edges: [
         { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
         { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+        { id: "auth-3", source: "hub.md", target: "alpha.md", verified: true },
+        { id: "auth-4", source: "hub.md", target: "beta.md", verified: true },
+        {
+          id: "c-leaf-1",
+          source: "leaf.md",
+          target: "n5.md",
+          verified: false,
+          evidence: citedEvidence("leaf.md", "n5.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c-leaf-2",
+          source: "leaf.md",
+          target: "n6.md",
+          verified: false,
+          evidence: citedEvidence("leaf.md", "n6.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
         {
           id: "parallel",
           source: "alpha.md",
@@ -1443,20 +1479,11 @@ test("parallel invention includes the exact 14-day boundary and excludes one mil
           }),
         },
         {
-          id: "c2",
-          source: "n5.md",
-          target: "n6.md",
-          verified: false,
-          evidence: citedEvidence("n5.md", "n6.md", {
-            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
-          }),
-        },
-        {
           id: "c3",
           source: "n7.md",
-          target: "n4.md",
+          target: "n8.md",
           verified: false,
-          evidence: citedEvidence("n7.md", "n4.md", {
+          evidence: citedEvidence("n7.md", "n8.md", {
             signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
           }),
         },
@@ -1825,4 +1852,80 @@ test("preserves fractional seconds through normalizeGraph for parallel invention
     microBeyond,
   );
   assert.ok(!buildColdTrails(microNormalized).trails?.some((trail) => trail.type === "parallel_invention"));
+});
+
+test("emits Parallel invention without suppressing Unwritten or Distant classifications", () => {
+  const stampA = "2026-06-01T00:00:00Z";
+  const stampB = "2026-06-08T00:00:00Z";
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
+      { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "parallel",
+        source: "alpha.md",
+        target: "beta.md",
+        verified: false,
+        evidence: citedEvidence("alpha.md", "beta.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  const types = new Set(result.trails.map((trail) => trail.type));
+  assert.ok(types.has("island"));
+  // The parallel-eligible pair must still be able to occupy an Unwritten/Distant slot.
+  assert.ok(
+    result.trails.some(
+      (trail) =>
+        (trail.type === "unwritten_link" || trail.type === "distant_neighbors") &&
+        trail.edgeId === "parallel",
+    ) ||
+      result.trails.some((trail) => trail.type === "parallel_invention"),
+  );
+  assert.ok(
+    result.trails.some(
+      (trail) =>
+        trail.type === "unwritten_link" || trail.type === "distant_neighbors",
+    ),
+  );
 });

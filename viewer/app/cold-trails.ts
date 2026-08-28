@@ -600,10 +600,11 @@ function classifyCandidateEdge(
     surpriseConditionCount(source, target, edge, adjacency, interDomainCounts) >= 2;
   if (isParallel) {
     types.push("parallel_invention");
-  } else if (!authoredPathWithinHops(adjacency, edge.source, edge.target, 3)) {
+  }
+  if (!authoredPathWithinHops(adjacency, edge.source, edge.target, 3)) {
     types.push("unwritten_link");
   }
-  if (!isParallel && sourceDomain !== targetDomain) {
+  if (sourceDomain !== targetDomain) {
     const key = sourceDomain < targetDomain
       ? `${sourceDomain}|${targetDomain}`
       : `${targetDomain}|${sourceDomain}`;
@@ -1079,6 +1080,19 @@ function selectTourTrails(
   const reservedPair = reservedReinforced
     ? pairKey(reservedReinforced.sourceId, reservedReinforced.targetId)
     : null;
+  // Pairs that also qualify as Parallel invention are held out of the early
+  // Unwritten/Distant slots so the more specific type can fill "different type".
+  const parallelPairs = new Set(
+    pool
+      .filter(
+        (trail) =>
+          trail.type === "parallel_invention" &&
+          trail.sourceId &&
+          trail.targetId &&
+          trail.sourceId !== trail.targetId,
+      )
+      .map((trail) => pairKey(trail.sourceId, trail.targetId)),
+  );
 
   const phases: Array<(trail: ColdTrail) => boolean> = [
     (trail) => trail.type === "bridge" || trail.type === "island",
@@ -1110,6 +1124,16 @@ function selectTourTrails(
     );
     const eligible = rescored.filter((trail) => {
       if (!phase(trail) || !isTrailEligible(trail, localFeedback, nodes, degrees, p95)) {
+        return false;
+      }
+      if (
+        (slot === 1 || slot === 2) &&
+        (trail.type === "unwritten_link" || trail.type === "distant_neighbors") &&
+        trail.sourceId &&
+        trail.targetId &&
+        trail.sourceId !== trail.targetId &&
+        parallelPairs.has(pairKey(trail.sourceId, trail.targetId))
+      ) {
         return false;
       }
       if (
@@ -1252,7 +1276,7 @@ export function buildColdTrails(
   const domains = domainSet(graph);
   const notices: string[] = [];
   if (domains.size === 1) notices.push(refusalMessage("single_domain"));
-  const includeCandidates = Boolean(graph.privacy?.includes_passage_text);
+  const hasPassageText = Boolean(graph.privacy?.includes_passage_text);
 
   const pool: ColdTrail[] = [
     ...bridgeTrails(graph, nodes, degrees, p90),
@@ -1261,33 +1285,39 @@ export function buildColdTrails(
     ...driftTrails(graph, degrees, p90),
   ];
 
-  if (includeCandidates) {
-    candidates.forEach((edge) => {
-      const types = classifyCandidateEdge(
+  // Candidate trails are gated by per-edge evidence (citations, terms, tags),
+  // not by the graph-wide passage-text privacy flag. Default metadata exports
+  // still carry citations and signals that can clear the evidence floor.
+  candidates.forEach((edge) => {
+    const types = classifyCandidateEdge(
+      graph,
+      edge,
+      adjacency,
+      nodes,
+      interDomainCounts,
+    );
+    types.forEach((type) => {
+      const trail = scoreCandidateTrail(
         graph,
         edge,
+        type,
+        feedback,
         adjacency,
-        nodes,
+        degrees,
+        p90,
         interDomainCounts,
+        nodes,
+        scoringNowMs,
       );
-      types.forEach((type) => {
-        const trail = scoreCandidateTrail(
-          graph,
-          edge,
-          type,
-          feedback,
-          adjacency,
-          degrees,
-          p90,
-          interDomainCounts,
-          nodes,
-          scoringNowMs,
-        );
-        if (trail) pool.push(trail);
-      });
+      if (trail) pool.push(trail);
     });
-  } else {
-    notices.push("No passage text in this export; showing a structural-only tour.");
+  });
+  if (!hasPassageText) {
+    notices.push(
+      pool.some((trail) => trail.trust === "candidate")
+        ? "No passage text in this export; candidate trails use citations and signals only."
+        : "No passage text in this export; showing a structural-only tour.",
+    );
   }
 
   if (

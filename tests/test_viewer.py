@@ -16,6 +16,7 @@ from recallweave.policy import IndexPolicy
 from recallweave.viewer import (
     VIEWER_SCHEMA_VERSION,
     _nullable_timestamp,
+    _valid_previous_viewer_nodes,
     build_viewer_document,
     export_viewer_graph,
 )
@@ -128,6 +129,30 @@ class ViewerExportTest(unittest.TestCase):
         self.assertGreaterEqual(
             second["export_history"]["node_content_hashes_unchanged"], 1
         )
+
+    def test_malformed_prior_export_is_not_used_as_history(self) -> None:
+        output = Path(self.temporary.name) / "malformed-prior.json"
+        export_viewer_graph(self.database, output)
+        malformed = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {"title": "missing id"},
+                {"id": "dup.md", "content_hash": "a" * 64},
+                {"id": "dup.md", "content_hash": "b" * 64},
+            ],
+            "edges": [],
+        }
+        output.write_text(json.dumps(malformed), encoding="utf-8")
+        export_viewer_graph(self.database, output, force=True)
+        second = json.loads(output.read_text(encoding="utf-8"))
+        self.assertIsNone(second["export_history"]["previous_content_hash"])
+        self.assertIsNone(_valid_previous_viewer_nodes(malformed))
+        emptyish = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [None, {"id": 12}],
+            "edges": [],
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(emptyish))
 
     def test_vault_name_rejects_path_like_labels(self) -> None:
         with self.assertRaisesRegex(ValueError, "vault label"):
