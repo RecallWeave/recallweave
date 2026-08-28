@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { VIEWER_SCHEMA_V2 } from "../app/graph-data.ts";
-import { buildColdTrails, exportSavedTrailsMarkdown, refusalMessage, trailTrustLabel } from "../app/cold-trails.ts";
+import {
+  buildColdTrails,
+  classifyCandidateEdgeTypes,
+  exportSavedTrailsMarkdown,
+  refusalMessage,
+  trailTrustLabel,
+} from "../app/cold-trails.ts";
 
 function citedEvidence(source, target, extra = {}) {
   return {
@@ -1989,19 +1995,19 @@ test("emits Parallel invention without suppressing Unwritten or Distant classifi
       },
     ],
   });
+  const parallelEdge = fixture.edges.find((edge) => edge.id === "parallel");
+  assert.ok(parallelEdge);
+  const classified = new Set(classifyCandidateEdgeTypes(fixture, parallelEdge));
+  assert.ok(classified.has("parallel_invention"));
+  assert.ok(classified.has("unwritten_link"));
+  assert.ok(classified.has("distant_neighbors"));
+
   const result = buildColdTrails(fixture);
   assert.equal(result.status, "ok");
   const types = new Set(result.trails.map((trail) => trail.type));
   assert.ok(types.has("island"));
-  // The parallel-eligible pair must still be able to occupy an Unwritten/Distant slot.
-  assert.ok(
-    result.trails.some(
-      (trail) =>
-        (trail.type === "unwritten_link" || trail.type === "distant_neighbors") &&
-        trail.edgeId === "parallel",
-    ) ||
-      result.trails.some((trail) => trail.type === "parallel_invention"),
-  );
+  // Reservation holds Parallel pairs out of early Unwritten/Distant slots.
+  assert.ok(result.trails.some((trail) => trail.type === "parallel_invention"));
   assert.ok(
     result.trails.some(
       (trail) =>

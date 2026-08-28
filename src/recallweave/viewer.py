@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from .safe_write import _install_non_replacing, install, prepare_destination, ve
 VIEWER_SCHEMA_VERSION = "recallweave.viewer.v2"
 MAX_SUMMARY_CHARACTERS = 280
 MAX_EVIDENCE_CHARACTERS = 500
+_SHA256_HEX = re.compile(r"^[a-f0-9]{64}$")
+_REQUIRED_PREVIOUS_NODE_FIELDS = ("id", "title", "path")
 
 
 def _json_list(value: str) -> list[str]:
@@ -180,40 +183,61 @@ def _aggregate_content_digest(nodes: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+def _valid_predecessor_content_hash(value: object) -> bool:
+    """Null hashes are legacy-ok; non-null must be lowercase hex SHA-256."""
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    return _SHA256_HEX.fullmatch(value) is not None
+
+
 def _valid_previous_viewer_nodes(
     previous_document: dict[str, Any] | None,
 ) -> list[dict[str, Any]] | None:
     """Return prior nodes only when the previous document is a usable predecessor.
 
-    A recognized schema with no valid unique node IDs must not become export
-    history: hashing the empty survivor list invents a prior digest.
+    Recognized schemas may carry an empty node list (valid empty export). A
+    non-empty node list must supply unique ids plus required title/path strings
+    and schema-appropriate content hashes before any history digest is derived.
     """
     if not isinstance(previous_document, dict):
         return None
-    if previous_document.get("schema_version") not in {
+    schema = previous_document.get("schema_version")
+    if schema not in {
         "recallweave.viewer.v1",
         "recallweave.viewer.v2",
     }:
         return None
     raw_nodes = previous_document.get("nodes")
-    if not isinstance(raw_nodes, list) or not raw_nodes:
+    if not isinstance(raw_nodes, list):
         return None
+    edges = previous_document.get("edges")
+    if edges is not None and not isinstance(edges, list):
+        return None
+    if not raw_nodes:
+        return []
+
     validated: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    require_content_hash_key = schema == "recallweave.viewer.v2"
     for item in raw_nodes:
         if not isinstance(item, dict):
             return None
-        node_id = item.get("id")
-        if not isinstance(node_id, str) or not node_id.strip():
-            return None
+        for field in _REQUIRED_PREVIOUS_NODE_FIELDS:
+            value = item.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return None
+        node_id = str(item["id"])
         if node_id in seen_ids:
             return None
         seen_ids.add(node_id)
-        content_hash = item.get("content_hash")
-        if content_hash is not None and not isinstance(content_hash, str):
+        if require_content_hash_key and "content_hash" not in item:
+            return None
+        if not _valid_predecessor_content_hash(item.get("content_hash")):
             return None
         validated.append(item)
-    return validated or None
+    return validated
 
 
 def _normalize_vault_label(value: str | None) -> str | None:

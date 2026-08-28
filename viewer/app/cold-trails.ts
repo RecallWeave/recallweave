@@ -626,6 +626,20 @@ function classifyCandidateEdge(
   return types;
 }
 
+/** Classification types for a candidate edge before tour selection. */
+export function classifyCandidateEdgeTypes(
+  graph: GraphDocument,
+  edge: GraphEdge,
+): TrailType[] {
+  return classifyCandidateEdge(
+    graph,
+    edge,
+    authoredAdjacency(graph),
+    nodeMap(graph),
+    interDomainAuthoredCounts(graph),
+  );
+}
+
 function bridgeTrails(
   graph: GraphDocument,
   nodes: Map<string, GraphNode>,

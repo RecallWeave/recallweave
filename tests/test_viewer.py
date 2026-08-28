@@ -137,8 +137,8 @@ class ViewerExportTest(unittest.TestCase):
             "schema_version": VIEWER_SCHEMA_VERSION,
             "nodes": [
                 {"title": "missing id"},
-                {"id": "dup.md", "content_hash": "a" * 64},
-                {"id": "dup.md", "content_hash": "b" * 64},
+                {"id": "dup.md", "title": "Dup", "path": "dup.md", "content_hash": "a" * 64},
+                {"id": "dup.md", "title": "Dup2", "path": "dup.md", "content_hash": "b" * 64},
             ],
             "edges": [],
         }
@@ -153,6 +153,72 @@ class ViewerExportTest(unittest.TestCase):
             "edges": [],
         }
         self.assertIsNone(_valid_previous_viewer_nodes(emptyish))
+        missing_fields = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [{"id": "a.md"}],
+            "edges": [],
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(missing_fields))
+        bad_hashes = [
+            "not-a-sha256",
+            "A" * 64,
+            "ab",
+            "",
+            "g" * 64,
+        ]
+        for digest in bad_hashes:
+            bad_hash = {
+                "schema_version": VIEWER_SCHEMA_VERSION,
+                "nodes": [
+                    {
+                        "id": "a.md",
+                        "title": "A",
+                        "path": "a.md",
+                        "content_hash": digest,
+                    }
+                ],
+                "edges": [],
+            }
+            self.assertIsNone(
+                _valid_previous_viewer_nodes(bad_hash),
+                msg=f"expected reject for content_hash={digest!r}",
+            )
+        missing_hash_key = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [{"id": "a.md", "title": "A", "path": "a.md"}],
+            "edges": [],
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(missing_hash_key))
+
+    def test_valid_empty_prior_export_is_used_as_history(self) -> None:
+        empty_prior = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [],
+            "edges": [],
+        }
+        self.assertEqual(_valid_previous_viewer_nodes(empty_prior), [])
+        output = Path(self.temporary.name) / "from-empty-prior.json"
+        output.write_text(json.dumps(empty_prior), encoding="utf-8")
+        export_viewer_graph(self.database, output, force=True)
+        second = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(
+            second["export_history"]["previous_content_hash"],
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        self.assertGreaterEqual(second["export_history"]["nodes_added"], 1)
+        null_hash_prior = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "legacy.md",
+                    "title": "Legacy",
+                    "path": "legacy.md",
+                    "content_hash": None,
+                }
+            ],
+            "edges": [],
+        }
+        self.assertIsNotNone(_valid_previous_viewer_nodes(null_hash_prior))
 
     def test_vault_name_rejects_path_like_labels(self) -> None:
         with self.assertRaisesRegex(ValueError, "vault label"):

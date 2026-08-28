@@ -95,13 +95,13 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 29 — post-PR #7 stewardship remediations on `foundry/steward` (`8d94b9a`):
-citation-backed candidates without passage text; Parallel co-typed with
-Unwritten/Distant and reserved out of early Unwritten/Distant slots; malformed
-prior graphs rejected as export-history predecessors. Base: merged PR #7 squash
-`1fd322a` on `main` (fresh steward cut `ba3bdf1`).
+Cycle 29b — remediations after cycle-29 FAIL (`review-20260828T131251Z.md`):
+harden `_valid_previous_viewer_nodes` (required id/title/path, lowercase hex
+SHA-256 or null content_hash, accept valid empty node lists); tighten Parallel
+co-typing test via `classifyCandidateEdgeTypes`. Prior cycle-29 work on tip
+`aacb3b6` retained. Base: merged PR #7 squash `1fd322a` on `main`.
 
-Suite target **510** Python OK (1 skip) plus viewer JS tests (`npm test` in
+Suite target **510+** Python OK (1 skip) plus viewer JS tests (`npm test` in
 `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only when remaining
 findings are Medium/Low with no Critical/High security, privacy,
 evidence-integrity, or reproducibility defect.
