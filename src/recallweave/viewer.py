@@ -192,7 +192,7 @@ def _valid_predecessor_content_hash(value: object) -> bool:
     return _SHA256_HEX.fullmatch(value) is not None
 
 
-def _valid_predecessor_export_history(value: object) -> bool:
+def _valid_predecessor_export_history(value: object, *, node_count: int) -> bool:
     if not isinstance(value, dict):
         return False
     required_keys = (
@@ -219,6 +219,18 @@ def _valid_predecessor_export_history(value: object) -> bool:
         count = value[field]
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             return False
+    changed = value["node_content_hashes_changed"]
+    unchanged = value["node_content_hashes_unchanged"]
+    added = value["nodes_added"]
+    removed = value["nodes_removed"]
+    prior_hash = value["previous_content_hash"]
+    overlap = changed + unchanged
+    # Match Atlas claim_conflict: first-export vs subsequent-export accounting.
+    if prior_hash is None:
+        if added != node_count or overlap != 0 or removed != 0:
+            return False
+    elif overlap + added != node_count:
+        return False
     return True
 
 
@@ -248,7 +260,8 @@ def _valid_previous_viewer_nodes(
     if not isinstance(edges, list):
         return None
     if schema == "recallweave.viewer.v2" and not _valid_predecessor_export_history(
-        previous_document.get("export_history")
+        previous_document.get("export_history"),
+        node_count=len(raw_nodes),
     ):
         return None
     if not raw_nodes:

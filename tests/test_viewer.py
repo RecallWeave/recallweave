@@ -268,6 +268,60 @@ class ViewerExportTest(unittest.TestCase):
                 forced["export_history"]["previous_content_hash"],
                 msg=f"forced replace must ignore prior missing {omitted}",
             )
+        contradictory_first = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "a.md",
+                    "title": "A",
+                    "path": "a.md",
+                    "content_hash": "a" * 64,
+                }
+            ],
+            "edges": [],
+            "export_history": {
+                "export_id": "contradictory-first",
+                "previous_content_hash": None,
+                "node_content_hashes_changed": 0,
+                "node_content_hashes_unchanged": 0,
+                "nodes_added": 0,
+                "nodes_removed": 0,
+            },
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(contradictory_first))
+        output.write_text(json.dumps(contradictory_first), encoding="utf-8")
+        export_viewer_graph(self.database, output, force=True)
+        forced_contradictory = json.loads(output.read_text(encoding="utf-8"))
+        self.assertIsNone(
+            forced_contradictory["export_history"]["previous_content_hash"]
+        )
+        contradictory_subsequent = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "a.md",
+                    "title": "A",
+                    "path": "a.md",
+                    "content_hash": "a" * 64,
+                },
+                {
+                    "id": "b.md",
+                    "title": "B",
+                    "path": "b.md",
+                    "content_hash": "b" * 64,
+                },
+            ],
+            "edges": [],
+            "export_history": {
+                "export_id": "contradictory-subsequent",
+                "previous_content_hash": "c" * 64,
+                "node_content_hashes_changed": 0,
+                "node_content_hashes_unchanged": 0,
+                "nodes_added": 0,
+                "nodes_removed": 0,
+            },
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(contradictory_subsequent))
 
     def test_valid_empty_prior_export_is_used_as_history(self) -> None:
         empty_prior = {

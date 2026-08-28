@@ -1153,6 +1153,7 @@ function selectTourTrails(
       if (
         reservedPair &&
         slot < 5 &&
+        trail.type !== "parallel_invention" &&
         trail.sourceId !== trail.targetId &&
         pairKey(trail.sourceId, trail.targetId) === reservedPair
       ) {
