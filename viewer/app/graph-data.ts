@@ -473,7 +473,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
   return {
     schema_version: isV2 ? VIEWER_SCHEMA_V2 : VIEWER_SCHEMA_V1,
     title: safeLabel(raw.title, "Loaded knowledge graph"),
-    generated_at: safeLabel(raw.generated_at),
+    generated_at: safeIsoTimestamp(raw.generated_at) ?? undefined,
     nodes,
     edges,
     vault_label_claim: vault_label_claim || undefined,

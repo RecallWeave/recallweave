@@ -320,19 +320,13 @@ export function validatedMutualNeighbors(
   return claimed.filter((id) => sourceNeighbors.has(id) && targetNeighbors.has(id));
 }
 
-function referenceNowMs(graph: GraphDocument, nowMs?: number): number {
+function referenceNowMs(graph: GraphDocument, nowMs?: number): number | null {
   if (typeof nowMs === "number" && Number.isFinite(nowMs)) return nowMs;
+  // Only a validated graph-level generation clock may drive age-based trails.
+  // Never substitute node timestamps: that silently changes the meaning of
+  // generated_at and can diverge across machines when the field was invalid.
   const generated = parseUtcTimestamp(graph.generated_at ?? null);
-  if (generated) return generated.getTime();
-  let latest = 0;
-  for (const node of graph.nodes) {
-    latest = Math.max(
-      latest,
-      parseUtcTimestamp(node.modified_at)?.getTime() || 0,
-      parseUtcTimestamp(node.created_at)?.getTime() || 0,
-    );
-  }
-  return latest;
+  return generated ? generated.getTime() : null;
 }
 
 function authoredPathWithinHops(
@@ -1213,6 +1207,7 @@ export function buildColdTrails(
   }
 
   const referenceMs = referenceNowMs(graph, nowMs);
+  const scoringNowMs = referenceMs ?? 0;
   const nodes = nodeMap(graph);
   const adjacency = authoredAdjacency(graph);
   const degrees = degreeMap(graph);
@@ -1227,7 +1222,7 @@ export function buildColdTrails(
   const pool: ColdTrail[] = [
     ...bridgeTrails(graph, nodes, degrees, p90),
     ...islandTrails(graph, degrees, p90),
-    ...dormantTrails(graph, degrees, p90, referenceMs),
+    ...(referenceMs !== null ? dormantTrails(graph, degrees, p90, referenceMs) : []),
     ...driftTrails(graph, degrees, p90),
   ];
 
@@ -1251,7 +1246,7 @@ export function buildColdTrails(
           p90,
           interDomainCounts,
           nodes,
-          referenceMs,
+          scoringNowMs,
         );
         if (trail) pool.push(trail);
       });
@@ -1280,7 +1275,7 @@ export function buildColdTrails(
     p90,
     p95,
     interDomainCounts,
-    referenceMs,
+    scoringNowMs,
   );
 
   const selected = selectTourTrails(
@@ -1293,7 +1288,7 @@ export function buildColdTrails(
     p95,
     interDomainCounts,
     eligibleDomains,
-    referenceMs,
+    scoringNowMs,
   );
 
   if (!selected.length) {

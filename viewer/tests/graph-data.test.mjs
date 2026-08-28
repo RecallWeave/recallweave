@@ -604,6 +604,31 @@ test("citationPath extracts the note path from validated citations", () => {
   assert.equal(safeVaultLabel("obsidian vault"), "");
 });
 
+test("rejects non-UTC and malformed graph generated_at instead of preserving labels", () => {
+  const cases = [
+    "2026-08-28",
+    "08/28/2026",
+    " 2026-08-28T00:00:00Z ",
+    "not-a-date",
+    "2026-08-28T00:00:00",
+    "2026-02-30T00:00:00Z",
+  ];
+  for (const generated_at of cases) {
+    const normalized = normalizeGraph(graph({ generated_at }));
+    assert.equal(
+      normalized.generated_at,
+      undefined,
+      `expected rejection for ${JSON.stringify(generated_at)}`,
+    );
+  }
+
+  const accepted = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00Z" }));
+  assert.equal(accepted.generated_at, "2026-08-28T00:00:00Z");
+
+  const offset = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00+00:00" }));
+  assert.equal(offset.generated_at, "2026-08-28T00:00:00Z");
+});
+
 test("ignores unsupported vault names and treats local generation as a source claim", () => {
   const normalized = normalizeGraph(
     graph({

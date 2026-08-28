@@ -111,6 +111,10 @@ score =
   - penalties
 ```
 
+Age-relative trails (Dormant) and age bonuses use a single reference instant:
+validated graph `generated_at`, or an explicit `nowMs` override. Invalid or
+absent `generated_at` does not fall back to node timestamps; Dormant trails are
+omitted instead.
 - `novelty`: inverse authored-path proximity; `1.0` when no authored path
   exists.
 - `distance`: `0.0` for one domain, `0.6` for different routinely connected
