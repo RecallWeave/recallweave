@@ -785,8 +785,8 @@ test("AtlasProvenanceChrome renders conflicted and valid export history", async 
   const hostileHtml = renderToStaticMarkup(
     createElement(AtlasProvenanceChrome, { graph: hostile }),
   );
-  assert.doesNotMatch(hostileHtml, /<script>/);
-  assert.match(hostileHtml, /&lt;\/span&gt;&lt;script&gt;/);
+  assert.doesNotMatch(hostileHtml, /<script>/i);
+  assert.match(hostileHtml, /&lt;\/span&gt;&lt;script&gt;/i);
 });
 
 test("GraphExplorer mounts AtlasProvenanceChrome for provenance chrome", async () => {
