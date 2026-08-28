@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { VIEWER_SCHEMA_V2 } from "../app/graph-data.ts";
+import { VIEWER_SCHEMA_V2, normalizeGraph } from "../app/graph-data.ts";
 import {
   buildColdTrails,
   classifyCandidateEdgeTypes,
@@ -1737,6 +1737,19 @@ test("refuses tours that lack a Bridge or Island opening trail", () => {
   assert.equal(result.status, "refused");
 });
 
+test("GraphExplorer surfaces export-history claim conflicts in provenance chrome", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const sourcePath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../app/components/GraphExplorer.tsx",
+  );
+  const source = await readFile(sourcePath, "utf8");
+  assert.match(source, /export history conflicts with loaded graph/);
+  assert.match(source, /claim_conflict/);
+});
+
 test("ignores conflicted export history when scoring Drift trails", () => {
   const fixture = graph({
     nodes: [
@@ -1807,6 +1820,93 @@ test("ignores conflicted export history when scoring Drift trails", () => {
       claim_conflict: true,
     },
   });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  const drift = result.trails.find((trail) => trail.type === "drift");
+  assert.ok(drift);
+  assert.doesNotMatch(drift?.structuralFacts.join(" ") ?? "", /export history/i);
+});
+
+test("omitted previous_content_hash after normalize cannot trust Drift history", () => {
+  const raw = {
+    schema_version: VIEWER_SCHEMA_V2,
+    generated_at: "2026-08-28T00:00:00Z",
+    privacy: {
+      export_profile: "graph_metadata_and_note_derived_terms",
+      metadata_only: false,
+      includes_excerpts: false,
+      includes_passage_text: true,
+      includes_note_derived_terms: true,
+      includes_paths_titles_tags: true,
+    },
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "core-b.md", title: "Core B", path: "core-b.md", domain: "Core" },
+      {
+        id: "drift.md",
+        title: "Drift note",
+        path: "drift.md",
+        domain: "Archive",
+        created_at: "2024-01-01T00:00:00Z",
+        modified_at: "2026-07-01T00:00:00Z",
+      },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "core-b.md", verified: true },
+      {
+        id: "c1",
+        source: "drift.md",
+        target: "n4.md",
+        verified: false,
+        evidence: {
+          source_evidence: { citation: "drift.md:10-12", passage: "drift signal" },
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        },
+      },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+    export_history: {
+      export_id: "omitted-prior",
+      node_content_hashes_changed: 2,
+      node_content_hashes_unchanged: 6,
+      nodes_added: 0,
+      nodes_removed: 0,
+    },
+  };
+  const fixture = normalizeGraph(raw);
+  assert.equal(fixture.export_history?.claim_conflict, true);
   const result = buildColdTrails(fixture);
   assert.equal(result.status, "ok");
   const drift = result.trails.find((trail) => trail.type === "drift");
