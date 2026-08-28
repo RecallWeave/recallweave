@@ -554,6 +554,26 @@ test("flags subsequent export with missing overlap counters", () => {
   assert.equal(normalized.export_history?.claim_conflict, true);
 });
 
+test("flags first-export history that claims removals", () => {
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) },
+      { id: "b.md", title: "B", path: "b.md", content_hash: "b".repeat(64) },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "first-export",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 2,
+      nodes_removed: 1,
+    },
+  });
+  assert.equal(normalized.export_history?.claim_conflict, true);
+});
+
 test("accepts producer-shaped first export history", () => {
   const normalized = normalizeGraph({
     schema_version: VIEWER_SCHEMA_V2,
@@ -574,6 +594,26 @@ test("accepts producer-shaped first export history", () => {
   assert.equal(normalized.export_history?.claim_conflict, false);
 });
 
+test("flags malformed export-history counters instead of coercing them", () => {
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) },
+      { id: "b.md", title: "B", path: "b.md", content_hash: "b".repeat(64) },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "malformed-export",
+      previous_content_hash: null,
+      node_content_hashes_changed: "0",
+      node_content_hashes_unchanged: -1,
+      nodes_added: 2,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(normalized.export_history?.claim_conflict, true);
+});
+
 test("citationPath extracts the note path from validated citations", () => {
   assert.equal(citationPath("Folder/Note.md:12"), "Folder/Note.md");
   assert.equal(citationPath("Folder/Note.md:12-18"), "Folder/Note.md");
@@ -582,6 +622,61 @@ test("citationPath extracts the note path from validated citations", () => {
   assert.equal(safeContentHash("not-a-hash"), null);
   assert.equal(safeContentHash("A".repeat(64)), "a".repeat(64));
   assert.equal(safeVaultLabel("obsidian vault"), "");
+});
+
+test("rejects non-UTC and malformed graph generated_at instead of preserving labels", () => {
+  const cases = [
+    "2026-08-28",
+    "08/28/2026",
+    " 2026-08-28T00:00:00Z ",
+    "not-a-date",
+    "2026-08-28T00:00:00",
+    "2026-02-30T00:00:00Z",
+  ];
+  for (const generated_at of [
+    ...cases,
+    "2026-01-01T00:00:00+99:99",
+    "2026-01-01T00:00:00+24:00",
+    "0099-01-01T00:00:00Z",
+    "0000-01-01T00:00:00Z",
+  ]) {
+    const normalized = normalizeGraph(graph({ generated_at }));
+    assert.equal(
+      normalized.generated_at,
+      undefined,
+      `expected rejection for ${JSON.stringify(generated_at)}`,
+    );
+  }
+
+  const accepted = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00Z" }));
+  assert.equal(accepted.generated_at, "2026-08-28T00:00:00Z");
+
+  const offset = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00+00:00" }));
+  assert.equal(offset.generated_at, "2026-08-28T00:00:00Z");
+
+  const fractional = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00.001Z" }));
+  assert.equal(fractional.generated_at, "2026-08-28T00:00:00.001Z");
+
+  const micro = normalizeGraph(graph({ generated_at: "2026-06-15T00:00:00.000001Z" }));
+  assert.equal(micro.generated_at, "2026-06-15T00:00:00.000001Z");
+
+  const offsetNodes = normalizeGraph(
+    graph({
+      schema_version: VIEWER_SCHEMA_V2,
+      nodes: [
+        {
+          id: "a.md",
+          title: "A",
+          path: "a.md",
+          created_at: "2026-01-02T03:04:05+02:00",
+          modified_at: "2026-01-02T04:04:05+02:00",
+        },
+        { id: "b.md", title: "B", path: "b.md" },
+      ],
+    }),
+  );
+  assert.equal(offsetNodes.nodes[0].created_at, "2026-01-02T01:04:05Z");
+  assert.equal(offsetNodes.nodes[0].modified_at, "2026-01-02T02:04:05Z");
 });
 
 test("ignores unsupported vault names and treats local generation as a source claim", () => {

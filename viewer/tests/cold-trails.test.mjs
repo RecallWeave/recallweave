@@ -15,13 +15,14 @@ function citedEvidence(source, target, extra = {}) {
 function graph(overrides = {}) {
   return {
     schema_version: VIEWER_SCHEMA_V2,
+    generated_at: "2026-08-28T00:00:00Z",
     nodes: [],
     edges: [],
     privacy: {
       export_profile: "graph_metadata_and_note_derived_terms",
       metadata_only: false,
       includes_excerpts: false,
-      includes_passage_text: false,
+      includes_passage_text: true,
       includes_note_derived_terms: true,
       includes_paths_titles_tags: true,
     },
@@ -75,6 +76,7 @@ test("exports saved trail markdown for session handoff", () => {
         evidence: 0.3,
         centrality: 0.2,
         structure: 0,
+        ageBonus: 0,
         penalties: 0,
         total: 0.5,
       },
@@ -82,11 +84,21 @@ test("exports saved trail markdown for session handoff", () => {
       structuralFacts: ["No authored path within three hops."],
     },
   ]);
-  assert.match(markdown, /# Cold Trails session export/);
-  assert.match(markdown, /CANDIDATE - NOT A FACT/);
-  assert.match(markdown, /Alpha/);
-  assert.match(markdown, /`a\.md:10-12`/);
-  assert.match(markdown, /`b\.md:20`/);
+  assert.equal(
+    markdown,
+    [
+      "# Cold Trails session export",
+      "",
+      "## 1. Unwritten link",
+      "- Trust: CANDIDATE - NOT A FACT",
+      "- Notes: `Alpha` / `Beta`",
+      "- Citation: `a.md:10-12`",
+      "- Citation: `b.md:20`",
+      "- Surprise terms: `ripple`",
+      "- Fact: `No authored path within three hops.`",
+      "",
+    ].join("\n"),
+  );
 });
 
 test("escapes markdown-forging titles in saved exports", () => {
@@ -116,6 +128,7 @@ test("escapes markdown-forging titles in saved exports", () => {
         evidence: 0.25,
         centrality: 0,
         structure: 0.2,
+        ageBonus: 0,
         penalties: 0,
         total: 0.75,
       },
@@ -674,7 +687,7 @@ test("allows two same-domain trails before exhausting the domain touch limit", (
     }),
   );
   assert.equal(result.status, "ok");
-  assert.ok(isStructuralTrail(result.trails[0]));
+  assert.ok(isOpeningStructuralTrail(result.trails[0]));
   const onlyDomainCandidates = result.trails.filter(
     (trail) =>
       trail.trust === "candidate" &&
@@ -683,8 +696,16 @@ test("allows two same-domain trails before exhausting the domain touch limit", (
   assert.ok(onlyDomainCandidates.length >= 2);
 });
 
-function isStructuralTrail(trail) {
+function isOpeningStructuralTrail(trail) {
   return trail.type === "bridge" || trail.type === "island";
+}
+
+function isStructuralTrail(trail) {
+  return (
+    isOpeningStructuralTrail(trail) ||
+    trail.type === "dormant" ||
+    trail.type === "drift"
+  );
 }
 
 test("requires three covered domains when the eligible pool spans three", () => {
@@ -755,6 +776,322 @@ test("requires three covered domains when the eligible pool spans three", () => 
   assert.ok(domains.size >= 3);
 });
 
+test("detects dormant trails from unmodified notes with candidate edges", () => {
+  const oldStamp = "2024-01-01T00:00:00Z";
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+      { id: "sleep.md", title: "Sleep", path: "sleep.md", domain: "Archive", modified_at: oldStamp },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      {
+        id: "c1",
+        source: "sleep.md",
+        target: "n4.md",
+        verified: false,
+        evidence: {
+          source_evidence: { citation: "sleep.md:10-12", passage: "dormant signal" },
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        },
+      },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(isOpeningStructuralTrail(result.trails[0]));
+  const dormant = result.trails.find((trail) => trail.type === "dormant");
+  assert.ok(dormant);
+  assert.equal(dormant?.nodeId, "sleep.md");
+  assert.equal(dormant?.trust, "structural");
+  assert.match(dormant?.structuralFacts.join(" ") ?? "", /modified_at/);
+});
+
+test("detects parallel invention from near-simultaneous cross-domain candidates", () => {
+  const stampA = "2026-06-01T00:00:00Z";
+  const stampB = "2026-06-08T00:00:00Z";
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
+      { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+      {
+        id: "parallel",
+        source: "alpha.md",
+        target: "beta.md",
+        verified: false,
+        evidence: citedEvidence("alpha.md", "beta.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "n5.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("n5.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  const parallel = result.trails.find((trail) => trail.type === "parallel_invention");
+  assert.ok(parallel);
+  assert.equal(parallel?.trust, "candidate");
+  assert.match(parallel?.structuralFacts.join(" ") ?? "", /created_at/);
+});
+
+test("refuses parallel invention for future timestamps years apart", () => {
+  const fixture = graph({
+    generated_at: "2026-08-28T00:00:00Z",
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: "2030-01-01T00:00:00Z" },
+      { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: "2040-01-01T00:00:00Z" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+      {
+        id: "parallel",
+        source: "alpha.md",
+        target: "beta.md",
+        verified: false,
+        evidence: citedEvidence("alpha.md", "beta.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "n5.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("n5.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(!result.trails.some((trail) => trail.type === "parallel_invention"));
+  assert.ok(
+    !result.trails.some((trail) => (trail.structuralFacts || []).join(" ").includes("within 14 days")),
+  );
+});
+
+test("detects drift trails from long-lived notes with candidate edges", () => {
+  const fixture = graph({
+    nodes: [
+      {
+        id: "hub.md",
+        title: "Hub",
+        path: "hub.md",
+        domain: "Core",
+        created_at: "2026-07-01T00:00:00Z",
+        modified_at: "2026-07-02T00:00:00Z",
+      },
+      {
+        id: "core-b.md",
+        title: "Core B",
+        path: "core-b.md",
+        domain: "Core",
+        created_at: "2026-07-01T00:00:00Z",
+        modified_at: "2026-07-02T00:00:00Z",
+      },
+      {
+        id: "drift.md",
+        title: "Drift note",
+        path: "drift.md",
+        domain: "Archive",
+        created_at: "2024-01-01T00:00:00Z",
+        modified_at: "2026-07-01T00:00:00Z",
+      },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "core-b.md", verified: true },
+      {
+        id: "c1",
+        source: "drift.md",
+        target: "n4.md",
+        verified: false,
+        evidence: {
+          source_evidence: { citation: "drift.md:10-12", passage: "drift signal" },
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        },
+      },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+    export_history: {
+      export_id: "export-2",
+      previous_content_hash: "a".repeat(64),
+      node_content_hashes_changed: 2,
+      node_content_hashes_unchanged: 6,
+      nodes_added: 0,
+      nodes_removed: 0,
+      claim_conflict: false,
+    },
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(isOpeningStructuralTrail(result.trails[0]));
+  const drift = result.trails.find((trail) => trail.type === "drift");
+  assert.ok(drift);
+  assert.equal(drift?.nodeId, "drift.md");
+  assert.match(drift?.structuralFacts.join(" ") ?? "", /created_at/);
+  assert.match(drift?.structuralFacts.join(" ") ?? "", /export history/i);
+});
+
+test("buildColdTrails is deterministic for the same graph and reference clock", () => {
+  const fixture = graph({
+    generated_at: "2026-08-28T12:00:00Z",
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "only-b.md", title: "Only B", path: "only-b.md", domain: "Only" },
+      { id: "only-c.md", title: "Only C", path: "only-c.md", domain: "Only" },
+      { id: "only-d.md", title: "Only D", path: "only-d.md", domain: "Only" },
+      { id: "only-e.md", title: "Only E", path: "only-e.md", domain: "Only" },
+      { id: "only-f.md", title: "Only F", path: "only-f.md", domain: "Only" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "leaf.md", verified: true },
+      {
+        id: "c1",
+        source: "only-b.md",
+        target: "only-c.md",
+        verified: false,
+        evidence: citedEvidence("only-b.md", "only-c.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "only-d.md",
+        target: "only-e.md",
+        verified: false,
+        evidence: citedEvidence("only-d.md", "only-e.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "only-f.md",
+        target: "edge.md",
+        verified: false,
+        evidence: citedEvidence("only-f.md", "edge.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const first = buildColdTrails(fixture);
+  const second = buildColdTrails(fixture);
+  assert.deepEqual(first, second);
+});
+
 test("reported scores match the weighted scoring formula", () => {
   const fixture = graph({
     nodes: [
@@ -813,19 +1150,679 @@ test("reported scores match the weighted scoring formula", () => {
   const result = buildColdTrails(fixture);
   assert.equal(result.status, "ok");
   for (const trail of result.trails) {
-    const { novelty, distance, evidence, centrality, structure, penalties, total } =
+    const { novelty, distance, evidence, centrality, structure, ageBonus, penalties, total } =
       trail.scoreBreakdown;
-    const expected =
-      Math.max(
-        0,
-        0.3 * novelty +
-          0.25 * distance +
-          0.25 * evidence +
-          0.1 * centrality +
-          0.1 * structure -
-          penalties,
-      );
+    const expected = Math.max(
+      0,
+      0.3 * novelty +
+        0.25 * distance +
+        0.25 * evidence +
+        0.1 * centrality +
+        0.1 * structure -
+        penalties +
+        ageBonus,
+    );
     assert.equal(total, expected);
     assert.equal(trail.score, expected);
   }
+});
+
+test("successful tours satisfy aggregate selection invariants", () => {
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "only-b.md", title: "Only B", path: "only-b.md", domain: "Only" },
+      { id: "only-c.md", title: "Only C", path: "only-c.md", domain: "Only" },
+      { id: "only-d.md", title: "Only D", path: "only-d.md", domain: "Only" },
+      { id: "only-e.md", title: "Only E", path: "only-e.md", domain: "Only" },
+      { id: "only-f.md", title: "Only F", path: "only-f.md", domain: "Only" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "leaf.md", verified: true },
+      {
+        id: "c1",
+        source: "only-b.md",
+        target: "only-c.md",
+        verified: false,
+        evidence: citedEvidence("only-b.md", "only-c.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "only-d.md",
+        target: "only-e.md",
+        verified: false,
+        evidence: citedEvidence("only-d.md", "only-e.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "only-f.md",
+        target: "edge.md",
+        verified: false,
+        evidence: citedEvidence("only-f.md", "edge.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(isStructuralTrail(result.trails[0]));
+  const typeCounts = new Map();
+  const domainTouches = new Map();
+  const usedNodes = new Set();
+  for (const trail of result.trails) {
+    typeCounts.set(trail.type, (typeCounts.get(trail.type) || 0) + 1);
+    assert.ok((typeCounts.get(trail.type) || 0) <= 2);
+    const endpoints = trail.nodeId ? [trail.nodeId] : [trail.sourceId, trail.targetId];
+    for (const id of endpoints) {
+      assert.ok(!usedNodes.has(id), `node ${id} reused`);
+      usedNodes.add(id);
+    }
+    const domains = new Set(
+      endpoints.map((id) => {
+        const node = fixture.nodes.find((item) => item.id === id);
+        return node?.domain || "Unclassified";
+      }),
+    );
+    for (const domain of domains) {
+      domainTouches.set(domain, (domainTouches.get(domain) || 0) + 1);
+      assert.ok(domainTouches.get(domain) <= 2);
+    }
+  }
+});
+
+test("omits candidate trails when the export has no passage text", () => {
+  const fixture = graph({
+    privacy: {
+      export_profile: "graph_metadata_and_note_derived_terms",
+      metadata_only: false,
+      includes_excerpts: false,
+      includes_passage_text: false,
+      includes_note_derived_terms: true,
+      includes_paths_titles_tags: true,
+    },
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Edge" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Core" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Edge" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "leaf.md", verified: true },
+      {
+        id: "c1",
+        source: "n3.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("n3.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "n5.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("n5.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "leaf.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "leaf.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(result.trails.every((trail) => trail.trust === "structural"));
+  assert.match(result.notice ?? "", /structural-only/i);
+});
+
+test("counts same-domain endpoint trails once against the domain touch limit", () => {
+  const result = buildColdTrails(
+    graph({
+      nodes: Array.from({ length: 8 }, (_, index) => ({
+        id: `note-${index}.md`,
+        title: `Note ${index}`,
+        path: `note-${index}.md`,
+        domain: "Only",
+      })),
+      edges: [
+        { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+        {
+          id: "c0",
+          source: "note-2.md",
+          target: "note-4.md",
+          verified: false,
+          evidence: citedEvidence("note-2.md", "note-4.md", {
+            signals: { lexical_terms: ["orbit", "signal", "delta", "phase"] },
+          }),
+        },
+        {
+          id: "c1",
+          source: "note-2.md",
+          target: "note-3.md",
+          verified: false,
+          evidence: citedEvidence("note-2.md", "note-3.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c2",
+          source: "note-5.md",
+          target: "note-6.md",
+          verified: false,
+          evidence: citedEvidence("note-5.md", "note-6.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "note-6.md",
+          target: "note-7.md",
+          verified: false,
+          evidence: citedEvidence("note-6.md", "note-7.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "tensor", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(result.status, "ok");
+  assert.ok(result.trails.length >= 2);
+});
+
+test("omits dormant trails when generated_at is invalid instead of using node clocks", () => {
+  const oldStamp = "2024-01-01T00:00:00Z";
+  const fixture = graph({
+    generated_at: "not-a-date",
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+      { id: "sleep.md", title: "Sleep", path: "sleep.md", domain: "Archive", modified_at: oldStamp },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      {
+        id: "c1",
+        source: "sleep.md",
+        target: "n4.md",
+        verified: false,
+        evidence: {
+          source_evidence: { citation: "sleep.md:10-12", passage: "dormant signal" },
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        },
+      },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const withoutClock = buildColdTrails(fixture);
+  assert.ok(!withoutClock.trails?.some((trail) => trail.type === "dormant"));
+
+  const withClock = buildColdTrails({ ...fixture, generated_at: "2026-08-28T00:00:00Z" });
+  assert.ok(withClock.trails.some((trail) => trail.type === "dormant"));
+});
+
+test("parallel invention includes the exact 14-day boundary and excludes one millisecond beyond", () => {
+  const stampA = "2026-06-01T00:00:00.000Z";
+  const atBoundary = "2026-06-15T00:00:00.000Z";
+  const beyond = "2026-06-15T00:00:00.001Z";
+
+  function parallelFixture(stampB) {
+    return graph({
+      nodes: [
+        { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+        { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+        { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
+        { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+        { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+        { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+        { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+        { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+      ],
+      edges: [
+        { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+        { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+        {
+          id: "parallel",
+          source: "alpha.md",
+          target: "beta.md",
+          verified: false,
+          evidence: citedEvidence("alpha.md", "beta.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c2",
+          source: "n5.md",
+          target: "n6.md",
+          verified: false,
+          evidence: citedEvidence("n5.md", "n6.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "n7.md",
+          target: "n4.md",
+          verified: false,
+          evidence: citedEvidence("n7.md", "n4.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
+      ],
+    });
+  }
+
+  const inside = buildColdTrails(parallelFixture(atBoundary));
+  assert.ok(inside.trails.some((trail) => trail.type === "parallel_invention"));
+
+  const outside = buildColdTrails(parallelFixture(beyond));
+  assert.ok(!outside.trails.some((trail) => trail.type === "parallel_invention"));
+});
+
+test("dormant 180-day boundary is identical across timezones for normalized graphs", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  const path = await import("node:path");
+  const root = path.dirname(fileURLToPath(import.meta.url));
+  const graphDataUrl = pathToFileURL(path.join(root, "../app/graph-data.ts")).href;
+  const coldTrailsUrl = pathToFileURL(path.join(root, "../app/cold-trails.ts")).href;
+  const script = `
+import { normalizeGraph } from ${JSON.stringify(graphDataUrl)};
+import { buildColdTrails } from ${JSON.stringify(coldTrailsUrl)};
+
+const generatedAt = "2026-08-28T00:00:00Z";
+const atBoundary = "2026-03-01T00:00:00Z";
+const raw = {
+  schema_version: "recallweave.viewer.v2",
+  generated_at: generatedAt,
+  nodes: [
+    { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+    { id: "edge.md", title: "Edge", path: "edge.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+    { id: "sleep.md", title: "Sleep", path: "sleep.md", domain: "Archive", modified_at: atBoundary },
+    { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+    { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+    { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+    { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+    { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+    { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+  ],
+  edges: [
+    { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+    {
+      id: "c1",
+      source: "sleep.md",
+      target: "n4.md",
+      verified: false,
+      evidence: {
+        source_evidence: { citation: "sleep.md:10-12", passage: "dormant signal" },
+        signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+      },
+    },
+    {
+      id: "c-leaf-1",
+      source: "leaf.md",
+      target: "n5.md",
+      verified: false,
+      evidence: {
+        source_evidence: { citation: "leaf.md:10-12" },
+        target_evidence: { citation: "n5.md:20" },
+        signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+      },
+    },
+    {
+      id: "c-leaf-2",
+      source: "leaf.md",
+      target: "n6.md",
+      verified: false,
+      evidence: {
+        source_evidence: { citation: "leaf.md:10-12" },
+        target_evidence: { citation: "n6.md:20" },
+        signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+      },
+    },
+    {
+      id: "c3",
+      source: "n7.md",
+      target: "n3.md",
+      verified: false,
+      evidence: {
+        source_evidence: { citation: "n7.md:10-12" },
+        target_evidence: { citation: "n3.md:20" },
+        signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+      },
+    },
+  ],
+  privacy: {
+    export_profile: "graph_metadata_and_note_derived_terms",
+    metadata_only: false,
+    includes_excerpts: false,
+    includes_passage_text: true,
+    includes_note_derived_terms: true,
+    includes_paths_titles_tags: true,
+  },
+};
+const fixture = normalizeGraph(raw);
+const result = buildColdTrails(fixture);
+const dormant = result.trails.filter((trail) => trail.type === "dormant").map((trail) => trail.nodeId);
+process.stdout.write(JSON.stringify({ generated_at: fixture.generated_at, dormant }));
+`;
+
+  function runUnder(tz) {
+    const proc = spawnSync(process.execPath, ["--experimental-strip-types", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, TZ: tz },
+    });
+    assert.equal(proc.status, 0, proc.stderr || proc.stdout);
+    return JSON.parse(proc.stdout);
+  }
+
+  const utc = runUnder("UTC");
+  const east = runUnder("America/New_York");
+  assert.deepEqual(utc, east);
+  assert.equal(utc.generated_at, "2026-08-28T00:00:00Z");
+  assert.deepEqual(utc.dormant, ["sleep.md"]);
+});
+
+test("refuses tours that lack a Bridge or Island opening trail", () => {
+  const oldStamp = "2024-01-01T00:00:00Z";
+  const result = buildColdTrails(
+    graph({
+      nodes: [
+        { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+        { id: "edge.md", title: "Edge", path: "edge.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+        { id: "sleep.md", title: "Sleep", path: "sleep.md", domain: "Archive", modified_at: oldStamp },
+        { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+        { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+        { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+        { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+        { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+      ],
+      edges: [
+        { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+        {
+          id: "c1",
+          source: "sleep.md",
+          target: "n4.md",
+          verified: false,
+          evidence: citedEvidence("sleep.md", "n4.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c2",
+          source: "n5.md",
+          target: "n6.md",
+          verified: false,
+          evidence: citedEvidence("n5.md", "n6.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "n7.md",
+          target: "n3.md",
+          verified: false,
+          evidence: citedEvidence("n7.md", "n3.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(result.status, "refused");
+});
+
+test("ignores conflicted export history when scoring Drift trails", () => {
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "core-b.md", title: "Core B", path: "core-b.md", domain: "Core" },
+      {
+        id: "drift.md",
+        title: "Drift note",
+        path: "drift.md",
+        domain: "Archive",
+        created_at: "2024-01-01T00:00:00Z",
+        modified_at: "2026-07-01T00:00:00Z",
+      },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "core-b.md", verified: true },
+      {
+        id: "c1",
+        source: "drift.md",
+        target: "n4.md",
+        verified: false,
+        evidence: {
+          source_evidence: { citation: "drift.md:10-12", passage: "drift signal" },
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        },
+      },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+    export_history: {
+      export_id: "export-conflict",
+      previous_content_hash: "a".repeat(64),
+      node_content_hashes_changed: 9,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 0,
+      nodes_removed: 0,
+      claim_conflict: true,
+    },
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  const drift = result.trails.find((trail) => trail.type === "drift");
+  assert.ok(drift);
+  assert.doesNotMatch(drift?.structuralFacts.join(" ") ?? "", /export history/i);
+});
+
+test("preserves fractional seconds through normalizeGraph for parallel invention bounds", async () => {
+  const { normalizeGraph } = await import("../app/graph-data.ts");
+  const stampA = "2026-06-01T00:00:00.000Z";
+  const beyond = "2026-06-15T00:00:00.001Z";
+  const microBeyond = "2026-06-15T00:00:00.000001Z";
+  const normalized = normalizeGraph(
+    graph({
+      nodes: [
+        { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+        { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+        { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
+        { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: beyond },
+        { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+        { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+        { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+        { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+        { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+      ],
+      edges: [
+        { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+        { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+        {
+          id: "parallel",
+          source: "alpha.md",
+          target: "beta.md",
+          verified: false,
+          evidence: citedEvidence("alpha.md", "beta.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c-leaf-1",
+          source: "leaf.md",
+          target: "n5.md",
+          verified: false,
+          evidence: citedEvidence("leaf.md", "n5.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c-leaf-2",
+          source: "leaf.md",
+          target: "n6.md",
+          verified: false,
+          evidence: citedEvidence("leaf.md", "n6.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "n7.md",
+          target: "n4.md",
+          verified: false,
+          evidence: citedEvidence("n7.md", "n4.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(normalized.nodes.find((node) => node.id === "beta.md")?.created_at, beyond);
+  const result = buildColdTrails(normalized);
+  assert.ok(!result.trails?.some((trail) => trail.type === "parallel_invention"));
+
+  const microNormalized = normalizeGraph(
+    graph({
+      nodes: [
+        { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+        { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+        { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
+        { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: microBeyond },
+        { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+        { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+        { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+        { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+        { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+      ],
+      edges: [
+        { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+        { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+        {
+          id: "parallel",
+          source: "alpha.md",
+          target: "beta.md",
+          verified: false,
+          evidence: citedEvidence("alpha.md", "beta.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c-leaf-1",
+          source: "leaf.md",
+          target: "n5.md",
+          verified: false,
+          evidence: citedEvidence("leaf.md", "n5.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c-leaf-2",
+          source: "leaf.md",
+          target: "n6.md",
+          verified: false,
+          evidence: citedEvidence("leaf.md", "n6.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "n7.md",
+          target: "n4.md",
+          verified: false,
+          evidence: citedEvidence("n7.md", "n4.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(
+    microNormalized.nodes.find((node) => node.id === "beta.md")?.created_at,
+    microBeyond,
+  );
+  assert.ok(!buildColdTrails(microNormalized).trails?.some((trail) => trail.type === "parallel_invention"));
 });

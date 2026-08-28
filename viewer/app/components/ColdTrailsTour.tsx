@@ -13,6 +13,8 @@ import {
   trailPairKey,
   trailTrustLabel,
   trailTypeLabel,
+  validatedMutualNeighbors,
+  validatedSharedTags,
   type ColdTrail,
   type ColdTrailsFeedback,
   type ColdTrailsResult,
@@ -90,6 +92,17 @@ export function ColdTrailsTour({
     () => new Map(graph.nodes.map((node) => [node.id, node])),
     [graph.nodes],
   );
+  const authoredAdjacency = useMemo(() => {
+    const adjacency = new Map<string, Set<string>>();
+    graph.nodes.forEach((node) => adjacency.set(node.id, new Set()));
+    graph.edges
+      .filter((item) => item.verified)
+      .forEach((item) => {
+        adjacency.get(item.source)?.add(item.target);
+        adjacency.get(item.target)?.add(item.source);
+      });
+    return adjacency;
+  }, [graph.edges, graph.nodes]);
 
   useEffect(() => {
     if (!open) return;
@@ -174,22 +187,17 @@ export function ColdTrailsTour({
 
   function showAnother() {
     if (!current) return;
-    feedbackRef.current.shownPairs.add(trailPairKey(current));
+    trails.forEach((trail) => feedbackRef.current.shownPairs.add(trailPairKey(trail)));
     const replacement = buildColdTrails(graph, feedbackRef.current);
     if (replacement.status !== "ok" || !replacement.trails.length) {
       onStatus("No alternate trail qualified.");
       return;
     }
-    const alternate = replacement.trails.find(
-      (trail) => !trails.some((item) => trailPairKey(item) === trailPairKey(trail)),
-    );
-    if (!alternate) {
-      onStatus("No alternate trail qualified.");
-      return;
-    }
-    setTrails((items) => items.map((item, itemIndex) => (itemIndex === index ? alternate : item)));
+    setTrails(replacement.trails);
+    setIndex(0);
+    setResult(replacement);
     setExplainOpen(false);
-    setAnnouncement(`Alternate ${trailTypeLabel(alternate.type)} trail loaded.`);
+    setAnnouncement(`Alternate tour with ${replacement.trails.length} stops loaded.`);
   }
 
   function openSource() {
@@ -229,6 +237,14 @@ export function ColdTrailsTour({
       onClose();
       return;
     }
+    const target = event.target as HTMLElement | null;
+    const typingField = target?.closest("input, select, textarea, [contenteditable='true']");
+    if (typingField) return;
+    const activatesControl =
+      event.key === " " || event.key === "Enter"
+        ? target?.closest("button, a")
+        : null;
+    if (activatesControl) return;
     if (!current || result?.status !== "ok") return;
     if (event.key === "ArrowRight" || event.key === " ") {
       event.preventDefault();
@@ -375,9 +391,38 @@ export function ColdTrailsTour({
                   <li>Evidence: {current.scoreBreakdown.evidence.toFixed(2)}</li>
                   <li>Centrality: {current.scoreBreakdown.centrality.toFixed(2)}</li>
                   <li>Structure: {current.scoreBreakdown.structure.toFixed(2)}</li>
+                  <li>Age bonus: {current.scoreBreakdown.ageBonus.toFixed(2)}</li>
                   <li>Penalties: {current.scoreBreakdown.penalties.toFixed(2)}</li>
                   <li>Total: {current.scoreBreakdown.total.toFixed(2)}</li>
                 </ul>
+                {edge?.evidence?.signals && current.sourceId && current.targetId && (
+                  <>
+                    <span className="section-label">Evidence signals</span>
+                    <ul>
+                      {(edge.evidence.signals.lexical_terms || []).map((term) => (
+                        <li key={`term-${term}`}>Lexical: {term}</li>
+                      ))}
+                      {validatedSharedTags(
+                        nodeById.get(current.sourceId) || {
+                          id: current.sourceId,
+                          title: "",
+                          path: "",
+                        },
+                        nodeById.get(current.targetId) || {
+                          id: current.targetId,
+                          title: "",
+                          path: "",
+                        },
+                        edge,
+                      ).map((tag) => (
+                        <li key={`tag-${tag}`}>Shared tag: {tag}</li>
+                      ))}
+                      {validatedMutualNeighbors(edge, authoredAdjacency).map((id) => (
+                        <li key={`neighbor-${id}`}>Mutual neighbor: {id}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
               </div>
             )}
           </article>

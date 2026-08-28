@@ -149,14 +149,71 @@ export function safeContentHash(value: unknown): string | null {
   return normalized;
 }
 
+const UTC_ISO_TIMESTAMP =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/u;
+
+/** Absolute UTC microseconds since Unix epoch, preserving up to microsecond precision. */
+export function utcEpochMicros(value: string): bigint | null {
+  const match = UTC_ISO_TIMESTAMP.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  // Date.UTC remaps years 0–99 into 1900–1999; reject those and other out-of-range years.
+  if (year < 1000 || year > 9999) return null;
+  if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day > daysInMonth) return null;
+  const tz = match[8];
+  let offsetMinutes = 0;
+  if (tz !== "Z") {
+    const offsetHour = Number(tz.slice(1, 3));
+    const offsetMinute = Number(tz.slice(4, 6));
+    if (offsetHour > 23 || offsetMinute > 59) return null;
+    const sign = tz.startsWith("-") ? -1 : 1;
+    offsetMinutes = sign * (offsetHour * 60 + offsetMinute);
+  }
+  const secondMs = Date.UTC(year, month - 1, day, hour, minute, second) - offsetMinutes * 60_000;
+  if (!Number.isFinite(secondMs)) return null;
+  const fracDigits = match[7] || "";
+  // Accept at most microsecond precision; do not silently truncate nanoseconds.
+  if (fracDigits.length > 6) return null;
+  const microsPart = BigInt(fracDigits.padEnd(6, "0").slice(0, 6) || "0");
+  return BigInt(secondMs) * BigInt(1000) + microsPart;
+}
+
+function formatUtcMicros(epochMicros: bigint): string {
+  const million = BigInt(1_000_000);
+  let microsInSecond = epochMicros % million;
+  let secondEpochMicros = epochMicros - microsInSecond;
+  if (microsInSecond < BigInt(0)) {
+    microsInSecond += million;
+    secondEpochMicros -= million;
+  }
+  const secondMs = Number(secondEpochMicros / BigInt(1000));
+  const asUtc = new Date(secondMs);
+  const base = asUtc.toISOString().replace(/\.\d{3}Z$/u, "Z").replace(/Z$/u, "");
+  if (microsInSecond === BigInt(0)) return `${base}Z`;
+  const frac = microsInSecond.toString().padStart(6, "0").replace(/0+$/u, "");
+  return `${base}.${frac}Z`;
+}
+
 export function safeIsoTimestamp(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
-  const cleaned = safeText(value, "");
-  if (!cleaned || cleaned !== value) return null;
-  const parsed = Date.parse(cleaned);
-  if (!Number.isFinite(parsed)) return null;
-  return cleaned;
+  if (value !== value.trim()) return null;
+  const cleaned = value.trim();
+  const epoch = utcEpochMicros(cleaned);
+  if (epoch === null) return null;
+  const formatted = formatUtcMicros(epoch);
+  // Reject conversions that cannot round-trip (e.g. offset crossing year 1000).
+  if (utcEpochMicros(formatted) !== epoch) return null;
+  return formatted;
 }
 
 export function safeVaultLabel(value: unknown): string {
@@ -172,12 +229,6 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function nonNegativeInteger(value: unknown): number {
-  const number = finiteNumber(value);
-  if (number === undefined || !Number.isSafeInteger(number) || number < 0) return 0;
-  return number;
-}
-
 function evidenceSide(value: unknown): GraphEvidenceSide {
   if (!value || typeof value !== "object") return {};
   const raw = value as Record<string, unknown>;
@@ -190,9 +241,19 @@ function evidenceSide(value: unknown): GraphEvidenceSide {
 function evidenceSignals(value: unknown): GraphEvidenceSignals | undefined {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Record<string, unknown>;
-  const lexical_terms = Array.isArray(raw.lexical_terms)
-    ? raw.lexical_terms.map((term) => safeLabel(term)).filter(Boolean).slice(0, 24)
-    : [];
+  const lexical_terms: string[] = [];
+  if (Array.isArray(raw.lexical_terms)) {
+    const seen = new Set<string>();
+    for (const term of raw.lexical_terms) {
+      const safe = safeLabel(term);
+      if (!safe) continue;
+      const key = safe.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lexical_terms.push(safe);
+      if (lexical_terms.length >= 24) break;
+    }
+  }
   const shared_tags = Array.isArray(raw.shared_tags)
     ? raw.shared_tags.map((tag) => safeLabel(tag)).filter(Boolean).slice(0, 24)
     : [];
@@ -209,6 +270,15 @@ function evidenceSignals(value: unknown): GraphEvidenceSignals | undefined {
   };
 }
 
+function optionalNonNegativeInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const number = finiteNumber(value);
+  if (number === undefined || !Number.isSafeInteger(number) || number < 0) {
+    return undefined;
+  }
+  return number;
+}
+
 function parseExportHistory(
   value: unknown,
   nodes: GraphNode[],
@@ -217,24 +287,44 @@ function parseExportHistory(
   const raw = value as Record<string, unknown>;
   const export_id = safeIdentifier(raw.export_id);
   if (!export_id) return undefined;
-  const previous_content_hash = safeContentHash(raw.previous_content_hash);
-  const node_content_hashes_changed = nonNegativeInteger(raw.node_content_hashes_changed);
-  const node_content_hashes_unchanged = nonNegativeInteger(raw.node_content_hashes_unchanged);
-  const nodes_added = nonNegativeInteger(raw.nodes_added);
-  const nodes_removed = nonNegativeInteger(raw.nodes_removed);
-  const overlapHashes = node_content_hashes_changed + node_content_hashes_unchanged;
+  const priorRaw = raw.previous_content_hash;
+  const previous_content_hash = safeContentHash(priorRaw);
+  const priorMalformed =
+    priorRaw !== null &&
+    priorRaw !== undefined &&
+    previous_content_hash === null;
+  const node_content_hashes_changed = optionalNonNegativeInteger(
+    raw.node_content_hashes_changed,
+  );
+  const node_content_hashes_unchanged = optionalNonNegativeInteger(
+    raw.node_content_hashes_unchanged,
+  );
+  const nodes_added = optionalNonNegativeInteger(raw.nodes_added);
+  const nodes_removed = optionalNonNegativeInteger(raw.nodes_removed);
+  const malformedCounters =
+    node_content_hashes_changed === undefined ||
+    node_content_hashes_unchanged === undefined ||
+    nodes_added === undefined ||
+    nodes_removed === undefined;
+  const changed = node_content_hashes_changed ?? 0;
+  const unchanged = node_content_hashes_unchanged ?? 0;
+  const added = nodes_added ?? 0;
+  const removed = nodes_removed ?? 0;
+  const overlapHashes = changed + unchanged;
   const totalNodes = nodes.length;
   const claim_conflict =
-    previous_content_hash === null
-      ? nodes_added !== totalNodes || overlapHashes !== 0
-      : overlapHashes + nodes_added !== totalNodes;
+    malformedCounters ||
+    priorMalformed ||
+    (previous_content_hash === null
+      ? added !== totalNodes || overlapHashes !== 0 || removed !== 0
+      : overlapHashes + added !== totalNodes);
   return {
     export_id,
-    previous_content_hash,
-    node_content_hashes_changed,
-    node_content_hashes_unchanged,
-    nodes_added,
-    nodes_removed,
+    previous_content_hash: priorMalformed ? null : previous_content_hash,
+    node_content_hashes_changed: changed,
+    node_content_hashes_unchanged: unchanged,
+    nodes_added: added,
+    nodes_removed: removed,
     claim_conflict,
   };
 }
@@ -417,7 +507,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
   return {
     schema_version: isV2 ? VIEWER_SCHEMA_V2 : VIEWER_SCHEMA_V1,
     title: safeLabel(raw.title, "Loaded knowledge graph"),
-    generated_at: safeLabel(raw.generated_at),
+    generated_at: safeIsoTimestamp(raw.generated_at) ?? undefined,
     nodes,
     edges,
     vault_label_claim: vault_label_claim || undefined,

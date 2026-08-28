@@ -214,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
                 if policy_bytes is not None
                 else IndexPolicy()
             )
+            policy_digest = None
+            if policy_bytes is not None:
+                policy_digest = hashlib.sha256(policy_bytes).hexdigest()
             receipt = build_index(
                 args.vault,
                 database,
@@ -222,12 +225,11 @@ def main(argv: list[str] | None = None) -> int:
                 max_candidates_per_note=args.max_candidates_per_note,
                 allow_in_vault=args.allow_in_vault,
                 force=args.force,
+                policy_config_sha256=policy_digest,
             )
             receipt["policy_mode"] = "config" if args.config is not None else "none"
-            if policy_bytes is not None:
-                receipt["policy_config_sha256"] = hashlib.sha256(
-                    policy_bytes
-                ).hexdigest()
+            if policy_digest is not None:
+                receipt["policy_config_sha256"] = policy_digest
             return receipt
 
         action: Callable[[], dict[str, Any]] = run_index

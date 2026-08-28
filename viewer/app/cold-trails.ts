@@ -1,6 +1,7 @@
 import {
   citationPath,
   safeCitation,
+  utcEpochMicros,
   type GraphDocument,
   type GraphEdge,
   type GraphNode,
@@ -11,7 +12,10 @@ export type TrailType =
   | "distant_neighbors"
   | "bridge"
   | "island"
-  | "reinforced";
+  | "reinforced"
+  | "dormant"
+  | "parallel_invention"
+  | "drift";
 
 export type TrailTrust = "authored" | "candidate" | "structural";
 
@@ -21,6 +25,7 @@ export type ScoreBreakdown = {
   evidence: number;
   centrality: number;
   structure: number;
+  ageBonus: number;
   penalties: number;
   total: number;
 };
@@ -62,8 +67,55 @@ export type ColdTrailsFeedback = {
 
 const EVIDENCE_FLOOR = 0.25;
 const DEFAULT_TOUR_LENGTH = 6;
+const DORMANT_MIN_DAYS = 180;
+const PARALLEL_MAX_DAY_GAP = 14;
+const DRIFT_MIN_DAYS = 90;
+const MS_PER_DAY = 86_400_000;
 
-export function weightedTotal(breakdown: Omit<ScoreBreakdown, "total">): number {
+function parseUtcTimestamp(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const epoch = utcEpochMicros(value);
+  if (epoch === null) return null;
+  return new Date(Number(epoch / BigInt(1000)));
+}
+
+function daysSince(value: string | null | undefined, nowMs: number): number | null {
+  const epoch = value ? utcEpochMicros(value) : null;
+  if (epoch === null) return null;
+  const nowMicros = BigInt(Math.trunc(nowMs)) * BigInt(1000);
+  const diff = nowMicros - epoch;
+  return Math.max(0, Number(diff) / (MS_PER_DAY * 1000));
+}
+
+function daysBetween(a: string | null | undefined, b: string | null | undefined): number | null {
+  if (!a || !b) return null;
+  const left = utcEpochMicros(a);
+  const right = utcEpochMicros(b);
+  if (left === null || right === null) return null;
+  const diffMicros = left > right ? left - right : right - left;
+  return Number(diffMicros) / (MS_PER_DAY * 1000);
+}
+
+/** Signed days from `earlier` to `later`; null if either timestamp is invalid. */
+function daysFromTo(
+  earlier: string | null | undefined,
+  later: string | null | undefined,
+): number | null {
+  if (!earlier || !later) return null;
+  const start = utcEpochMicros(earlier);
+  const end = utcEpochMicros(later);
+  if (start === null || end === null) return null;
+  return Number(end - start) / (MS_PER_DAY * 1000);
+}
+
+function ageFactor(days: number | null): number {
+  if (days === null) return 0;
+  return Math.min(days / 365, 1);
+}
+
+export function weightedTotal(
+  breakdown: Omit<ScoreBreakdown, "total" | "ageBonus">,
+): number {
   return Math.max(
     0,
     0.3 * breakdown.novelty +
@@ -101,6 +153,12 @@ export function trailTypeLabel(type: TrailType): string {
       return "Island";
     case "reinforced":
       return "Reinforced";
+    case "dormant":
+      return "Dormant";
+    case "parallel_invention":
+      return "Parallel invention";
+    case "drift":
+      return "Drift";
     default:
       return type;
   }
@@ -159,7 +217,7 @@ function trailCitations(graph: GraphDocument, trail: ColdTrail): string[] {
 function citationMatchesNode(citation: string, node: GraphNode): boolean {
   const path = citationPath(citation);
   if (!path) return false;
-  return path === node.path || path === node.id;
+  return path === node.path;
 }
 
 function candidateHasValidCitation(edge: GraphEdge, source: GraphNode, target: GraphNode): boolean {
@@ -200,7 +258,7 @@ function tokenize(value: string): Set<string> {
   return new Set(
     value
       .toLowerCase()
-      .split(/[^a-z0-9]+/u)
+      .split(/[^\p{L}\p{N}]+/u)
       .map((token) => token.trim())
       .filter((token) => token.length > 1),
   );
@@ -215,8 +273,18 @@ function nodeTokens(node: GraphNode): Set<string> {
 
 function sharedTerms(edge: GraphEdge): string[] {
   const signals = edge.evidence?.signals;
-  if (signals?.lexical_terms?.length) return signals.lexical_terms;
-  return edge.evidence?.shared_terms || [];
+  const raw = signals?.lexical_terms?.length
+    ? signals.lexical_terms
+    : edge.evidence?.shared_terms || [];
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  raw.forEach((term) => {
+    const key = term.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    unique.push(term);
+  });
+  return unique;
 }
 
 function surpriseTerms(source: GraphNode, target: GraphNode, edge: GraphEdge): string[] {
@@ -236,6 +304,57 @@ function authoredAdjacency(graph: GraphDocument): Map<string, Set<string>> {
       adjacency.get(edge.target)?.add(edge.source);
     });
   return adjacency;
+}
+
+function outgoingAuthoredAdjacency(graph: GraphDocument): Map<string, Set<string>> {
+  const adjacency = new Map<string, Set<string>>();
+  graph.nodes.forEach((node) => adjacency.set(node.id, new Set()));
+  graph.edges
+    .filter((edge) => edge.verified)
+    .forEach((edge) => {
+      adjacency.get(edge.source)?.add(edge.target);
+    });
+  return adjacency;
+}
+
+function edgeIndex(graph: GraphDocument): Map<string, GraphEdge> {
+  return new Map(graph.edges.map((edge) => [edge.id, edge]));
+}
+
+export function validatedSharedTags(source: GraphNode, target: GraphNode, edge: GraphEdge): string[] {
+  const claimed = edge.evidence?.signals?.shared_tags || [];
+  const sourceTags = new Set((source.tags || []).map((tag) => tag.toLowerCase()));
+  const targetTags = new Set((target.tags || []).map((tag) => tag.toLowerCase()));
+  return claimed.filter(
+    (tag) => sourceTags.has(tag.toLowerCase()) && targetTags.has(tag.toLowerCase()),
+  );
+}
+
+export function validatedMutualNeighbors(
+  edge: GraphEdge,
+  adjacency: Map<string, Set<string>>,
+): string[] {
+  const claimed = edge.evidence?.signals?.mutual_neighbor_ids || [];
+  const sourceNeighbors = adjacency.get(edge.source) || new Set();
+  const targetNeighbors = adjacency.get(edge.target) || new Set();
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  claimed.forEach((id) => {
+    if (seen.has(id)) return;
+    if (!sourceNeighbors.has(id) || !targetNeighbors.has(id)) return;
+    seen.add(id);
+    unique.push(id);
+  });
+  return unique;
+}
+
+function referenceNowMs(graph: GraphDocument, nowMs?: number): number | null {
+  if (typeof nowMs === "number" && Number.isFinite(nowMs)) return nowMs;
+  // Only a validated graph-level generation clock may drive age-based trails.
+  // Never substitute node timestamps: that silently changes the meaning of
+  // generated_at and can diverge across machines when the field was invalid.
+  const generated = parseUtcTimestamp(graph.generated_at ?? null);
+  return generated ? generated.getTime() : null;
 }
 
 function authoredPathWithinHops(
@@ -294,24 +413,32 @@ function interDomainAuthoredCounts(graph: GraphDocument): Map<string, number> {
 function degreeMap(graph: GraphDocument): Map<string, number> {
   const degrees = new Map<string, number>();
   graph.nodes.forEach((node) => degrees.set(node.id, 0));
-  graph.edges.forEach((edge) => {
-    degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1);
-    degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1);
-  });
+  graph.edges
+    .filter((edge) => edge.verified)
+    .forEach((edge) => {
+      degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1);
+      degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1);
+    });
   return degrees;
 }
 
 function percentile(values: number[], ratio: number): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.min(sorted.length - 1, Math.floor(ratio * sorted.length));
+  // Linear index into [0, n-1] so small graphs keep a cutoff below the max.
+  const index = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio));
   return sorted[index];
 }
 
-function evidenceScore(edge: GraphEdge): number {
+function evidenceScore(
+  edge: GraphEdge,
+  source: GraphNode,
+  target: GraphNode,
+  adjacency: Map<string, Set<string>>,
+): number {
   const terms = sharedTerms(edge);
-  const tags = edge.evidence?.signals?.shared_tags?.length || 0;
-  const neighbors = edge.evidence?.signals?.mutual_neighbor_ids?.length || 0;
+  const tags = validatedSharedTags(source, target, edge).length;
+  const neighbors = validatedMutualNeighbors(edge, adjacency).length;
   const passage =
     Boolean(edge.evidence?.source_evidence?.passage || edge.evidence?.source_text) &&
     Boolean(edge.evidence?.target_evidence?.passage);
@@ -355,6 +482,7 @@ function scoreCandidateTrail(
   p90: number,
   interDomainCounts: Map<string, number>,
   nodes: Map<string, GraphNode>,
+  nowMs: number,
 ): ColdTrail | null {
   const source = nodes.get(edge.source);
   const target = nodes.get(edge.target);
@@ -363,7 +491,7 @@ function scoreCandidateTrail(
   const terms = surpriseTerms(source, target, edge);
   if (terms.length < 2) return null;
 
-  const evidence = evidenceScore(edge);
+  const evidence = evidenceScore(edge, source, target, adjacency);
   if (evidence < EVIDENCE_FLOOR) return null;
   if (!candidateHasValidCitation(edge, source, target)) return null;
 
@@ -371,6 +499,11 @@ function scoreCandidateTrail(
   const distance = distanceScore(source, target, interDomainCounts);
   const centrality = centralityScore(edge.source, edge.target, degrees, p90);
   const structure = type === "bridge" || type === "island" ? 0.2 : 0;
+  const olderDays = Math.max(
+    daysSince(source.modified_at, nowMs) ?? 0,
+    daysSince(target.modified_at, nowMs) ?? 0,
+  );
+  const ageBonus = 0.15 * ageFactor(olderDays > 0 ? olderDays : null);
   let penalties = 0;
   if (feedback.usedNodeIds.has(edge.source) || feedback.usedNodeIds.has(edge.target)) {
     penalties += 0.3;
@@ -390,9 +523,11 @@ function scoreCandidateTrail(
     evidence,
     centrality,
     structure,
+    ageBonus,
     penalties,
   };
-  const total = weightedTotal(breakdown);
+  // Age contributes up to 0.15 outside the weighted structure term.
+  const total = Math.max(0, weightedTotal(breakdown) + ageBonus);
 
   return {
     type,
@@ -411,8 +546,36 @@ function scoreCandidateTrail(
       authoredPathWithinHops(adjacency, edge.source, edge.target, 3)
         ? "An authored path exists within three hops."
         : "No authored path within three hops.",
+      ...(type === "parallel_invention" && source.created_at && target.created_at
+        ? [
+            `Observed created_at ${source.created_at} and ${target.created_at} within ${PARALLEL_MAX_DAY_GAP} days across domains.`,
+          ]
+        : []),
     ],
   };
+}
+
+function surpriseConditionCount(
+  source: GraphNode,
+  target: GraphNode,
+  edge: GraphEdge,
+  adjacency: Map<string, Set<string>>,
+  interDomainCounts: Map<string, number>,
+): number {
+  const noPath = !authoredPathWithinHops(adjacency, edge.source, edge.target, 3);
+  const sourceDomain = source.domain || "Unclassified";
+  const targetDomain = target.domain || "Unclassified";
+  const rareCrossing =
+    sourceDomain !== targetDomain &&
+    (interDomainCounts.get(
+      sourceDomain < targetDomain
+        ? `${sourceDomain}|${targetDomain}`
+        : `${targetDomain}|${sourceDomain}`,
+    ) || 0) <= 1;
+  const nonObviousLanguage = surpriseTerms(source, target, edge).length >= 2;
+  const distantButLexical =
+    noPath && sharedTerms(edge).length >= 3;
+  return [noPath, rareCrossing, nonObviousLanguage, distantButLexical].filter(Boolean).length;
 }
 
 function classifyCandidateEdge(
@@ -426,12 +589,21 @@ function classifyCandidateEdge(
   const target = nodes.get(edge.target);
   if (!source || !target) return [];
   const types: TrailType[] = [];
-  if (!authoredPathWithinHops(adjacency, edge.source, edge.target, 3)) {
-    types.push("unwritten_link");
-  }
   const sourceDomain = source.domain || "Unclassified";
   const targetDomain = target.domain || "Unclassified";
-  if (sourceDomain !== targetDomain) {
+  const createdGapDays = daysBetween(source.created_at, target.created_at);
+  const isParallel =
+    createdGapDays !== null &&
+    sourceDomain !== targetDomain &&
+    createdGapDays <= PARALLEL_MAX_DAY_GAP &&
+    surpriseTerms(source, target, edge).length >= 2 &&
+    surpriseConditionCount(source, target, edge, adjacency, interDomainCounts) >= 2;
+  if (isParallel) {
+    types.push("parallel_invention");
+  } else if (!authoredPathWithinHops(adjacency, edge.source, edge.target, 3)) {
+    types.push("unwritten_link");
+  }
+  if (!isParallel && sourceDomain !== targetDomain) {
     const key = sourceDomain < targetDomain
       ? `${sourceDomain}|${targetDomain}`
       : `${targetDomain}|${sourceDomain}`;
@@ -441,10 +613,15 @@ function classifyCandidateEdge(
   }
   const signalCount = [
     sharedTerms(edge).length >= 2,
-    Boolean(edge.evidence?.signals?.shared_tags?.length),
-    Boolean(edge.evidence?.signals?.mutual_neighbor_ids?.length),
+    validatedSharedTags(source, target, edge).length > 0,
+    validatedMutualNeighbors(edge, adjacency).length > 0,
   ].filter(Boolean).length;
-  if (signalCount >= 2) types.push("reinforced");
+  if (
+    signalCount >= 2 &&
+    surpriseConditionCount(source, target, edge, adjacency, interDomainCounts) >= 2
+  ) {
+    types.push("reinforced");
+  }
   return types;
 }
 
@@ -454,11 +631,11 @@ function bridgeTrails(
   degrees: Map<string, number>,
   p90: number,
 ): ColdTrail[] {
-  const adjacency = authoredAdjacency(graph);
+  const outgoing = outgoingAuthoredAdjacency(graph);
   const trails: ColdTrail[] = [];
   graph.nodes.forEach((node) => {
     const neighborDomains = new Set<string>();
-    for (const neighborId of adjacency.get(node.id) || []) {
+    for (const neighborId of outgoing.get(node.id) || []) {
       const neighbor = nodes.get(neighborId);
       neighborDomains.add(neighbor?.domain || "Unclassified");
     }
@@ -470,6 +647,7 @@ function bridgeTrails(
         evidence: 0,
         centrality,
         structure: 1,
+        ageBonus: 0,
         penalties: 0,
       };
       const total = weightedTotal(breakdown);
@@ -525,6 +703,7 @@ function islandTrails(
         evidence: 0,
         centrality,
         structure: 1,
+        ageBonus: 0,
         penalties: 0,
       };
       const total = weightedTotal(breakdown);
@@ -544,6 +723,123 @@ function islandTrails(
         structuralFacts: [
           `Authored degree ${authoredDegree(graph, node.id)}; ${candidateCounts.get(node.id) || 0} candidate edges.`,
         ],
+      };
+    });
+}
+
+function dormantTrails(
+  graph: GraphDocument,
+  degrees: Map<string, number>,
+  p90: number,
+  nowMs: number = 0,
+): ColdTrail[] {
+  const candidateCounts = new Map<string, number>();
+  candidateEdges(graph).forEach((edge) => {
+    candidateCounts.set(edge.source, (candidateCounts.get(edge.source) || 0) + 1);
+    candidateCounts.set(edge.target, (candidateCounts.get(edge.target) || 0) + 1);
+  });
+  return graph.nodes
+    .filter((node) => {
+      const days = daysSince(node.modified_at, nowMs);
+      if (days === null || days < DORMANT_MIN_DAYS) return false;
+      if ((candidateCounts.get(node.id) || 0) < 1) return false;
+      return true;
+    })
+    .map((node) => {
+      const days = daysSince(node.modified_at, nowMs) || 0;
+      const age = ageFactor(days);
+      const centrality = centralityScore(node.id, node.id, degrees, p90);
+      const breakdown = {
+        novelty: 0,
+        distance: 0,
+        evidence: 0,
+        centrality,
+        structure: Math.min(1, 0.4 + age),
+        ageBonus: 0,
+        penalties: 0,
+      };
+      const total = weightedTotal(breakdown);
+      return {
+        type: "dormant" as const,
+        trust: "structural" as const,
+        sourceId: node.id,
+        targetId: node.id,
+        nodeId: node.id,
+        surpriseTerms: [],
+        score: total,
+        scoreBreakdown: {
+          ...breakdown,
+          total,
+        },
+        headline: "This note has been unmodified for a long time while discovery signals remain.",
+        structuralFacts: [
+          `Observed modified_at ${node.modified_at}; ${Math.floor(days)} days before this tour.`,
+          `${candidateCounts.get(node.id) || 0} candidate edge(s) still touch this note.`,
+        ],
+      };
+    });
+}
+
+function driftTrails(
+  graph: GraphDocument,
+  degrees: Map<string, number>,
+  p90: number,
+): ColdTrail[] {
+  const candidateCounts = new Map<string, number>();
+  candidateEdges(graph).forEach((edge) => {
+    candidateCounts.set(edge.source, (candidateCounts.get(edge.source) || 0) + 1);
+    candidateCounts.set(edge.target, (candidateCounts.get(edge.target) || 0) + 1);
+  });
+  const historyTrusted = graph.export_history?.claim_conflict === false;
+  const historyChanged = historyTrusted
+    ? graph.export_history?.node_content_hashes_changed || 0
+    : 0;
+  return graph.nodes
+    .filter((node) => {
+      const spanDays = daysFromTo(node.created_at, node.modified_at);
+      return (
+        spanDays !== null &&
+        spanDays >= DRIFT_MIN_DAYS &&
+        (candidateCounts.get(node.id) || 0) >= 1
+      );
+    })
+    .map((node) => {
+      const spanDays = daysFromTo(node.created_at, node.modified_at) || 0;
+      const centrality = centralityScore(node.id, node.id, degrees, p90);
+      const historyBonus = historyChanged > 0 ? 0.2 : 0;
+      const breakdown = {
+        novelty: 0,
+        distance: 0,
+        evidence: 0,
+        centrality,
+        structure: Math.min(1, 0.5 + historyBonus + ageFactor(spanDays) * 0.3),
+        ageBonus: 0,
+        penalties: 0,
+      };
+      const total = weightedTotal(breakdown);
+      const facts = [
+        `Observed created_at ${node.created_at} and modified_at ${node.modified_at} (${Math.floor(spanDays)} days apart).`,
+        `${candidateCounts.get(node.id) || 0} candidate edge(s) touch this note.`,
+      ];
+      if (historyTrusted && graph.export_history?.previous_content_hash) {
+        facts.push(
+          `Export history reports ${historyChanged} node content hash change(s) since previous_content_hash.`,
+        );
+      }
+      return {
+        type: "drift" as const,
+        trust: "structural" as const,
+        sourceId: node.id,
+        targetId: node.id,
+        nodeId: node.id,
+        surpriseTerms: [],
+        score: total,
+        scoreBreakdown: {
+          ...breakdown,
+          total,
+        },
+        headline: "This note's content window drifted far from its creation date.",
+        structuralFacts: facts,
       };
     });
 }
@@ -606,15 +902,19 @@ function applyStructuralPenalties(
   ) {
     penalties += 0.2;
   }
+  if (trail.nodeId && feedback.dismissedPairs.has(`node:${trail.nodeId}`)) {
+    penalties += 0.2;
+  }
   const breakdown = {
     novelty: trail.scoreBreakdown.novelty,
     distance: trail.scoreBreakdown.distance,
     evidence: trail.scoreBreakdown.evidence,
     centrality: trail.scoreBreakdown.centrality,
     structure: trail.scoreBreakdown.structure,
+    ageBonus: trail.scoreBreakdown.ageBonus,
     penalties,
   };
-  const total = weightedTotal(breakdown);
+  const total = Math.max(0, weightedTotal(breakdown) + breakdown.ageBonus);
   return {
     ...trail,
     score: total,
@@ -702,13 +1002,15 @@ function rescorePool(
   p90: number,
   interDomainCounts: Map<string, number>,
   nodes: Map<string, GraphNode>,
+  edgesById: Map<string, GraphEdge>,
+  nowMs: number,
 ): ColdTrail[] {
   const selectedKeys = new Set(selected.map((trail) => trailIdentity(trail)));
   const rescored: ColdTrail[] = [];
   for (const trail of pool) {
     if (selectedKeys.has(trailIdentity(trail))) continue;
     if (trail.trust === "candidate" && trail.edgeId) {
-      const edge = graph.edges.find((item) => item.id === trail.edgeId);
+      const edge = edgesById.get(trail.edgeId);
       if (!edge) continue;
       const rescoredTrail = scoreCandidateTrail(
         graph,
@@ -720,6 +1022,7 @@ function rescorePool(
         p90,
         interDomainCounts,
         nodes,
+        nowMs,
       );
       if (rescoredTrail) rescored.push(rescoredTrail);
     } else {
@@ -742,6 +1045,15 @@ function pickTrail(
 }
 
 function isStructuralTrail(trail: ColdTrail): boolean {
+  return (
+    trail.type === "bridge" ||
+    trail.type === "island" ||
+    trail.type === "dormant" ||
+    trail.type === "drift"
+  );
+}
+
+function isOpeningStructuralTrail(trail: ColdTrail): boolean {
   return trail.type === "bridge" || trail.type === "island";
 }
 
@@ -755,10 +1067,18 @@ function selectTourTrails(
   p95: number,
   interDomainCounts: Map<string, number>,
   eligibleDomains: Set<string>,
+  nowMs: number,
 ): ColdTrail[] {
   const selected: ColdTrail[] = [];
   const localFeedback = cloneFeedback(feedback);
   const adjacency = authoredAdjacency(graph);
+  const edgesById = edgeIndex(graph);
+  const reservedReinforced = [...pool]
+    .filter((trail) => trail.type === "reinforced")
+    .sort((a, b) => b.score - a.score)[0];
+  const reservedPair = reservedReinforced
+    ? pairKey(reservedReinforced.sourceId, reservedReinforced.targetId)
+    : null;
 
   const phases: Array<(trail: ColdTrail) => boolean> = [
     (trail) => trail.type === "bridge" || trail.type === "island",
@@ -785,8 +1105,23 @@ function selectTourTrails(
       p90,
       interDomainCounts,
       nodes,
+      edgesById,
+      nowMs,
     );
-    const eligible = rescored.filter((trail) => phase(trail) && isTrailEligible(trail, localFeedback, nodes, degrees, p95));
+    const eligible = rescored.filter((trail) => {
+      if (!phase(trail) || !isTrailEligible(trail, localFeedback, nodes, degrees, p95)) {
+        return false;
+      }
+      if (
+        reservedPair &&
+        slot < 5 &&
+        trail.sourceId !== trail.targetId &&
+        pairKey(trail.sourceId, trail.targetId) === reservedPair
+      ) {
+        return false;
+      }
+      return true;
+    });
     const chosen =
       slot === 4
         ? pickTrail(
@@ -796,7 +1131,14 @@ function selectTourTrails(
                 (domain) => (localFeedback.domainTouchCounts.get(domain) || 0) === 0,
               ),
           )
-        : pickTrail(eligible);
+        : slot === 5 && reservedReinforced
+          ? pickTrail(
+              eligible,
+              (trail) =>
+                trail.sourceId !== trail.targetId &&
+                pairKey(trail.sourceId, trail.targetId) === reservedPair,
+            ) || pickTrail(eligible)
+          : pickTrail(eligible);
     if (!chosen) continue;
     selected.push(chosen);
     applyTrailSelection(chosen, localFeedback, nodes);
@@ -813,6 +1155,8 @@ function selectTourTrails(
       p90,
       interDomainCounts,
       nodes,
+      edgesById,
+      nowMs,
     );
     const eligible = rescored.filter((trail) => isTrailEligible(trail, localFeedback, nodes, degrees, p95));
     if (!eligible.length) break;
@@ -846,8 +1190,10 @@ function eligibleDomainsInPool(
   p90: number,
   p95: number,
   interDomainCounts: Map<string, number>,
+  nowMs: number,
 ): Set<string> {
   const adjacency = authoredAdjacency(graph);
+  const edgesById = edgeIndex(graph);
   const rescored = rescorePool(
     pool,
     [],
@@ -858,6 +1204,8 @@ function eligibleDomainsInPool(
     p90,
     interDomainCounts,
     nodes,
+    edgesById,
+    nowMs,
   );
   const eligibleDomains = new Set<string>();
   rescored.forEach((trail) => {
@@ -879,6 +1227,7 @@ export function buildColdTrails(
     usedSurpriseTerms: new Set(),
     domainTouchCounts: new Map(),
   },
+  nowMs?: number,
 ): ColdTrailsResult {
   if (graph.nodes.length < 8) {
     return { status: "refused", reason: "graph_too_small", message: refusalMessage("graph_too_small") };
@@ -892,6 +1241,8 @@ export function buildColdTrails(
     };
   }
 
+  const referenceMs = referenceNowMs(graph, nowMs);
+  const scoringNowMs = referenceMs ?? 0;
   const nodes = nodeMap(graph);
   const adjacency = authoredAdjacency(graph);
   const degrees = degreeMap(graph);
@@ -899,34 +1250,49 @@ export function buildColdTrails(
   const p95 = percentile([...degrees.values()], 0.95);
   const interDomainCounts = interDomainAuthoredCounts(graph);
   const domains = domainSet(graph);
-  const notice = domains.size === 1 ? refusalMessage("single_domain") : undefined;
+  const notices: string[] = [];
+  if (domains.size === 1) notices.push(refusalMessage("single_domain"));
+  const includeCandidates = Boolean(graph.privacy?.includes_passage_text);
 
   const pool: ColdTrail[] = [
     ...bridgeTrails(graph, nodes, degrees, p90),
     ...islandTrails(graph, degrees, p90),
+    ...(referenceMs !== null ? dormantTrails(graph, degrees, p90, referenceMs) : []),
+    ...driftTrails(graph, degrees, p90),
   ];
 
-  candidates.forEach((edge) => {
-    const types = classifyCandidateEdge(graph, edge, adjacency, nodes, interDomainCounts);
-    types.forEach((type) => {
-      const trail = scoreCandidateTrail(
+  if (includeCandidates) {
+    candidates.forEach((edge) => {
+      const types = classifyCandidateEdge(
         graph,
         edge,
-        type,
-        feedback,
         adjacency,
-        degrees,
-        p90,
-        interDomainCounts,
         nodes,
+        interDomainCounts,
       );
-      if (trail) pool.push(trail);
+      types.forEach((type) => {
+        const trail = scoreCandidateTrail(
+          graph,
+          edge,
+          type,
+          feedback,
+          adjacency,
+          degrees,
+          p90,
+          interDomainCounts,
+          nodes,
+          scoringNowMs,
+        );
+        if (trail) pool.push(trail);
+      });
     });
-  });
+  } else {
+    notices.push("No passage text in this export; showing a structural-only tour.");
+  }
 
   if (
     !pool.some((trail) => trail.surpriseTerms.length >= 2) &&
-    !pool.some((trail) => trail.type === "bridge" || trail.type === "island")
+    !pool.some((trail) => isStructuralTrail(trail))
   ) {
     return {
       status: "refused",
@@ -944,6 +1310,7 @@ export function buildColdTrails(
     p90,
     p95,
     interDomainCounts,
+    scoringNowMs,
   );
 
   const selected = selectTourTrails(
@@ -956,6 +1323,7 @@ export function buildColdTrails(
     p95,
     interDomainCounts,
     eligibleDomains,
+    scoringNowMs,
   );
 
   if (!selected.length) {
@@ -966,8 +1334,8 @@ export function buildColdTrails(
     };
   }
 
-  const structuralSelected = selected.some((trail) => isStructuralTrail(trail));
-  if (!structuralSelected || !isStructuralTrail(selected[0])) {
+  const structuralSelected = selected.some((trail) => isOpeningStructuralTrail(trail));
+  if (!structuralSelected || !isOpeningStructuralTrail(selected[0])) {
     return {
       status: "refused",
       reason: "insufficient_eligible_trails",
@@ -986,9 +1354,13 @@ export function buildColdTrails(
     };
   }
 
+  if (selected.length < 3) {
+    notices.push(refusalMessage("insufficient_eligible_trails"));
+  }
+
   return {
     status: "ok",
     trails: selected,
-    notice,
+    notice: notices.length ? notices.join(" ") : undefined,
   };
 }

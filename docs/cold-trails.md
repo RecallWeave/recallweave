@@ -54,7 +54,8 @@ human review and an explicit trust design.
 
 ## Deterministically supportable trail types
 
-The first implementation should support five types:
+The first implementation supported five types. Timestamp-backed trails now bring
+the supported set to eight:
 
 | Type | Eligibility | Claim class |
 | --- | --- | --- |
@@ -63,10 +64,12 @@ The first implementation should support five types:
 | Bridge | A note has authored edges into at least two weakly connected domains | Structural fact |
 | Island | A note has degree at most one and at least two candidate edges | Structural fact |
 | Reinforced | Candidate has at least two independent signals | Structural fact plus weighted prompt |
+| Dormant | A note with valid `modified_at` at least 180 days old that still has candidate edges | Structural fact naming the observed timestamp |
+| Parallel invention | Candidate pair across domains with `created_at` within 14 days and at least two surprise terms | Structural timestamps plus lexical prompt |
+| Drift | A note whose `modified_at` is at least 90 days after `created_at`, still touched by candidates; mentions `export_history` change counts when present | Structural fact naming observed timestamps |
 
-Later, after `viewer.v2`, timestamps and export history can support Dormant,
-Parallel invention, and Drift trail types. These additions must state exactly
-which observed fields triggered them.
+All timestamp and history trail types must state exactly which observed fields
+triggered them.
 
 ## Surprise qualification
 
@@ -108,6 +111,10 @@ score =
   - penalties
 ```
 
+Age-relative trails (Dormant) and age bonuses use a single reference instant:
+validated graph `generated_at`, or an explicit `nowMs` override. Invalid or
+absent `generated_at` does not fall back to node timestamps; Dormant trails are
+omitted instead.
 - `novelty`: inverse authored-path proximity; `1.0` when no authored path
   exists.
 - `distance`: `0.0` for one domain, `0.6` for different routinely connected
@@ -131,9 +138,13 @@ renormalization:
 
 ```text
 age_factor = min(days_since_modified / 365, 1)
+age_bonus = 0.15 * age_factor
+score = weighted_total + age_bonus
 ```
 
 Age is applied to the older endpoint and is never described as importance.
+It is added after the weighted terms so it is not multiplied by the structure
+weight.
 
 ## Evidence floor
 

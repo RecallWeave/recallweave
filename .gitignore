@@ -69,3 +69,6 @@ Thumbs.db
 .codex-reviews/**
 !.codex-reviews/
 !.codex-reviews/review-*.md
+
+# Local uv lockfile (project uses pip/setuptools packaging)
+uv.lock

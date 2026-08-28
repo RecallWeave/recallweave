@@ -614,6 +614,7 @@ def build_index(
     max_candidates_per_note: int = 8,
     allow_in_vault: bool = False,
     force: bool = False,
+    policy_config_sha256: str | None = None,
 ) -> dict[str, Any]:
     vault = vault.expanduser().resolve()
     if not vault.is_dir():
@@ -672,14 +673,17 @@ def build_index(
     try:
         connection = connect(temporary)
         connection.executescript(SCHEMA)
+        meta_rows: list[tuple[str, str]] = [
+            ("application_id", APPLICATION_ID),
+            ("schema_version", SCHEMA_VERSION),
+            ("indexed_at", _utc_now()),
+            ("vault_fingerprint", "paths-relative-content-hashes-only"),
+        ]
+        if policy_config_sha256:
+            meta_rows.append(("policy_config_sha256", policy_config_sha256))
         connection.executemany(
             "INSERT INTO meta(key, value) VALUES (?, ?)",
-            [
-                ("application_id", APPLICATION_ID),
-                ("schema_version", SCHEMA_VERSION),
-                ("indexed_at", _utc_now()),
-                ("vault_fingerprint", "paths-relative-content-hashes-only"),
-            ],
+            meta_rows,
         )
         lookup = _insert_notes(connection, notes)
         explicit_edges, unresolved = _insert_explicit_edges(connection, notes, lookup)
