@@ -40,7 +40,13 @@ def _excerpt(value: str | None, limit: int) -> str:
 def _nullable_timestamp(value: object) -> str | None:
     if value is None:
         return None
-    text = str(value).strip()
+    if not isinstance(value, str):
+        text = str(value)
+    else:
+        text = value
+    if text != text.strip():
+        return None
+    text = text.strip()
     if not text:
         return None
     try:
@@ -51,7 +57,7 @@ def _nullable_timestamp(value: object) -> str | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        return None
     return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

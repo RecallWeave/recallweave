@@ -627,6 +627,9 @@ test("rejects non-UTC and malformed graph generated_at instead of preserving lab
 
   const offset = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00+00:00" }));
   assert.equal(offset.generated_at, "2026-08-28T00:00:00Z");
+
+  const fractional = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00.001Z" }));
+  assert.equal(fractional.generated_at, "2026-08-28T00:00:00.001Z");
 });
 
 test("ignores unsupported vault names and treats local generation as a source claim", () => {

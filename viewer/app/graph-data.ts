@@ -179,7 +179,7 @@ export function safeIsoTimestamp(value: unknown): string | null {
   ) {
     return null;
   }
-  return asUtc.toISOString().replace(/\.\d{3}Z$/u, "Z");
+  return asUtc.toISOString().replace(/\.000Z$/u, "Z");
 }
 
 export function safeVaultLabel(value: unknown): string {

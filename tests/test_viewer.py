@@ -15,6 +15,7 @@ from recallweave.index import build_index
 from recallweave.policy import IndexPolicy
 from recallweave.viewer import (
     VIEWER_SCHEMA_VERSION,
+    _nullable_timestamp,
     build_viewer_document,
     export_viewer_graph,
 )
@@ -467,6 +468,24 @@ class ViewerExportTest(unittest.TestCase):
         backup = Path(str(raised.exception).split("Backup retained at: ", 1)[1])
         self.assertEqual(output.read_text(encoding="utf-8"), "late competing file")
         self.assertEqual(backup.read_text(encoding="utf-8"), "approved old output")
+
+
+class NullableTimestampTest(unittest.TestCase):
+    def test_rejects_timezone_less_and_date_only_values(self) -> None:
+        self.assertIsNone(_nullable_timestamp("2026-01-01"))
+        self.assertIsNone(_nullable_timestamp("2026-01-01T12:00:00"))
+        self.assertIsNone(_nullable_timestamp("not-a-date"))
+        self.assertIsNone(_nullable_timestamp(" 2026-01-01T12:00:00Z "))
+
+    def test_accepts_explicit_utc_timestamps(self) -> None:
+        self.assertEqual(
+            _nullable_timestamp("2026-01-01T12:00:00Z"),
+            "2026-01-01T12:00:00Z",
+        )
+        self.assertEqual(
+            _nullable_timestamp("2026-01-01T12:00:00+00:00"),
+            "2026-01-01T12:00:00Z",
+        )
 
 
 if __name__ == "__main__":

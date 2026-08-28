@@ -759,7 +759,10 @@ function driftTrails(
     candidateCounts.set(edge.source, (candidateCounts.get(edge.source) || 0) + 1);
     candidateCounts.set(edge.target, (candidateCounts.get(edge.target) || 0) + 1);
   });
-  const historyChanged = graph.export_history?.node_content_hashes_changed || 0;
+  const historyTrusted = graph.export_history?.claim_conflict === false;
+  const historyChanged = historyTrusted
+    ? graph.export_history?.node_content_hashes_changed || 0
+    : 0;
   return graph.nodes
     .filter((node) => {
       const created = parseUtcTimestamp(node.created_at);
@@ -787,7 +790,7 @@ function driftTrails(
         `Observed created_at ${node.created_at} and modified_at ${node.modified_at} (${Math.floor(spanDays)} days apart).`,
         `${candidateCounts.get(node.id) || 0} candidate edge(s) touch this note.`,
       ];
-      if (graph.export_history?.previous_content_hash) {
+      if (historyTrusted && graph.export_history?.previous_content_hash) {
         facts.push(
           `Export history reports ${historyChanged} node content hash change(s) since previous_content_hash.`,
         );
@@ -1018,6 +1021,10 @@ function isStructuralTrail(trail: ColdTrail): boolean {
   );
 }
 
+function isOpeningStructuralTrail(trail: ColdTrail): boolean {
+  return trail.type === "bridge" || trail.type === "island";
+}
+
 function selectTourTrails(
   pool: ColdTrail[],
   graph: GraphDocument,
@@ -1042,11 +1049,7 @@ function selectTourTrails(
     : null;
 
   const phases: Array<(trail: ColdTrail) => boolean> = [
-    (trail) =>
-      trail.type === "bridge" ||
-      trail.type === "island" ||
-      trail.type === "dormant" ||
-      trail.type === "drift",
+    (trail) => trail.type === "bridge" || trail.type === "island",
     (trail) => trail.type === "unwritten_link" || trail.type === "distant_neighbors",
     (trail) => trail.type === "unwritten_link" || trail.type === "distant_neighbors",
     (trail) => {
@@ -1299,8 +1302,8 @@ export function buildColdTrails(
     };
   }
 
-  const structuralSelected = selected.some((trail) => isStructuralTrail(trail));
-  if (!structuralSelected || !isStructuralTrail(selected[0])) {
+  const structuralSelected = selected.some((trail) => isOpeningStructuralTrail(trail));
+  if (!structuralSelected || !isOpeningStructuralTrail(selected[0])) {
     return {
       status: "refused",
       reason: "insufficient_eligible_trails",

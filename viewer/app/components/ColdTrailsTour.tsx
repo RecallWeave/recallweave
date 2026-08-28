@@ -187,7 +187,7 @@ export function ColdTrailsTour({
 
   function showAnother() {
     if (!current) return;
-    feedbackRef.current.shownPairs.add(trailPairKey(current));
+    trails.forEach((trail) => feedbackRef.current.shownPairs.add(trailPairKey(trail)));
     const replacement = buildColdTrails(graph, feedbackRef.current);
     if (replacement.status !== "ok" || !replacement.trails.length) {
       onStatus("No alternate trail qualified.");
@@ -238,9 +238,13 @@ export function ColdTrailsTour({
       return;
     }
     const target = event.target as HTMLElement | null;
-    if (target?.closest("button, a, input, select, textarea, [contenteditable='true']")) {
-      return;
-    }
+    const typingField = target?.closest("input, select, textarea, [contenteditable='true']");
+    if (typingField) return;
+    const activatesControl =
+      event.key === " " || event.key === "Enter"
+        ? target?.closest("button, a")
+        : null;
+    if (activatesControl) return;
     if (!current || result?.status !== "ok") return;
     if (event.key === "ArrowRight" || event.key === " ") {
       event.preventDefault();
