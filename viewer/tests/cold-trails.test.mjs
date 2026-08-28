@@ -303,6 +303,58 @@ test("detects island trails for low-degree nodes with multiple candidates", () =
   assert.equal(island?.trust, "structural");
 });
 
+test("surprise qualification ignores locale-specific casing rules", () => {
+  const fixture = graph({
+    nodes: Array.from({ length: 8 }, (_, index) => ({
+      id: `note-${index}.md`,
+      title: index === 2 ? "TITLE" : `Note ${index}`,
+      path: `note-${index}.md`,
+      domain: "Shared",
+    })),
+    edges: [
+      { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+      {
+        id: "c1",
+        source: "note-2.md",
+        target: "note-3.md",
+        verified: false,
+        evidence: citedEvidence("note-2.md", "note-3.md", {
+          signals: { lexical_terms: ["title", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "note-4.md",
+        target: "note-5.md",
+        verified: false,
+        evidence: citedEvidence("note-4.md", "note-5.md", {
+          signals: { lexical_terms: ["phase", "ripple", "matrix", "tensor"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "note-6.md",
+        target: "note-7.md",
+        verified: false,
+        evidence: citedEvidence("note-6.md", "note-7.md", {
+          signals: { lexical_terms: ["phase", "ripple", "theta", "tensor"] },
+        }),
+      },
+    ],
+  });
+  const english = buildColdTrails(fixture);
+  const prior = Intl.DateTimeFormat.prototype.resolvedOptions;
+  Intl.DateTimeFormat.prototype.resolvedOptions = function resolvedOptions() {
+    return { ...prior.call(this), locale: "tr-TR" };
+  };
+  const turkish = buildColdTrails(fixture);
+  Intl.DateTimeFormat.prototype.resolvedOptions = prior;
+  assert.deepEqual(
+    english.status === "ok" ? english.trails.map((trail) => trail.edgeId) : english,
+    turkish.status === "ok" ? turkish.trails.map((trail) => trail.edgeId) : turkish,
+  );
+});
+
 test("excludes candidates with one-sided or mismatched citations", () => {
   const nodes = Array.from({ length: 8 }, (_, index) => ({
     id: `note-${index}.md`,

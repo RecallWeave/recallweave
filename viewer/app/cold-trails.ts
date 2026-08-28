@@ -180,7 +180,7 @@ export function exportSavedTrailsMarkdown(graph: GraphDocument, trails: ColdTrai
 function tokenize(value: string): Set<string> {
   return new Set(
     value
-      .toLocaleLowerCase()
+      .toLowerCase()
       .split(/[^a-z0-9]+/u)
       .map((token) => token.trim())
       .filter((token) => token.length > 1),
@@ -204,7 +204,7 @@ function surpriseTerms(source: GraphNode, target: GraphNode, edge: GraphEdge): s
   const blocked = new Set<string>();
   nodeTokens(source).forEach((token) => blocked.add(token));
   nodeTokens(target).forEach((token) => blocked.add(token));
-  return sharedTerms(edge).filter((term) => !blocked.has(term.toLocaleLowerCase()));
+  return sharedTerms(edge).filter((term) => !blocked.has(term.toLowerCase()));
 }
 
 function authoredAdjacency(graph: GraphDocument): Map<string, Set<string>> {

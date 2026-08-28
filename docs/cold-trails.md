@@ -112,8 +112,8 @@ score =
   exists.
 - `distance`: `0.0` for one domain, `0.6` for different routinely connected
   domains, and `1.0` for different domains with at most one existing crossing.
-- `evidence`: `0.4 * min(shared_terms / 6, 1)`, plus `0.3` for a cited source
-  passage, `0.2` for shared tags, and
+- `evidence`: `0.4 * min(shared_terms / 6, 1)`, plus `0.3` when both endpoint
+  passages are cited, `0.2` for shared tags, and
   `0.1 * min(mutual_neighbors / 3, 1)`.
 - `centrality`: the larger endpoint degree divided by the 90th percentile,
   capped at `1.0`. This is connectedness, not importance.
@@ -140,8 +140,9 @@ Age is applied to the older endpoint and is never described as importance.
 A candidate trail is eligible only when:
 
 - both endpoints exist;
-- it has at least three shared terms, a cited source passage, or shared tags;
-- its citation matches `path:line` or `path:line-line`;
+- it has at least three shared terms, bilateral cited passages, or shared tags;
+- both endpoint citations match `path:line` or `path:line-line` and their
+  respective node paths;
 - evidence score is at least `0.25`;
 - it has at least two surprise terms.
 
