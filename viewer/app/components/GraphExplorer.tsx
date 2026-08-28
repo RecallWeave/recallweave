@@ -17,7 +17,7 @@ import {
   MAX_FILE_BYTES,
   VIEWER_SCHEMA_V2,
   citationPath,
-  formatExportHistoryDetail,
+  formatAtlasProvenanceClaims,
   importDiagnosticMessage,
   normalizeGraph,
 } from "../graph-data";
@@ -336,18 +336,7 @@ export function GraphExplorer() {
   const privacyConflictDetail = graph?.privacy.metadata_conflict
     ? `Declared profile: ${graph.privacy.declared_export_profile}; inspected content: ${graph.privacy.export_profile}.`
     : "";
-  const exportHistoryDetail = graph?.export_history
-    ? formatExportHistoryDetail(graph.export_history)
-    : "";
-  const provenanceClaims = graph?.schema_version === VIEWER_SCHEMA_V2
-    ? [
-        graph.vault_label_claim ? `vault label claim: ${graph.vault_label_claim}` : "",
-        graph.policy_config_sha256_claim
-          ? "policy digest claim present"
-          : "",
-        exportHistoryDetail ? `export history claim: ${exportHistoryDetail}` : "",
-      ].filter(Boolean).join(" · ")
-    : "";
+  const provenanceClaims = graph ? formatAtlasProvenanceClaims(graph) : "";
 
   return (
     <div className="app-shell">

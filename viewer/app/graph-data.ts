@@ -103,6 +103,21 @@ export type GraphDocument = {
   import_diagnostics: ImportDiagnostics;
 };
 
+/** Index-claims line Atlas shows for viewer.v2 graphs. */
+export function formatAtlasProvenanceClaims(graph: GraphDocument): string {
+  if (graph.schema_version !== VIEWER_SCHEMA_V2) return "";
+  const exportHistoryDetail = graph.export_history
+    ? formatExportHistoryDetail(graph.export_history)
+    : "";
+  return [
+    graph.vault_label_claim ? `vault label claim: ${graph.vault_label_claim}` : "",
+    graph.policy_config_sha256_claim ? "policy digest claim present" : "",
+    exportHistoryDetail ? `export history claim: ${exportHistoryDetail}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export const MAX_NODES = 5000;
 export const MAX_EDGES = 12000;
 export const MAX_FILE_BYTES = 15 * 1024 * 1024;

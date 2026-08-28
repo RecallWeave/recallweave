@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   citationPath,
+  formatAtlasProvenanceClaims,
   formatExportHistoryDetail,
   importDiagnosticMessage,
   normalizeGraph,
@@ -687,13 +688,13 @@ test("formatExportHistoryDetail includes conflict wording only when claims disag
   assert.match(conflicted, /export history conflicts with loaded graph/);
 });
 
-test("omitting previous_content_hash claims conflict without relying on implementation spelling", () => {
-  const withNull = normalizeGraph({
+test("formatAtlasProvenanceClaims surfaces conflicted and valid export history", () => {
+  const valid = normalizeGraph({
     schema_version: VIEWER_SCHEMA_V2,
     nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
     edges: [],
     export_history: {
-      export_id: "explicit-null",
+      export_id: "export-ok",
       previous_content_hash: null,
       node_content_hashes_changed: 0,
       node_content_hashes_unchanged: 0,
@@ -701,7 +702,28 @@ test("omitting previous_content_hash claims conflict without relying on implemen
       nodes_removed: 0,
     },
   });
-  assert.equal(withNull.export_history?.claim_conflict, false);
+  const validClaims = formatAtlasProvenanceClaims(valid);
+  assert.match(validClaims, /export history claim:/);
+  assert.match(validClaims, /export-ok/);
+  assert.match(validClaims, /first export claim/);
+  assert.doesNotMatch(validClaims, /export history conflicts with loaded graph/);
+
+  const conflicted = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+    export_history: {
+      export_id: "export-bad",
+      previous_content_hash: "b".repeat(64),
+      node_content_hashes_changed: 9,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 0,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(conflicted.export_history?.claim_conflict, true);
+  const conflictClaims = formatAtlasProvenanceClaims(conflicted);
+  assert.match(conflictClaims, /export history conflicts with loaded graph/);
 
   const omitted = normalizeGraph({
     schema_version: VIEWER_SCHEMA_V2,
@@ -715,12 +737,23 @@ test("omitting previous_content_hash claims conflict without relying on implemen
       nodes_removed: 0,
     },
   });
-  assert.equal(omitted.export_history?.previous_content_hash, null);
-  assert.equal(omitted.export_history?.claim_conflict, true);
   assert.match(
-    formatExportHistoryDetail(omitted.export_history),
+    formatAtlasProvenanceClaims(omitted),
     /export history conflicts with loaded graph/,
   );
+});
+
+test("GraphExplorer wires formatAtlasProvenanceClaims into provenance chrome", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const sourcePath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../app/components/GraphExplorer.tsx",
+  );
+  const source = await readFile(sourcePath, "utf8");
+  assert.match(source, /formatAtlasProvenanceClaims\s*\(/);
+  assert.match(source, /privacy-provenance-detail/);
 });
 
 test("citationPath extracts the note path from validated citations", () => {

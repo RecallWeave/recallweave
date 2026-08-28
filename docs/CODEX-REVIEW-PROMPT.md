@@ -95,13 +95,12 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 31 — post-PR #9 stewardship on `foundry/steward` (fresh cut `07ba52f` from
-`37eea2a`): extract `formatExportHistoryDetail` for Atlas provenance chrome;
-behavioral tests for conflicted vs valid history and omitted
-`previous_content_hash` without source-regex guards. Base: merged PR #9 squash
-`37eea2a` on `main`.
+Cycle 31b — remediations after cycle-31 PASS WITH FIXES Medium
+(`review-20260828T164935Z.md`): extract `formatAtlasProvenanceClaims` used by
+GraphExplorer; behavioral coverage for valid/conflicted/omitted-prior history
+plus a wiring mutation check that GraphExplorer calls the helper. Prior tip
+`75398f9`. Base: merged PR #9 squash `37eea2a` on `main`.
 
-Suite target **511** Python OK (1 skip) plus viewer JS tests (`npm test` in
-`viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only when remaining
-findings are Medium/Low with no Critical/High. Max 3 review turns this cycle.
+Suite target **511** Python OK (1 skip) plus viewer JS tests. Prefer clean PASS;
+PASS WITH FIXES only for remaining Low. Max 3 review turns (this is turn 2).
 <!-- CYCLE-CONTEXT-END -->
