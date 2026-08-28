@@ -234,6 +234,40 @@ class ViewerExportTest(unittest.TestCase):
             "export_history": history,
         }
         self.assertIsNone(_valid_previous_viewer_nodes(empty_missing_edges))
+        for omitted in (
+            "export_id",
+            "previous_content_hash",
+            "node_content_hashes_changed",
+            "node_content_hashes_unchanged",
+            "nodes_added",
+            "nodes_removed",
+        ):
+            incomplete_history = dict(history)
+            del incomplete_history[omitted]
+            incomplete = {
+                "schema_version": VIEWER_SCHEMA_VERSION,
+                "nodes": [
+                    {
+                        "id": "a.md",
+                        "title": "A",
+                        "path": "a.md",
+                        "content_hash": "a" * 64,
+                    }
+                ],
+                "edges": [],
+                "export_history": incomplete_history,
+            }
+            self.assertIsNone(
+                _valid_previous_viewer_nodes(incomplete),
+                msg=f"expected reject when export_history omits {omitted}",
+            )
+            output.write_text(json.dumps(incomplete), encoding="utf-8")
+            export_viewer_graph(self.database, output, force=True)
+            forced = json.loads(output.read_text(encoding="utf-8"))
+            self.assertIsNone(
+                forced["export_history"]["previous_content_hash"],
+                msg=f"forced replace must ignore prior missing {omitted}",
+            )
 
     def test_valid_empty_prior_export_is_used_as_history(self) -> None:
         empty_prior = {

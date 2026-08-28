@@ -95,12 +95,12 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 29c — remediations after cycle-29b FAIL (`review-20260828T132545Z.md`):
-require predecessor `edges` list and v2 `export_history` contract; producer-shaped
-empty-prior fixture; track review verdicts. Prior tips `3369200`/`aacb3b6`
-retained. Base: merged PR #7 squash `1fd322a` on `main`.
+Cycle 29d — remediations after cycle-29c FAIL (`review-20260828T133710Z.md`):
+require every `export_history` key present (including nullable
+`previous_content_hash`); field-omission + forced-replace regression tests.
+Prior tip `ab2eb98`. Base: merged PR #7 squash `1fd322a` on `main`.
 
-Suite target **511+** Python OK (1 skip) plus viewer JS tests (`npm test` in
+Suite target **511** Python OK (1 skip) plus viewer JS tests (`npm test` in
 `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only when remaining
 findings are Medium/Low with no Critical/High security, privacy,
 evidence-integrity, or reproducibility defect.

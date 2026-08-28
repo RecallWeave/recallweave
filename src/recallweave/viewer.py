@@ -195,10 +195,20 @@ def _valid_predecessor_content_hash(value: object) -> bool:
 def _valid_predecessor_export_history(value: object) -> bool:
     if not isinstance(value, dict):
         return False
-    export_id = value.get("export_id")
+    required_keys = (
+        "export_id",
+        "previous_content_hash",
+        "node_content_hashes_changed",
+        "node_content_hashes_unchanged",
+        "nodes_added",
+        "nodes_removed",
+    )
+    if any(key not in value for key in required_keys):
+        return False
+    export_id = value["export_id"]
     if not isinstance(export_id, str) or not export_id.strip():
         return False
-    if not _valid_predecessor_content_hash(value.get("previous_content_hash")):
+    if not _valid_predecessor_content_hash(value["previous_content_hash"]):
         return False
     for field in (
         "node_content_hashes_changed",
@@ -206,7 +216,7 @@ def _valid_predecessor_export_history(value: object) -> bool:
         "nodes_added",
         "nodes_removed",
     ):
-        count = value.get(field)
+        count = value[field]
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             return False
     return True
