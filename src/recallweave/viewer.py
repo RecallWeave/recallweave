@@ -58,7 +58,8 @@ def _nullable_timestamp(value: object) -> str | None:
         return None
     if parsed.tzinfo is None:
         return None
-    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    utc = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return utc.isoformat() + "Z"
 
 
 def _content_hash(value: object) -> str | None:

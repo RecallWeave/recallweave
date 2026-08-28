@@ -487,6 +487,20 @@ class NullableTimestampTest(unittest.TestCase):
             "2026-01-01T12:00:00Z",
         )
 
+    def test_preserves_nonzero_fractional_seconds(self) -> None:
+        self.assertEqual(
+            _nullable_timestamp("2026-06-15T00:00:00.001Z"),
+            "2026-06-15T00:00:00.001000Z",
+        )
+        self.assertEqual(
+            _nullable_timestamp("2026-01-01T01:00:00.123+01:00"),
+            "2026-01-01T00:00:00.123000Z",
+        )
+        self.assertEqual(
+            _nullable_timestamp("2026-01-01T00:00:00.999999+00:00"),
+            "2026-01-01T00:00:00.999999Z",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -138,9 +138,13 @@ renormalization:
 
 ```text
 age_factor = min(days_since_modified / 365, 1)
+age_bonus = 0.15 * age_factor
+score = weighted_total + age_bonus
 ```
 
 Age is applied to the older endpoint and is never described as importance.
+It is added after the weighted terms so it is not multiplied by the structure
+weight.
 
 ## Evidence floor
 

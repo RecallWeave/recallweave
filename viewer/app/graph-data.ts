@@ -165,20 +165,16 @@ export function safeIsoTimestamp(value: unknown): string | null {
   const hour = Number(match[4]);
   const minute = Number(match[5]);
   const second = Number(match[6]);
-  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return null;
+  if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  if (day > daysInMonth) return null;
   const parsed = Date.parse(cleaned);
   if (!Number.isFinite(parsed)) return null;
   const asUtc = new Date(parsed);
-  if (
-    asUtc.getUTCFullYear() !== year ||
-    asUtc.getUTCMonth() + 1 !== month ||
-    asUtc.getUTCDate() !== day ||
-    asUtc.getUTCHours() !== hour ||
-    asUtc.getUTCMinutes() !== minute ||
-    asUtc.getUTCSeconds() !== second
-  ) {
-    return null;
-  }
+  // Canonicalize the parsed instant to UTC. Do not require the source wall-clock
+  // components to equal UTC components — nonzero offsets would always fail that.
   return asUtc.toISOString().replace(/\.000Z$/u, "Z");
 }
 
@@ -282,7 +278,7 @@ function parseExportHistory(
     malformedCounters ||
     priorMalformed ||
     (previous_content_hash === null
-      ? added !== totalNodes || overlapHashes !== 0
+      ? added !== totalNodes || overlapHashes !== 0 || removed !== 0
       : overlapHashes + added !== totalNodes);
   return {
     export_id,

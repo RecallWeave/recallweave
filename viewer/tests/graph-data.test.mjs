@@ -554,6 +554,26 @@ test("flags subsequent export with missing overlap counters", () => {
   assert.equal(normalized.export_history?.claim_conflict, true);
 });
 
+test("flags first-export history that claims removals", () => {
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) },
+      { id: "b.md", title: "B", path: "b.md", content_hash: "b".repeat(64) },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "first-export",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 2,
+      nodes_removed: 1,
+    },
+  });
+  assert.equal(normalized.export_history?.claim_conflict, true);
+});
+
 test("accepts producer-shaped first export history", () => {
   const normalized = normalizeGraph({
     schema_version: VIEWER_SCHEMA_V2,
@@ -630,6 +650,24 @@ test("rejects non-UTC and malformed graph generated_at instead of preserving lab
 
   const fractional = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00.001Z" }));
   assert.equal(fractional.generated_at, "2026-08-28T00:00:00.001Z");
+
+  const offsetNodes = normalizeGraph(
+    graph({
+      schema_version: VIEWER_SCHEMA_V2,
+      nodes: [
+        {
+          id: "a.md",
+          title: "A",
+          path: "a.md",
+          created_at: "2026-01-02T03:04:05+02:00",
+          modified_at: "2026-01-02T04:04:05+02:00",
+        },
+        { id: "b.md", title: "B", path: "b.md" },
+      ],
+    }),
+  );
+  assert.equal(offsetNodes.nodes[0].created_at, "2026-01-02T01:04:05Z");
+  assert.equal(offsetNodes.nodes[0].modified_at, "2026-01-02T02:04:05Z");
 });
 
 test("ignores unsupported vault names and treats local generation as a source claim", () => {

@@ -385,17 +385,20 @@ function interDomainAuthoredCounts(graph: GraphDocument): Map<string, number> {
 function degreeMap(graph: GraphDocument): Map<string, number> {
   const degrees = new Map<string, number>();
   graph.nodes.forEach((node) => degrees.set(node.id, 0));
-  graph.edges.forEach((edge) => {
-    degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1);
-    degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1);
-  });
+  graph.edges
+    .filter((edge) => edge.verified)
+    .forEach((edge) => {
+      degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1);
+      degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1);
+    });
   return degrees;
 }
 
 function percentile(values: number[], ratio: number): number {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.min(sorted.length - 1, Math.floor(ratio * sorted.length));
+  // Linear index into [0, n-1] so small graphs keep a cutoff below the max.
+  const index = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio));
   return sorted[index];
 }
 
@@ -491,10 +494,11 @@ function scoreCandidateTrail(
     distance,
     evidence,
     centrality,
-    structure: Math.min(1, structure + ageBonus),
+    structure,
     penalties,
   };
-  const total = weightedTotal(breakdown);
+  // Age contributes up to 0.15 outside the weighted structure term.
+  const total = Math.max(0, weightedTotal(breakdown) + ageBonus);
 
   return {
     type,
