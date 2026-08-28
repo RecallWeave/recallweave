@@ -574,6 +574,26 @@ test("accepts producer-shaped first export history", () => {
   assert.equal(normalized.export_history?.claim_conflict, false);
 });
 
+test("flags malformed export-history counters instead of coercing them", () => {
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) },
+      { id: "b.md", title: "B", path: "b.md", content_hash: "b".repeat(64) },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "malformed-export",
+      previous_content_hash: null,
+      node_content_hashes_changed: "0",
+      node_content_hashes_unchanged: -1,
+      nodes_added: 2,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(normalized.export_history?.claim_conflict, true);
+});
+
 test("citationPath extracts the note path from validated citations", () => {
   assert.equal(citationPath("Folder/Note.md:12"), "Folder/Note.md");
   assert.equal(citationPath("Folder/Note.md:12-18"), "Folder/Note.md");

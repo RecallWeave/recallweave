@@ -829,3 +829,186 @@ test("reported scores match the weighted scoring formula", () => {
     assert.equal(trail.score, expected);
   }
 });
+
+test("successful tours satisfy aggregate selection invariants", () => {
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "only-b.md", title: "Only B", path: "only-b.md", domain: "Only" },
+      { id: "only-c.md", title: "Only C", path: "only-c.md", domain: "Only" },
+      { id: "only-d.md", title: "Only D", path: "only-d.md", domain: "Only" },
+      { id: "only-e.md", title: "Only E", path: "only-e.md", domain: "Only" },
+      { id: "only-f.md", title: "Only F", path: "only-f.md", domain: "Only" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "leaf.md", verified: true },
+      {
+        id: "c1",
+        source: "only-b.md",
+        target: "only-c.md",
+        verified: false,
+        evidence: citedEvidence("only-b.md", "only-c.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "only-d.md",
+        target: "only-e.md",
+        verified: false,
+        evidence: citedEvidence("only-d.md", "only-e.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "only-f.md",
+        target: "edge.md",
+        verified: false,
+        evidence: citedEvidence("only-f.md", "edge.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(isStructuralTrail(result.trails[0]));
+  const typeCounts = new Map();
+  const domainTouches = new Map();
+  const usedNodes = new Set();
+  for (const trail of result.trails) {
+    typeCounts.set(trail.type, (typeCounts.get(trail.type) || 0) + 1);
+    assert.ok((typeCounts.get(trail.type) || 0) <= 2);
+    const endpoints = trail.nodeId ? [trail.nodeId] : [trail.sourceId, trail.targetId];
+    for (const id of endpoints) {
+      assert.ok(!usedNodes.has(id), `node ${id} reused`);
+      usedNodes.add(id);
+    }
+    const domains = new Set(
+      endpoints.map((id) => {
+        const node = fixture.nodes.find((item) => item.id === id);
+        return node?.domain || "Unclassified";
+      }),
+    );
+    for (const domain of domains) {
+      domainTouches.set(domain, (domainTouches.get(domain) || 0) + 1);
+      assert.ok(domainTouches.get(domain) <= 2);
+    }
+  }
+});
+
+test("omits candidate trails when the export has no passage text", () => {
+  const fixture = graph({
+    privacy: {
+      export_profile: "graph_metadata_and_note_derived_terms",
+      metadata_only: false,
+      includes_excerpts: false,
+      includes_passage_text: false,
+      includes_note_derived_terms: true,
+      includes_paths_titles_tags: true,
+    },
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Edge" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Core" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Edge" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "leaf.md", verified: true },
+      {
+        id: "c1",
+        source: "n3.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("n3.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "n5.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("n5.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "leaf.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "leaf.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(result.trails.every((trail) => trail.trust === "structural"));
+  assert.match(result.notice ?? "", /structural-only/i);
+});
+
+test("counts same-domain endpoint trails once against the domain touch limit", () => {
+  const result = buildColdTrails(
+    graph({
+      nodes: Array.from({ length: 8 }, (_, index) => ({
+        id: `note-${index}.md`,
+        title: `Note ${index}`,
+        path: `note-${index}.md`,
+        domain: "Only",
+      })),
+      edges: [
+        { id: "auth", source: "note-0.md", target: "note-1.md", verified: true },
+        {
+          id: "c0",
+          source: "note-2.md",
+          target: "note-4.md",
+          verified: false,
+          evidence: citedEvidence("note-2.md", "note-4.md", {
+            signals: { lexical_terms: ["orbit", "signal", "delta", "phase"] },
+          }),
+        },
+        {
+          id: "c1",
+          source: "note-2.md",
+          target: "note-3.md",
+          verified: false,
+          evidence: citedEvidence("note-2.md", "note-3.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c2",
+          source: "note-5.md",
+          target: "note-6.md",
+          verified: false,
+          evidence: citedEvidence("note-5.md", "note-6.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "note-6.md",
+          target: "note-7.md",
+          verified: false,
+          evidence: citedEvidence("note-6.md", "note-7.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "tensor", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(result.status, "ok");
+  assert.ok(result.trails.length >= 2);
+});
