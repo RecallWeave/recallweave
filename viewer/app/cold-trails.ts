@@ -754,7 +754,7 @@ function selectTourTrails(
   p90: number,
   p95: number,
   interDomainCounts: Map<string, number>,
-  domains: Set<string>,
+  eligibleDomains: Set<string>,
 ): ColdTrail[] {
   const selected: ColdTrail[] = [];
   const localFeedback = cloneFeedback(feedback);
@@ -819,7 +819,7 @@ function selectTourTrails(
     const fillEligible = eligible.filter((trail) => !isStructuralTrail(trail));
     if (!fillEligible.length) break;
     let chosen = fillEligible[0];
-    if (domains.size >= 3) {
+    if (eligibleDomains.size >= 3) {
       const covered = new Set(
         selected.flatMap((trail) => touchedDomainsForTrail(trail, nodes)),
       );
@@ -835,6 +835,37 @@ function selectTourTrails(
   }
 
   return selected;
+}
+
+function eligibleDomainsInPool(
+  pool: ColdTrail[],
+  graph: GraphDocument,
+  feedback: ColdTrailsFeedback,
+  nodes: Map<string, GraphNode>,
+  degrees: Map<string, number>,
+  p90: number,
+  p95: number,
+  interDomainCounts: Map<string, number>,
+): Set<string> {
+  const adjacency = authoredAdjacency(graph);
+  const rescored = rescorePool(
+    pool,
+    [],
+    graph,
+    feedback,
+    adjacency,
+    degrees,
+    p90,
+    interDomainCounts,
+    nodes,
+  );
+  const eligibleDomains = new Set<string>();
+  rescored.forEach((trail) => {
+    if (isTrailEligible(trail, feedback, nodes, degrees, p95)) {
+      touchedDomainsForTrail(trail, nodes).forEach((domain) => eligibleDomains.add(domain));
+    }
+  });
+  return eligibleDomains;
 }
 
 export function buildColdTrails(
@@ -904,6 +935,17 @@ export function buildColdTrails(
     };
   }
 
+  const eligibleDomains = eligibleDomainsInPool(
+    pool,
+    graph,
+    feedback,
+    nodes,
+    degrees,
+    p90,
+    p95,
+    interDomainCounts,
+  );
+
   const selected = selectTourTrails(
     pool,
     graph,
@@ -913,7 +955,7 @@ export function buildColdTrails(
     p90,
     p95,
     interDomainCounts,
-    domains,
+    eligibleDomains,
   );
 
   if (!selected.length) {
@@ -933,14 +975,10 @@ export function buildColdTrails(
     };
   }
 
-  const poolDomains = new Set<string>();
-  pool.forEach((trail) => {
-    touchedDomainsForTrail(trail, nodes).forEach((domain) => poolDomains.add(domain));
-  });
   const coveredDomains = new Set(
     selected.flatMap((trail) => touchedDomainsForTrail(trail, nodes)),
   );
-  if (poolDomains.size >= 3 && coveredDomains.size < 3) {
+  if (eligibleDomains.size >= 3 && coveredDomains.size < 3) {
     return {
       status: "refused",
       reason: "insufficient_eligible_trails",

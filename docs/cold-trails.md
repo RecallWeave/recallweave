@@ -156,7 +156,7 @@ Select greedily and rescore after every choice:
 - six trails by default;
 - at most two of any trail type;
 - at most two touching one domain;
-- at least three domains when the graph has three or more;
+- at least three domains when three or more domains are represented by eligible trails;
 - at least one Bridge or Island structural trail;
 - no node appears twice;
 - nodes above the 95th degree percentile are ineligible except for Bridge.
