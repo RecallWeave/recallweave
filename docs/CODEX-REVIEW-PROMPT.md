@@ -95,13 +95,12 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 29b — remediations after cycle-29 FAIL (`review-20260828T131251Z.md`):
-harden `_valid_previous_viewer_nodes` (required id/title/path, lowercase hex
-SHA-256 or null content_hash, accept valid empty node lists); tighten Parallel
-co-typing test via `classifyCandidateEdgeTypes`. Prior cycle-29 work on tip
-`aacb3b6` retained. Base: merged PR #7 squash `1fd322a` on `main`.
+Cycle 29c — remediations after cycle-29b FAIL (`review-20260828T132545Z.md`):
+require predecessor `edges` list and v2 `export_history` contract; producer-shaped
+empty-prior fixture; track review verdicts. Prior tips `3369200`/`aacb3b6`
+retained. Base: merged PR #7 squash `1fd322a` on `main`.
 
-Suite target **510+** Python OK (1 skip) plus viewer JS tests (`npm test` in
+Suite target **511+** Python OK (1 skip) plus viewer JS tests (`npm test` in
 `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only when remaining
 findings are Medium/Low with no Critical/High security, privacy,
 evidence-integrity, or reproducibility defect.

@@ -133,6 +133,14 @@ class ViewerExportTest(unittest.TestCase):
     def test_malformed_prior_export_is_not_used_as_history(self) -> None:
         output = Path(self.temporary.name) / "malformed-prior.json"
         export_viewer_graph(self.database, output)
+        history = {
+            "export_id": "prior-export",
+            "previous_content_hash": None,
+            "node_content_hashes_changed": 0,
+            "node_content_hashes_unchanged": 0,
+            "nodes_added": 0,
+            "nodes_removed": 0,
+        }
         malformed = {
             "schema_version": VIEWER_SCHEMA_VERSION,
             "nodes": [
@@ -141,6 +149,7 @@ class ViewerExportTest(unittest.TestCase):
                 {"id": "dup.md", "title": "Dup2", "path": "dup.md", "content_hash": "b" * 64},
             ],
             "edges": [],
+            "export_history": history,
         }
         output.write_text(json.dumps(malformed), encoding="utf-8")
         export_viewer_graph(self.database, output, force=True)
@@ -151,12 +160,14 @@ class ViewerExportTest(unittest.TestCase):
             "schema_version": VIEWER_SCHEMA_VERSION,
             "nodes": [None, {"id": 12}],
             "edges": [],
+            "export_history": history,
         }
         self.assertIsNone(_valid_previous_viewer_nodes(emptyish))
         missing_fields = {
             "schema_version": VIEWER_SCHEMA_VERSION,
             "nodes": [{"id": "a.md"}],
             "edges": [],
+            "export_history": history,
         }
         self.assertIsNone(_valid_previous_viewer_nodes(missing_fields))
         bad_hashes = [
@@ -178,6 +189,7 @@ class ViewerExportTest(unittest.TestCase):
                     }
                 ],
                 "edges": [],
+                "export_history": history,
             }
             self.assertIsNone(
                 _valid_previous_viewer_nodes(bad_hash),
@@ -187,14 +199,68 @@ class ViewerExportTest(unittest.TestCase):
             "schema_version": VIEWER_SCHEMA_VERSION,
             "nodes": [{"id": "a.md", "title": "A", "path": "a.md"}],
             "edges": [],
+            "export_history": history,
         }
         self.assertIsNone(_valid_previous_viewer_nodes(missing_hash_key))
+        missing_edges = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "a.md",
+                    "title": "A",
+                    "path": "a.md",
+                    "content_hash": "a" * 64,
+                }
+            ],
+            "export_history": history,
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(missing_edges))
+        missing_history = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "a.md",
+                    "title": "A",
+                    "path": "a.md",
+                    "content_hash": "a" * 64,
+                }
+            ],
+            "edges": [],
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(missing_history))
+        empty_missing_edges = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [],
+            "export_history": history,
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(empty_missing_edges))
 
     def test_valid_empty_prior_export_is_used_as_history(self) -> None:
         empty_prior = {
             "schema_version": VIEWER_SCHEMA_VERSION,
+            "title": "Empty predecessor",
+            "generated_at": "2026-08-01T00:00:00+00:00",
             "nodes": [],
             "edges": [],
+            "diagnostics": {"unresolved_links": 0},
+            "privacy": {
+                "export_profile": "empty_graph",
+                "requested_profile": "without_passage_text",
+                "metadata_only": True,
+                "includes_excerpts": False,
+                "includes_passage_text": False,
+                "includes_note_derived_terms": False,
+                "includes_paths_titles_tags": False,
+                "generated_locally": True,
+            },
+            "export_history": {
+                "export_id": "empty-prior",
+                "previous_content_hash": None,
+                "node_content_hashes_changed": 0,
+                "node_content_hashes_unchanged": 0,
+                "nodes_added": 0,
+                "nodes_removed": 0,
+            },
         }
         self.assertEqual(_valid_previous_viewer_nodes(empty_prior), [])
         output = Path(self.temporary.name) / "from-empty-prior.json"
@@ -217,6 +283,14 @@ class ViewerExportTest(unittest.TestCase):
                 }
             ],
             "edges": [],
+            "export_history": {
+                "export_id": "legacy-prior",
+                "previous_content_hash": None,
+                "node_content_hashes_changed": 0,
+                "node_content_hashes_unchanged": 0,
+                "nodes_added": 1,
+                "nodes_removed": 0,
+            },
         }
         self.assertIsNotNone(_valid_previous_viewer_nodes(null_hash_prior))
 

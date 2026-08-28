@@ -192,14 +192,36 @@ def _valid_predecessor_content_hash(value: object) -> bool:
     return _SHA256_HEX.fullmatch(value) is not None
 
 
+def _valid_predecessor_export_history(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    export_id = value.get("export_id")
+    if not isinstance(export_id, str) or not export_id.strip():
+        return False
+    if not _valid_predecessor_content_hash(value.get("previous_content_hash")):
+        return False
+    for field in (
+        "node_content_hashes_changed",
+        "node_content_hashes_unchanged",
+        "nodes_added",
+        "nodes_removed",
+    ):
+        count = value.get(field)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return False
+    return True
+
+
 def _valid_previous_viewer_nodes(
     previous_document: dict[str, Any] | None,
 ) -> list[dict[str, Any]] | None:
     """Return prior nodes only when the previous document is a usable predecessor.
 
     Recognized schemas may carry an empty node list (valid empty export). A
-    non-empty node list must supply unique ids plus required title/path strings
-    and schema-appropriate content hashes before any history digest is derived.
+    predecessor must include an ``edges`` array; viewer.v2 also requires a
+    complete ``export_history`` object. Non-empty node lists must supply unique
+    ids plus required title/path strings and schema-appropriate content hashes
+    before any history digest is derived.
     """
     if not isinstance(previous_document, dict):
         return None
@@ -213,7 +235,11 @@ def _valid_previous_viewer_nodes(
     if not isinstance(raw_nodes, list):
         return None
     edges = previous_document.get("edges")
-    if edges is not None and not isinstance(edges, list):
+    if not isinstance(edges, list):
+        return None
+    if schema == "recallweave.viewer.v2" and not _valid_predecessor_export_history(
+        previous_document.get("export_history")
+    ):
         return None
     if not raw_nodes:
         return []
