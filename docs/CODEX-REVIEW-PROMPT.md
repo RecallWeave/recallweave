@@ -95,12 +95,12 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 28c — milestone gate for post-PR #6 steward work: Bugbot remediations,
-Cold Trails v2 (Dormant / Parallel invention / Drift), and 28a/28b High
-remediations (deterministic clock, Explain trust, Parallel absolute-gap
-timestamps). Base: merged PR #6 squash `43730aa` on `main`.
+Cycle 28c — milestone gate for post-PR #6 steward work after High remediation:
+strict `generated_at` UTC validation and no node-clock fallback for Dormant.
+Scope still includes Bugbot remediations, Cold Trails v2, and 28a/28b fixes.
+Base: merged PR #6 squash `43730aa` on `main`.
 
-Suite target **506** Python OK (1 skip) plus **48** viewer JS tests
+Suite target **506** Python OK (1 skip) plus **52** viewer JS tests
 (`npm test` in `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only
 when remaining findings are Medium/Low with no Critical/High security, privacy,
 evidence-integrity, or reproducibility defect.
