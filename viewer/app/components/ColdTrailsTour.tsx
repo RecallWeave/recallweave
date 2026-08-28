@@ -36,6 +36,8 @@ function initialFeedback(): ColdTrailsFeedback {
     usedDomains: new Set(),
     usedTypes: new Map(),
     usedNodeIds: new Set(),
+    usedSurpriseTerms: new Set(),
+    domainTouchCounts: new Map(),
   };
 }
 

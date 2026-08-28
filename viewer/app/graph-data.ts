@@ -222,12 +222,12 @@ function parseExportHistory(
   const node_content_hashes_unchanged = nonNegativeInteger(raw.node_content_hashes_unchanged);
   const nodes_added = nonNegativeInteger(raw.nodes_added);
   const nodes_removed = nonNegativeInteger(raw.nodes_removed);
-  const hashedNodes = nodes.filter((node) => node.content_hash).length;
   const overlapHashes = node_content_hashes_changed + node_content_hashes_unchanged;
+  const totalNodes = nodes.length;
   const claim_conflict =
     previous_content_hash === null
-      ? nodes_added !== nodes.length
-      : overlapHashes > hashedNodes;
+      ? nodes_added !== totalNodes || overlapHashes !== 0
+      : overlapHashes + nodes_added !== totalNodes;
   return {
     export_id,
     previous_content_hash,

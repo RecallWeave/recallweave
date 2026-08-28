@@ -568,3 +568,78 @@ test("notices single-domain graphs without refusing entirely", () => {
   assert.equal(result.status, "ok");
   assert.match(result.notice ?? "", /only one domain/i);
 });
+
+test("reported scores match the weighted scoring formula", () => {
+  const fixture = graph({
+    nodes: [
+      { id: "a.md", title: "Atlas map", path: "a.md", domain: "Systems" },
+      { id: "b.md", title: "Garden log", path: "b.md", domain: "Garden" },
+      { id: "c.md", title: "Bridge note", path: "c.md", domain: "Systems" },
+      { id: "d.md", title: "Ledger", path: "d.md", domain: "Finance" },
+      { id: "e.md", title: "Outline", path: "e.md", domain: "Garden" },
+      { id: "f.md", title: "Memo", path: "f.md", domain: "Finance" },
+      { id: "g.md", title: "Draft", path: "g.md", domain: "Systems" },
+      { id: "h.md", title: "Archive", path: "h.md", domain: "Garden" },
+    ],
+    edges: [
+      { id: "auth-1", source: "c.md", target: "a.md", verified: true },
+      { id: "auth-2", source: "c.md", target: "d.md", verified: true },
+      {
+        id: "candidate-1",
+        source: "a.md",
+        target: "b.md",
+        verified: false,
+        evidence: {
+          signals: {
+            lexical_terms: ["reversible", "threshold", "canopy"],
+            shared_tags: ["experiments"],
+          },
+          source_evidence: { citation: "a.md:10-12", passage: "reversible threshold" },
+          target_evidence: { citation: "b.md:4", passage: "canopy detail" },
+        },
+      },
+      {
+        id: "candidate-2",
+        source: "e.md",
+        target: "f.md",
+        verified: false,
+        evidence: citedEvidence("e.md", "f.md", {
+          signals: {
+            lexical_terms: ["ledger", "outline", "margin"],
+            shared_tags: ["planning"],
+          },
+        }),
+      },
+      {
+        id: "candidate-3",
+        source: "g.md",
+        target: "h.md",
+        verified: false,
+        evidence: citedEvidence("g.md", "h.md", {
+          signals: {
+            lexical_terms: ["draft", "archive", "margin"],
+          },
+        }),
+      },
+    ],
+  });
+
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  for (const trail of result.trails) {
+    const { novelty, distance, evidence, centrality, structure, penalties, total } =
+      trail.scoreBreakdown;
+    const expected =
+      Math.max(
+        0,
+        0.3 * novelty +
+          0.25 * distance +
+          0.25 * evidence +
+          0.1 * centrality +
+          0.1 * structure -
+          penalties,
+      );
+    assert.equal(total, expected);
+    assert.equal(trail.score, expected);
+  }
+});

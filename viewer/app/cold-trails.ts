@@ -56,10 +56,29 @@ export type ColdTrailsFeedback = {
   usedDomains: Set<string>;
   usedTypes: Map<TrailType, number>;
   usedNodeIds: Set<string>;
+  usedSurpriseTerms: Set<string>;
+  domainTouchCounts: Map<string, number>;
 };
 
 const EVIDENCE_FLOOR = 0.25;
 const DEFAULT_TOUR_LENGTH = 6;
+
+export function weightedTotal(breakdown: Omit<ScoreBreakdown, "total">): number {
+  return Math.max(
+    0,
+    0.3 * breakdown.novelty +
+      0.25 * breakdown.distance +
+      0.25 * breakdown.evidence +
+      0.1 * breakdown.centrality +
+      0.1 * breakdown.structure -
+      breakdown.penalties,
+  );
+}
+
+function trailIdentity(trail: ColdTrail): string {
+  if (trail.nodeId) return `node:${trail.nodeId}:${trail.type}`;
+  return `${trail.type}:${pairKey(trail.sourceId, trail.targetId)}`;
+}
 
 function pairKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
@@ -359,15 +378,21 @@ function scoreCandidateTrail(
   if (feedback.dismissedPairs.has(pairKey(edge.source, edge.target))) {
     penalties += 0.2;
   }
-  const total = Math.max(
-    0,
-    0.3 * novelty +
-      0.25 * distance +
-      0.25 * evidence +
-      0.1 * centrality +
-      0.1 * structure -
-      penalties,
+  const redundantSurprise = terms.some((term) =>
+    feedback.usedSurpriseTerms.has(term.toLowerCase()),
   );
+  if (redundantSurprise) {
+    penalties += 0.15;
+  }
+  const breakdown = {
+    novelty,
+    distance,
+    evidence,
+    centrality,
+    structure,
+    penalties,
+  };
+  const total = weightedTotal(breakdown);
 
   return {
     type,
@@ -378,12 +403,7 @@ function scoreCandidateTrail(
     surpriseTerms: terms,
     score: total,
     scoreBreakdown: {
-      novelty,
-      distance,
-      evidence,
-      centrality,
-      structure,
-      penalties,
+      ...breakdown,
       total,
     },
     headline: "Candidate only: overlapping signals are not proof of a factual relationship.",
@@ -428,7 +448,12 @@ function classifyCandidateEdge(
   return types;
 }
 
-function bridgeTrails(graph: GraphDocument, nodes: Map<string, GraphNode>): ColdTrail[] {
+function bridgeTrails(
+  graph: GraphDocument,
+  nodes: Map<string, GraphNode>,
+  degrees: Map<string, number>,
+  p90: number,
+): ColdTrail[] {
   const adjacency = authoredAdjacency(graph);
   const trails: ColdTrail[] = [];
   graph.nodes.forEach((node) => {
@@ -438,6 +463,16 @@ function bridgeTrails(graph: GraphDocument, nodes: Map<string, GraphNode>): Cold
       neighborDomains.add(neighbor?.domain || "Unclassified");
     }
     if (neighborDomains.size >= 2) {
+      const centrality = centralityScore(node.id, node.id, degrees, p90);
+      const breakdown = {
+        novelty: 0,
+        distance: 1,
+        evidence: 0,
+        centrality,
+        structure: 1,
+        penalties: 0,
+      };
+      const total = weightedTotal(breakdown);
       trails.push({
         type: "bridge",
         trust: "structural",
@@ -445,15 +480,10 @@ function bridgeTrails(graph: GraphDocument, nodes: Map<string, GraphNode>): Cold
         targetId: node.id,
         nodeId: node.id,
         surpriseTerms: [],
-        score: 0.8,
+        score: total,
         scoreBreakdown: {
-          novelty: 0,
-          distance: 0.6,
-          evidence: 0.25,
-          centrality: 0.5,
-          structure: 0.2,
-          penalties: 0,
-          total: 0.8,
+          ...breakdown,
+          total,
         },
         headline: "This note authored links into multiple domains.",
         structuralFacts: [
@@ -471,7 +501,11 @@ function authoredDegree(graph: GraphDocument, nodeId: string): number {
   ).length;
 }
 
-function islandTrails(graph: GraphDocument): ColdTrail[] {
+function islandTrails(
+  graph: GraphDocument,
+  degrees: Map<string, number>,
+  p90: number,
+): ColdTrail[] {
   const candidateCounts = new Map<string, number>();
   candidateEdges(graph).forEach((edge) => {
     candidateCounts.set(edge.source, (candidateCounts.get(edge.source) || 0) + 1);
@@ -483,28 +517,35 @@ function islandTrails(graph: GraphDocument): ColdTrail[] {
         authoredDegree(graph, node.id) <= 1 &&
         (candidateCounts.get(node.id) || 0) >= 2,
     )
-    .map((node) => ({
-      type: "island" as const,
-      trust: "structural" as const,
-      sourceId: node.id,
-      targetId: node.id,
-      nodeId: node.id,
-      surpriseTerms: [],
-      score: 0.75,
-      scoreBreakdown: {
+    .map((node) => {
+      const centrality = centralityScore(node.id, node.id, degrees, p90);
+      const breakdown = {
         novelty: 0.2,
         distance: 0,
-        evidence: 0.25,
-        centrality: 0.1,
-        structure: 0.2,
+        evidence: 0,
+        centrality,
+        structure: 1,
         penalties: 0,
-        total: 0.75,
-      },
-      headline: "This note is structurally isolated but has multiple candidate edges.",
-      structuralFacts: [
-        `Authored degree ${authoredDegree(graph, node.id)}; ${candidateCounts.get(node.id) || 0} candidate edges.`,
-      ],
-    }));
+      };
+      const total = weightedTotal(breakdown);
+      return {
+        type: "island" as const,
+        trust: "structural" as const,
+        sourceId: node.id,
+        targetId: node.id,
+        nodeId: node.id,
+        surpriseTerms: [],
+        score: total,
+        scoreBreakdown: {
+          ...breakdown,
+          total,
+        },
+        headline: "This note is structurally isolated but has multiple candidate edges.",
+        structuralFacts: [
+          `Authored degree ${authoredDegree(graph, node.id)}; ${candidateCounts.get(node.id) || 0} candidate edges.`,
+        ],
+      };
+    });
 }
 
 export function refusalMessage(reason: ColdTrailsRefusal): string {
@@ -524,6 +565,264 @@ export function refusalMessage(reason: ColdTrailsRefusal): string {
   }
 }
 
+function cloneFeedback(feedback: ColdTrailsFeedback): ColdTrailsFeedback {
+  return {
+    dismissedPairs: new Set(feedback.dismissedPairs),
+    shownPairs: new Set(feedback.shownPairs),
+    usedDomains: new Set(feedback.usedDomains),
+    usedTypes: new Map(feedback.usedTypes),
+    usedNodeIds: new Set(feedback.usedNodeIds),
+    usedSurpriseTerms: new Set(feedback.usedSurpriseTerms),
+    domainTouchCounts: new Map(feedback.domainTouchCounts),
+  };
+}
+
+function endpointIdsForTrail(trail: ColdTrail): string[] {
+  return trail.nodeId ? [trail.nodeId] : [trail.sourceId, trail.targetId];
+}
+
+function endpointDomainsForTrail(trail: ColdTrail, nodes: Map<string, GraphNode>): string[] {
+  return endpointIdsForTrail(trail).map((id) => nodes.get(id)?.domain || "Unclassified");
+}
+
+function applyStructuralPenalties(
+  trail: ColdTrail,
+  feedback: ColdTrailsFeedback,
+): ColdTrail {
+  let penalties = 0;
+  const endpoints = endpointIdsForTrail(trail);
+  if (endpoints.some((id) => feedback.usedNodeIds.has(id))) {
+    penalties += 0.3;
+  }
+  if (
+    trail.sourceId &&
+    trail.targetId &&
+    trail.sourceId !== trail.targetId &&
+    feedback.dismissedPairs.has(pairKey(trail.sourceId, trail.targetId))
+  ) {
+    penalties += 0.2;
+  }
+  const breakdown = {
+    novelty: trail.scoreBreakdown.novelty,
+    distance: trail.scoreBreakdown.distance,
+    evidence: trail.scoreBreakdown.evidence,
+    centrality: trail.scoreBreakdown.centrality,
+    structure: trail.scoreBreakdown.structure,
+    penalties,
+  };
+  const total = weightedTotal(breakdown);
+  return {
+    ...trail,
+    score: total,
+    scoreBreakdown: {
+      ...breakdown,
+      total,
+    },
+  };
+}
+
+function hubIneligible(
+  trail: ColdTrail,
+  degrees: Map<string, number>,
+  p95: number,
+): boolean {
+  if (trail.type === "bridge") return false;
+  return endpointIdsForTrail(trail).some((id) => (degrees.get(id) || 0) > p95);
+}
+
+function domainTouchOverflow(
+  trail: ColdTrail,
+  nodes: Map<string, GraphNode>,
+  domainTouchCounts: Map<string, number>,
+): boolean {
+  return endpointDomainsForTrail(trail, nodes).some((domain) => {
+    return (domainTouchCounts.get(domain) || 0) + 1 > 2;
+  });
+}
+
+function isTrailEligible(
+  trail: ColdTrail,
+  feedback: ColdTrailsFeedback,
+  nodes: Map<string, GraphNode>,
+  degrees: Map<string, number>,
+  p95: number,
+): boolean {
+  if (
+    trail.sourceId &&
+    trail.targetId &&
+    trail.sourceId !== trail.targetId &&
+    feedback.shownPairs.has(pairKey(trail.sourceId, trail.targetId))
+  ) {
+    return false;
+  }
+  if (trail.nodeId && feedback.shownPairs.has(`node:${trail.nodeId}`)) {
+    return false;
+  }
+  const typeCount = feedback.usedTypes.get(trail.type) || 0;
+  if (typeCount >= 2) return false;
+  const endpoints = endpointIdsForTrail(trail);
+  if (endpoints.some((id) => feedback.usedNodeIds.has(id))) return false;
+  if (hubIneligible(trail, degrees, p95)) return false;
+  if (domainTouchOverflow(trail, nodes, feedback.domainTouchCounts)) return false;
+  return true;
+}
+
+function applyTrailSelection(
+  trail: ColdTrail,
+  feedback: ColdTrailsFeedback,
+  nodes: Map<string, GraphNode>,
+): void {
+  const typeCount = feedback.usedTypes.get(trail.type) || 0;
+  feedback.usedTypes.set(trail.type, typeCount + 1);
+  endpointIdsForTrail(trail).forEach((id) => feedback.usedNodeIds.add(id));
+  endpointDomainsForTrail(trail, nodes).forEach((domain) => {
+    feedback.usedDomains.add(domain);
+    feedback.domainTouchCounts.set(domain, (feedback.domainTouchCounts.get(domain) || 0) + 1);
+  });
+  trail.surpriseTerms.forEach((term) => feedback.usedSurpriseTerms.add(term.toLowerCase()));
+  if (trail.sourceId && trail.targetId && trail.sourceId !== trail.targetId) {
+    feedback.shownPairs.add(pairKey(trail.sourceId, trail.targetId));
+  }
+  if (trail.nodeId) {
+    feedback.shownPairs.add(`node:${trail.nodeId}`);
+  }
+}
+
+function rescorePool(
+  pool: ColdTrail[],
+  selected: ColdTrail[],
+  graph: GraphDocument,
+  feedback: ColdTrailsFeedback,
+  adjacency: Map<string, Set<string>>,
+  degrees: Map<string, number>,
+  p90: number,
+  interDomainCounts: Map<string, number>,
+  nodes: Map<string, GraphNode>,
+): ColdTrail[] {
+  const selectedKeys = new Set(selected.map((trail) => trailIdentity(trail)));
+  const rescored: ColdTrail[] = [];
+  for (const trail of pool) {
+    if (selectedKeys.has(trailIdentity(trail))) continue;
+    if (trail.trust === "candidate" && trail.edgeId) {
+      const edge = graph.edges.find((item) => item.id === trail.edgeId);
+      if (!edge) continue;
+      const rescoredTrail = scoreCandidateTrail(
+        graph,
+        edge,
+        trail.type,
+        feedback,
+        adjacency,
+        degrees,
+        p90,
+        interDomainCounts,
+        nodes,
+      );
+      if (rescoredTrail) rescored.push(rescoredTrail);
+    } else {
+      rescored.push(applyStructuralPenalties(trail, feedback));
+    }
+  }
+  return rescored.sort((a, b) => b.score - a.score);
+}
+
+function pickTrail(
+  candidates: ColdTrail[],
+  prefer: (trail: ColdTrail) => boolean = () => true,
+): ColdTrail | undefined {
+  const preferred = candidates.filter(prefer);
+  return (preferred.length ? preferred : candidates)[0];
+}
+
+function selectTourTrails(
+  pool: ColdTrail[],
+  graph: GraphDocument,
+  feedback: ColdTrailsFeedback,
+  nodes: Map<string, GraphNode>,
+  degrees: Map<string, number>,
+  p90: number,
+  p95: number,
+  interDomainCounts: Map<string, number>,
+  domains: Set<string>,
+): ColdTrail[] {
+  const selected: ColdTrail[] = [];
+  const localFeedback = cloneFeedback(feedback);
+  const adjacency = authoredAdjacency(graph);
+
+  const phases: Array<(trail: ColdTrail) => boolean> = [
+    (trail) => trail.type === "bridge" || trail.type === "island",
+    (trail) => trail.type === "unwritten_link" || trail.type === "distant_neighbors",
+    (trail) => trail.type === "unwritten_link" || trail.type === "distant_neighbors",
+    (trail) => {
+      const selectedTypes = new Set(selected.map((item) => item.type));
+      return !selectedTypes.has(trail.type);
+    },
+    () => true,
+    (trail) => trail.type === "reinforced",
+  ];
+
+  for (let slot = 0; slot < phases.length; slot += 1) {
+    if (selected.length >= DEFAULT_TOUR_LENGTH) break;
+    const phase = phases[slot];
+    const rescored = rescorePool(
+      pool,
+      selected,
+      graph,
+      localFeedback,
+      adjacency,
+      degrees,
+      p90,
+      interDomainCounts,
+      nodes,
+    );
+    const eligible = rescored.filter((trail) => phase(trail) && isTrailEligible(trail, localFeedback, nodes, degrees, p95));
+    const chosen =
+      slot === 4
+        ? pickTrail(
+            eligible,
+            (trail) =>
+              endpointDomainsForTrail(trail, nodes).some(
+                (domain) => (localFeedback.domainTouchCounts.get(domain) || 0) === 0,
+              ),
+          )
+        : pickTrail(eligible);
+    if (!chosen) continue;
+    selected.push(chosen);
+    applyTrailSelection(chosen, localFeedback, nodes);
+  }
+
+  while (selected.length < DEFAULT_TOUR_LENGTH) {
+    const rescored = rescorePool(
+      pool,
+      selected,
+      graph,
+      localFeedback,
+      adjacency,
+      degrees,
+      p90,
+      interDomainCounts,
+      nodes,
+    );
+    const eligible = rescored.filter((trail) => isTrailEligible(trail, localFeedback, nodes, degrees, p95));
+    if (!eligible.length) break;
+    let chosen = eligible[0];
+    if (domains.size >= 3) {
+      const covered = new Set(
+        selected.flatMap((trail) => endpointDomainsForTrail(trail, nodes)),
+      );
+      if (covered.size < 3) {
+        chosen =
+          eligible.find((trail) =>
+            endpointDomainsForTrail(trail, nodes).some((domain) => !covered.has(domain)),
+          ) || eligible[0];
+      }
+    }
+    selected.push(chosen);
+    applyTrailSelection(chosen, localFeedback, nodes);
+  }
+
+  return selected;
+}
+
 export function buildColdTrails(
   graph: GraphDocument,
   feedback: ColdTrailsFeedback = {
@@ -532,6 +831,8 @@ export function buildColdTrails(
     usedDomains: new Set(),
     usedTypes: new Map(),
     usedNodeIds: new Set(),
+    usedSurpriseTerms: new Set(),
+    domainTouchCounts: new Map(),
   },
 ): ColdTrailsResult {
   if (graph.nodes.length < 8) {
@@ -550,13 +851,14 @@ export function buildColdTrails(
   const adjacency = authoredAdjacency(graph);
   const degrees = degreeMap(graph);
   const p90 = percentile([...degrees.values()], 0.9);
+  const p95 = percentile([...degrees.values()], 0.95);
   const interDomainCounts = interDomainAuthoredCounts(graph);
   const domains = domainSet(graph);
   const notice = domains.size === 1 ? refusalMessage("single_domain") : undefined;
 
   const pool: ColdTrail[] = [
-    ...bridgeTrails(graph, nodes),
-    ...islandTrails(graph),
+    ...bridgeTrails(graph, nodes, degrees, p90),
+    ...islandTrails(graph, degrees, p90),
   ];
 
   candidates.forEach((edge) => {
@@ -588,57 +890,17 @@ export function buildColdTrails(
     };
   }
 
-  const sorted = [...pool].sort((a, b) => b.score - a.score);
-  const structural = sorted.filter((trail) => trail.type === "bridge" || trail.type === "island");
-  const candidatePool = sorted.filter((trail) => trail.type !== "bridge" && trail.type !== "island");
-  const ordered = [...structural, ...candidatePool];
-  const selected: ColdTrail[] = [];
-  const localFeedback: ColdTrailsFeedback = {
-    dismissedPairs: new Set(feedback.dismissedPairs),
-    shownPairs: new Set(feedback.shownPairs),
-    usedDomains: new Set(feedback.usedDomains),
-    usedTypes: new Map(feedback.usedTypes),
-    usedNodeIds: new Set(feedback.usedNodeIds),
-  };
-
-  for (const trail of ordered) {
-    if (selected.length >= DEFAULT_TOUR_LENGTH) break;
-    if (
-      trail.sourceId &&
-      trail.targetId &&
-      trail.sourceId !== trail.targetId &&
-      feedback.shownPairs.has(pairKey(trail.sourceId, trail.targetId))
-    ) {
-      continue;
-    }
-    if (trail.nodeId && feedback.shownPairs.has(`node:${trail.nodeId}`)) {
-      continue;
-    }
-    const typeCount = localFeedback.usedTypes.get(trail.type) || 0;
-    if (typeCount >= 2) continue;
-    const endpointIds = trail.nodeId ? [trail.nodeId] : [trail.sourceId, trail.targetId];
-    if (endpointIds.some((id) => localFeedback.usedNodeIds.has(id))) continue;
-    const endpointDomains = endpointIds
-      .map((id) => nodes.get(id)?.domain || "Unclassified")
-      .filter(Boolean);
-    const domainTouches = new Set(endpointDomains);
-    let domainOverflow = false;
-    domainTouches.forEach((item) => {
-      if (localFeedback.usedDomains.has(item)) domainOverflow = true;
-    });
-    if (domainOverflow && (localFeedback.usedDomains.size >= 2 || selected.length >= 4)) continue;
-
-    selected.push(trail);
-    localFeedback.usedTypes.set(trail.type, typeCount + 1);
-    endpointIds.forEach((id) => localFeedback.usedNodeIds.add(id));
-    endpointDomains.forEach((item) => localFeedback.usedDomains.add(item));
-    if (trail.sourceId && trail.targetId && trail.sourceId !== trail.targetId) {
-      localFeedback.shownPairs.add(pairKey(trail.sourceId, trail.targetId));
-    }
-    if (trail.nodeId) {
-      localFeedback.shownPairs.add(`node:${trail.nodeId}`);
-    }
-  }
+  const selected = selectTourTrails(
+    pool,
+    graph,
+    feedback,
+    nodes,
+    degrees,
+    p90,
+    p95,
+    interDomainCounts,
+    domains,
+  );
 
   if (!selected.length) {
     return {
