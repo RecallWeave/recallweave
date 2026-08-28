@@ -95,13 +95,12 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 28a — post-PR #6 `foundry/steward` checkpoint after Bugbot follow-ups
-(`recallweave-jqy`) and Cold Trails invariant/mutation tests (`recallweave-bbc`).
-Base: merged PR #6 squash `43730aa` on `main`. Scope: viewer.v2 provenance,
-Cold Trails selection/UI remediations, and export-history hardening since that
-merge.
+Cycle 28c — milestone gate for post-PR #6 steward work: Bugbot remediations,
+Cold Trails v2 (Dormant / Parallel invention / Drift), and 28a/28b High
+remediations (deterministic clock, Explain trust, Parallel absolute-gap
+timestamps). Base: merged PR #6 squash `43730aa` on `main`.
 
-Suite target **506** Python OK (1 skip) plus **43** viewer JS tests
+Suite target **506** Python OK (1 skip) plus **48** viewer JS tests
 (`npm test` in `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only
 when remaining findings are Medium/Low with no Critical/High security, privacy,
 evidence-integrity, or reproducibility defect.
