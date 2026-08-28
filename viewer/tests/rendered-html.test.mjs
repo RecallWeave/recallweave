@@ -135,8 +135,16 @@ test("client import and keyboard focus guards remain wired", async () => {
   assert.match(source, /moveNodeNavigatorFocus/);
   assert.match(source, /document\.execCommand\("copy"\)/);
   assert.match(source, /Copy path/);
-  assert.match(source, /AtlasProvenanceChrome/);
-  assert.match(source, /source file claims local generation/);
+  assert.match(source, /AtlasExportPrivacyChrome/);
+  assert.match(source, /<AtlasExportPrivacyChrome\b/);
+  assert.match(source, /graph=\{graph\}/);
+  const privacyChrome = await readFile(
+    new URL("../app/components/AtlasExportPrivacyChrome.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(privacyChrome, /AtlasProvenanceChrome/);
+  assert.match(privacyChrome, /source file claims local generation/);
+  assert.match(privacyChrome, /Declared profile:.*inspected content:/);
   const provenanceChrome = await readFile(
     new URL("../app/components/AtlasProvenanceChrome.ts", import.meta.url),
     "utf8",
@@ -144,7 +152,6 @@ test("client import and keyboard focus guards remain wired", async () => {
   assert.match(provenanceChrome, /Index claims:/);
   assert.match(provenanceChrome, /privacy-provenance-detail/);
   assert.match(provenanceChrome, /formatAtlasProvenanceClaims/);
-  assert.match(source, /Declared profile:.*inspected content:/);
   assert.doesNotMatch(source, /obsidianUrl|Open in Obsidian|obsidian:\/\//);
   assert.match(source, /resetExplorer\(true\)/);
   assert.match(source, /searchRef\.current\?\.focus\(\)/);

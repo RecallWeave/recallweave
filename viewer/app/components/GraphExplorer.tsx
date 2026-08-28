@@ -20,7 +20,7 @@ import {
   importDiagnosticMessage,
   normalizeGraph,
 } from "../graph-data";
-import { AtlasProvenanceChrome } from "./AtlasProvenanceChrome";
+import { AtlasExportPrivacyChrome } from "./AtlasExportPrivacyChrome";
 import { ColdTrailsTour } from "./ColdTrailsTour";
 
 type PositionedNode = GraphNode & {
@@ -307,36 +307,6 @@ export function GraphExplorer() {
     }
   }
 
-  const privacyClass = graph?.privacy.includes_passage_text ? "contains-excerpts" : "structure-only";
-  const privacyLabel = graph?.privacy.metadata_conflict
-    ? "Export privacy flags conflict with displayed content"
-    : graph && graph.nodes.length === 0
-      ? "Empty graph"
-    : graph?.privacy.includes_passage_text
-    ? graph.privacy.declared
-      ? "Graph + bounded passage text"
-      : "Possible excerpts detected"
-    : graph?.privacy.includes_note_derived_terms
-      ? "Graph metadata + note-derived terms/text"
-      : graph?.privacy.metadata_only
-        ? "Graph metadata only"
-        : graph?.privacy.declared
-          ? "Graph structure · no passages"
-      : "Excerpt status not declared";
-  const privacyDetail = graph
-    ? [
-        graph.privacy.includes_paths_titles_tags ? "paths, titles, tags" : "",
-        graph.privacy.includes_note_derived_terms ? "note-derived terms/text" : "",
-        graph.privacy.includes_passage_text ? "passages" : "no passages",
-        graph.privacy.source_claims_generated_locally
-          ? "source file claims local generation"
-          : "",
-      ].filter(Boolean).join(" · ")
-    : "Load an export to inspect its privacy profile";
-  const privacyConflictDetail = graph?.privacy.metadata_conflict
-    ? `Declared profile: ${graph.privacy.declared_export_profile}; inspected content: ${graph.privacy.export_profile}.`
-    : "";
-
   return (
     <div className="app-shell">
       <a className="skip-link" href="#atlas">Skip to graph explorer</a>
@@ -405,23 +375,7 @@ export function GraphExplorer() {
 
       <section className="workspace" id="atlas" aria-labelledby="atlas-heading" tabIndex={-1}>
         <h2 id="atlas-heading" className="sr-only">Knowledge graph explorer</h2>
-        <div className={`export-privacy ${privacyClass}`} role="status">
-          <span className="export-privacy-icon" aria-hidden="true" />
-          <span>
-            <strong>{privacyLabel}</strong>
-            <span className="privacy-detail">
-              {privacyDetail}
-              {graph?.privacy.export_profile && graph.privacy.export_profile !== "undeclared"
-                ? ` · profile: ${graph.privacy.export_profile}`
-                : ""}
-            </span>
-            {graph?.privacy.includes_passage_text && " Review before screen sharing or sending this file."}
-            {privacyConflictDetail && (
-              <span className="privacy-conflict-detail"> {privacyConflictDetail}</span>
-            )}
-            {graph ? <AtlasProvenanceChrome graph={graph} /> : null}
-          </span>
-        </div>
+        <AtlasExportPrivacyChrome graph={graph} />
         {(loadError || diagnosticMessage) && (
           <div className={`import-notice ${loadError ? "error" : ""}`} role={loadError ? "alert" : "status"}>
             {loadError || `Import review: ${diagnosticMessage}`}
