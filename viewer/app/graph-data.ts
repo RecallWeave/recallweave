@@ -53,6 +53,19 @@ export type ExportHistoryClaims = {
   claim_conflict: boolean;
 };
 
+/** Provenance chrome for Atlas; includes conflict wording when claims disagree. */
+export function formatExportHistoryDetail(history: ExportHistoryClaims): string {
+  return [
+    `export ${history.export_id}`,
+    history.previous_content_hash ? "follows prior export" : "first export claim",
+    `${history.nodes_added} added · ${history.nodes_removed} removed`,
+    `${history.node_content_hashes_changed} hash changes · ${history.node_content_hashes_unchanged} unchanged`,
+    history.claim_conflict ? "export history conflicts with loaded graph" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export type ImportDiagnostics = {
   duplicate_nodes_dropped: number;
   duplicate_edges_dropped: number;
@@ -89,6 +102,21 @@ export type GraphDocument = {
   };
   import_diagnostics: ImportDiagnostics;
 };
+
+/** Index-claims line Atlas shows for viewer.v2 graphs. */
+export function formatAtlasProvenanceClaims(graph: GraphDocument): string {
+  if (graph.schema_version !== VIEWER_SCHEMA_V2) return "";
+  const exportHistoryDetail = graph.export_history
+    ? formatExportHistoryDetail(graph.export_history)
+    : "";
+  return [
+    graph.vault_label_claim ? `vault label claim: ${graph.vault_label_claim}` : "",
+    graph.policy_config_sha256_claim ? "policy digest claim present" : "",
+    exportHistoryDetail ? `export history claim: ${exportHistoryDetail}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
 
 export const MAX_NODES = 5000;
 export const MAX_EDGES = 12000;
