@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   citationPath,
+  formatExportHistoryDetail,
   importDiagnosticMessage,
   normalizeGraph,
   safeCitation,
@@ -660,18 +661,65 @@ test("omitting any required export_history counter claims conflict", () => {
   }
 });
 
-test("graph-data source requires own-property check for previous_content_hash", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const { fileURLToPath } = await import("node:url");
-  const path = await import("node:path");
-  const sourcePath = path.join(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../app/graph-data.ts",
-  );
-  const source = await readFile(sourcePath, "utf8");
+test("formatExportHistoryDetail includes conflict wording only when claims disagree", () => {
+  const valid = formatExportHistoryDetail({
+    export_id: "export-ok",
+    previous_content_hash: null,
+    node_content_hashes_changed: 0,
+    node_content_hashes_unchanged: 0,
+    nodes_added: 2,
+    nodes_removed: 0,
+    claim_conflict: false,
+  });
+  assert.match(valid, /first export claim/);
+  assert.doesNotMatch(valid, /export history conflicts with loaded graph/);
+
+  const conflicted = formatExportHistoryDetail({
+    export_id: "export-bad",
+    previous_content_hash: "a".repeat(64),
+    node_content_hashes_changed: 9,
+    node_content_hashes_unchanged: 0,
+    nodes_added: 0,
+    nodes_removed: 0,
+    claim_conflict: true,
+  });
+  assert.match(conflicted, /follows prior export/);
+  assert.match(conflicted, /export history conflicts with loaded graph/);
+});
+
+test("omitting previous_content_hash claims conflict without relying on implementation spelling", () => {
+  const withNull = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+    export_history: {
+      export_id: "explicit-null",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(withNull.export_history?.claim_conflict, false);
+
+  const omitted = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+    export_history: {
+      export_id: "omitted-prior",
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(omitted.export_history?.previous_content_hash, null);
+  assert.equal(omitted.export_history?.claim_conflict, true);
   assert.match(
-    source,
-    /hasOwnProperty\.call\(\s*raw,\s*["']previous_content_hash["']\s*\)/,
+    formatExportHistoryDetail(omitted.export_history),
+    /export history conflicts with loaded graph/,
   );
 });
 

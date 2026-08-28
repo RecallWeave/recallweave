@@ -17,6 +17,7 @@ import {
   MAX_FILE_BYTES,
   VIEWER_SCHEMA_V2,
   citationPath,
+  formatExportHistoryDetail,
   importDiagnosticMessage,
   normalizeGraph,
 } from "../graph-data";
@@ -336,15 +337,7 @@ export function GraphExplorer() {
     ? `Declared profile: ${graph.privacy.declared_export_profile}; inspected content: ${graph.privacy.export_profile}.`
     : "";
   const exportHistoryDetail = graph?.export_history
-    ? [
-        `export ${graph.export_history.export_id}`,
-        graph.export_history.previous_content_hash
-          ? "follows prior export"
-          : "first export claim",
-        `${graph.export_history.nodes_added} added · ${graph.export_history.nodes_removed} removed`,
-        `${graph.export_history.node_content_hashes_changed} hash changes · ${graph.export_history.node_content_hashes_unchanged} unchanged`,
-        graph.export_history.claim_conflict ? "export history conflicts with loaded graph" : "",
-      ].filter(Boolean).join(" · ")
+    ? formatExportHistoryDetail(graph.export_history)
     : "";
   const provenanceClaims = graph?.schema_version === VIEWER_SCHEMA_V2
     ? [

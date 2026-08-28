@@ -1737,19 +1737,6 @@ test("refuses tours that lack a Bridge or Island opening trail", () => {
   assert.equal(result.status, "refused");
 });
 
-test("GraphExplorer surfaces export-history claim conflicts in provenance chrome", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const { fileURLToPath } = await import("node:url");
-  const path = await import("node:path");
-  const sourcePath = path.join(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../app/components/GraphExplorer.tsx",
-  );
-  const source = await readFile(sourcePath, "utf8");
-  assert.match(source, /export history conflicts with loaded graph/);
-  assert.match(source, /claim_conflict/);
-});
-
 test("ignores conflicted export history when scoring Drift trails", () => {
   const fixture = graph({
     nodes: [

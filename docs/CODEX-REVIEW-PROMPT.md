@@ -95,14 +95,13 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 30 — post-PR #8 stewardship on `foundry/steward` (fresh cut `654dcf0` from
-`5870d4b`): defense-in-depth tests for omitted export_history counters,
-own-property guard for `previous_content_hash`, GraphExplorer conflict chrome,
-and normalize→Drift trust gating for incomplete history. Base: merged PR #8
-squash `5870d4b` on `main`.
+Cycle 31 — post-PR #9 stewardship on `foundry/steward` (fresh cut `07ba52f` from
+`37eea2a`): extract `formatExportHistoryDetail` for Atlas provenance chrome;
+behavioral tests for conflicted vs valid history and omitted
+`previous_content_hash` without source-regex guards. Base: merged PR #9 squash
+`37eea2a` on `main`.
 
 Suite target **511** Python OK (1 skip) plus viewer JS tests (`npm test` in
 `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only when remaining
-findings are Medium/Low with no Critical/High security, privacy,
-evidence-integrity, or reproducibility defect. Max 3 review turns this cycle.
+findings are Medium/Low with no Critical/High. Max 3 review turns this cycle.
 <!-- CYCLE-CONTEXT-END -->

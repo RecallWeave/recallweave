@@ -53,6 +53,19 @@ export type ExportHistoryClaims = {
   claim_conflict: boolean;
 };
 
+/** Provenance chrome for Atlas; includes conflict wording when claims disagree. */
+export function formatExportHistoryDetail(history: ExportHistoryClaims): string {
+  return [
+    `export ${history.export_id}`,
+    history.previous_content_hash ? "follows prior export" : "first export claim",
+    `${history.nodes_added} added · ${history.nodes_removed} removed`,
+    `${history.node_content_hashes_changed} hash changes · ${history.node_content_hashes_unchanged} unchanged`,
+    history.claim_conflict ? "export history conflicts with loaded graph" : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export type ImportDiagnostics = {
   duplicate_nodes_dropped: number;
   duplicate_edges_dropped: number;
