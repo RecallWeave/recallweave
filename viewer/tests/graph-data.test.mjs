@@ -748,6 +748,45 @@ test("AtlasProvenanceChrome renders conflicted and valid export history", async 
     createElement(AtlasProvenanceChrome, { graph: omitted }),
   );
   assert.match(omittedHtml, /export history conflicts with loaded graph/);
+
+  const emptyV2 = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+  });
+  assert.equal(
+    renderToStaticMarkup(createElement(AtlasProvenanceChrome, { graph: emptyV2 })),
+    "",
+  );
+
+  const v1 = normalizeGraph({
+    schema_version: "recallweave.viewer.v1",
+    nodes: [{ id: "a.md", title: "A", path: "a.md" }],
+    edges: [],
+  });
+  assert.equal(
+    renderToStaticMarkup(createElement(AtlasProvenanceChrome, { graph: v1 })),
+    "",
+  );
+
+  const hostile = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+    edges: [],
+    export_history: {
+      export_id: "x</span><script>alert(1)</script>",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  });
+  const hostileHtml = renderToStaticMarkup(
+    createElement(AtlasProvenanceChrome, { graph: hostile }),
+  );
+  assert.doesNotMatch(hostileHtml, /<script>/);
+  assert.match(hostileHtml, /&lt;\/span&gt;&lt;script&gt;/);
 });
 
 test("GraphExplorer mounts AtlasProvenanceChrome for provenance chrome", async () => {
