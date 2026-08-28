@@ -41,7 +41,18 @@ def _nullable_timestamp(value: object) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
-    return text or None
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            parsed = datetime.fromisoformat(text[:-1] + "+00:00")
+        else:
+            parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _content_hash(value: object) -> str | None:
@@ -151,13 +162,14 @@ def _mutual_neighbors(
     return sorted(shared)
 
 
-def _aggregate_content_digest(nodes: list[dict[str, Any]]) -> str | None:
+def _aggregate_content_digest(nodes: list[dict[str, Any]]) -> str:
     parts = [
         f"{node['id']}:{node.get('content_hash') or ''}"
-        for node in sorted(nodes, key=lambda item: str(item["id"]))
+        for node in sorted(
+            (item for item in nodes if isinstance(item.get("id"), str)),
+            key=lambda item: str(item["id"]),
+        )
     ]
-    if not parts:
-        return None
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -205,7 +217,7 @@ def _export_history(
         prior_nodes = previous_document.get("nodes")
         if isinstance(prior_nodes, list):
             previous_digest = _aggregate_content_digest(
-                [n for n in prior_nodes if isinstance(n, dict)]
+                [n for n in prior_nodes if isinstance(n, dict) and isinstance(n.get("id"), str)]
             )
 
     return {
@@ -404,7 +416,10 @@ def export_viewer_graph(
             loaded = json.loads(output.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, UnicodeError):
             loaded = None
-        if isinstance(loaded, dict):
+        if isinstance(loaded, dict) and loaded.get("schema_version") in {
+            "recallweave.viewer.v1",
+            "recallweave.viewer.v2",
+        }:
             previous_document = loaded
 
     document = build_viewer_document(

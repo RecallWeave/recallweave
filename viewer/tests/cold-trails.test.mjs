@@ -21,7 +21,7 @@ function graph(overrides = {}) {
       export_profile: "graph_metadata_and_note_derived_terms",
       metadata_only: false,
       includes_excerpts: false,
-      includes_passage_text: false,
+      includes_passage_text: true,
       includes_note_derived_terms: true,
       includes_paths_titles_tags: true,
     },

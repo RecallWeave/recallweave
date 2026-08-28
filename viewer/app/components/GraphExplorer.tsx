@@ -115,6 +115,7 @@ export function GraphExplorer() {
   const [nodeNavigatorFocusId, setNodeNavigatorFocusId] = useState<string | null>(null);
   const [resetKey, setResetKey] = useState(0);
   const [coldTrailsOpen, setColdTrailsOpen] = useState(false);
+  const coldTrailsTriggerRef = useRef<HTMLButtonElement>(null);
   const [mapFocusIds, setMapFocusIds] = useState<string[]>([]);
   const [mapFocusKey, setMapFocusKey] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -374,7 +375,11 @@ export function GraphExplorer() {
             Reset Atlas
           </button>
           {graph && (
-            <button className="ghost-button" onClick={() => setColdTrailsOpen(true)}>
+            <button
+              ref={coldTrailsTriggerRef}
+              className="ghost-button"
+              onClick={() => setColdTrailsOpen(true)}
+            >
               Cold Trails
             </button>
           )}
@@ -696,7 +701,10 @@ export function GraphExplorer() {
         <ColdTrailsTour
           graph={graph}
           open={coldTrailsOpen}
-          onClose={() => setColdTrailsOpen(false)}
+          onClose={() => {
+            setColdTrailsOpen(false);
+            requestAnimationFrame(() => coldTrailsTriggerRef.current?.focus());
+          }}
           onShowOnMap={showTrailOnMap}
           onCopyPath={copyPlainPath}
           onCopyCitation={copyCitation}

@@ -180,16 +180,11 @@ export function ColdTrailsTour({
       onStatus("No alternate trail qualified.");
       return;
     }
-    const alternate = replacement.trails.find(
-      (trail) => !trails.some((item) => trailPairKey(item) === trailPairKey(trail)),
-    );
-    if (!alternate) {
-      onStatus("No alternate trail qualified.");
-      return;
-    }
-    setTrails((items) => items.map((item, itemIndex) => (itemIndex === index ? alternate : item)));
+    setTrails(replacement.trails);
+    setIndex(0);
+    setResult(replacement);
     setExplainOpen(false);
-    setAnnouncement(`Alternate ${trailTypeLabel(alternate.type)} trail loaded.`);
+    setAnnouncement(`Alternate tour with ${replacement.trails.length} stops loaded.`);
   }
 
   function openSource() {
@@ -227,6 +222,10 @@ export function ColdTrailsTour({
     if (event.key === "Escape") {
       event.preventDefault();
       onClose();
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, a, input, select, textarea, [contenteditable='true']")) {
       return;
     }
     if (!current || result?.status !== "ok") return;
@@ -378,6 +377,22 @@ export function ColdTrailsTour({
                   <li>Penalties: {current.scoreBreakdown.penalties.toFixed(2)}</li>
                   <li>Total: {current.scoreBreakdown.total.toFixed(2)}</li>
                 </ul>
+                {edge?.evidence?.signals && (
+                  <>
+                    <span className="section-label">Evidence signals</span>
+                    <ul>
+                      {(edge.evidence.signals.lexical_terms || []).map((term) => (
+                        <li key={`term-${term}`}>Lexical: {term}</li>
+                      ))}
+                      {(edge.evidence.signals.shared_tags || []).map((tag) => (
+                        <li key={`tag-${tag}`}>Shared tag: {tag}</li>
+                      ))}
+                      {(edge.evidence.signals.mutual_neighbor_ids || []).map((id) => (
+                        <li key={`neighbor-${id}`}>Mutual neighbor: {id}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
               </div>
             )}
           </article>

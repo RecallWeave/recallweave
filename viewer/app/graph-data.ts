@@ -172,12 +172,6 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function nonNegativeInteger(value: unknown): number {
-  const number = finiteNumber(value);
-  if (number === undefined || !Number.isSafeInteger(number) || number < 0) return 0;
-  return number;
-}
-
 function evidenceSide(value: unknown): GraphEvidenceSide {
   if (!value || typeof value !== "object") return {};
   const raw = value as Record<string, unknown>;
@@ -190,9 +184,19 @@ function evidenceSide(value: unknown): GraphEvidenceSide {
 function evidenceSignals(value: unknown): GraphEvidenceSignals | undefined {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Record<string, unknown>;
-  const lexical_terms = Array.isArray(raw.lexical_terms)
-    ? raw.lexical_terms.map((term) => safeLabel(term)).filter(Boolean).slice(0, 24)
-    : [];
+  const lexical_terms: string[] = [];
+  if (Array.isArray(raw.lexical_terms)) {
+    const seen = new Set<string>();
+    for (const term of raw.lexical_terms) {
+      const safe = safeLabel(term);
+      if (!safe) continue;
+      const key = safe.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lexical_terms.push(safe);
+      if (lexical_terms.length >= 24) break;
+    }
+  }
   const shared_tags = Array.isArray(raw.shared_tags)
     ? raw.shared_tags.map((tag) => safeLabel(tag)).filter(Boolean).slice(0, 24)
     : [];
@@ -209,6 +213,15 @@ function evidenceSignals(value: unknown): GraphEvidenceSignals | undefined {
   };
 }
 
+function optionalNonNegativeInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const number = finiteNumber(value);
+  if (number === undefined || !Number.isSafeInteger(number) || number < 0) {
+    return undefined;
+  }
+  return number;
+}
+
 function parseExportHistory(
   value: unknown,
   nodes: GraphNode[],
@@ -217,24 +230,44 @@ function parseExportHistory(
   const raw = value as Record<string, unknown>;
   const export_id = safeIdentifier(raw.export_id);
   if (!export_id) return undefined;
-  const previous_content_hash = safeContentHash(raw.previous_content_hash);
-  const node_content_hashes_changed = nonNegativeInteger(raw.node_content_hashes_changed);
-  const node_content_hashes_unchanged = nonNegativeInteger(raw.node_content_hashes_unchanged);
-  const nodes_added = nonNegativeInteger(raw.nodes_added);
-  const nodes_removed = nonNegativeInteger(raw.nodes_removed);
-  const overlapHashes = node_content_hashes_changed + node_content_hashes_unchanged;
+  const priorRaw = raw.previous_content_hash;
+  const previous_content_hash = safeContentHash(priorRaw);
+  const priorMalformed =
+    priorRaw !== null &&
+    priorRaw !== undefined &&
+    previous_content_hash === null;
+  const node_content_hashes_changed = optionalNonNegativeInteger(
+    raw.node_content_hashes_changed,
+  );
+  const node_content_hashes_unchanged = optionalNonNegativeInteger(
+    raw.node_content_hashes_unchanged,
+  );
+  const nodes_added = optionalNonNegativeInteger(raw.nodes_added);
+  const nodes_removed = optionalNonNegativeInteger(raw.nodes_removed);
+  const malformedCounters =
+    node_content_hashes_changed === undefined ||
+    node_content_hashes_unchanged === undefined ||
+    nodes_added === undefined ||
+    nodes_removed === undefined;
+  const changed = node_content_hashes_changed ?? 0;
+  const unchanged = node_content_hashes_unchanged ?? 0;
+  const added = nodes_added ?? 0;
+  const removed = nodes_removed ?? 0;
+  const overlapHashes = changed + unchanged;
   const totalNodes = nodes.length;
   const claim_conflict =
-    previous_content_hash === null
-      ? nodes_added !== totalNodes || overlapHashes !== 0
-      : overlapHashes + nodes_added !== totalNodes;
+    malformedCounters ||
+    priorMalformed ||
+    (previous_content_hash === null
+      ? added !== totalNodes || overlapHashes !== 0
+      : overlapHashes + added !== totalNodes);
   return {
     export_id,
-    previous_content_hash,
-    node_content_hashes_changed,
-    node_content_hashes_unchanged,
-    nodes_added,
-    nodes_removed,
+    previous_content_hash: priorMalformed ? null : previous_content_hash,
+    node_content_hashes_changed: changed,
+    node_content_hashes_unchanged: unchanged,
+    nodes_added: added,
+    nodes_removed: removed,
     claim_conflict,
   };
 }
