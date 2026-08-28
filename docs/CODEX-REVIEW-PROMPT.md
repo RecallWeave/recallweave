@@ -95,10 +95,14 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 26d — GitHub PR #5 turn-1 remediations (defaults/decorators, match
-subject/guards, handle.write payload vs path, split for-else/AugAssign).
+Cycle 28a — post-PR #6 `foundry/steward` checkpoint after Bugbot follow-ups
+(`recallweave-jqy`) and Cold Trails invariant/mutation tests (`recallweave-bbc`).
+Base: merged PR #6 squash `43730aa` on `main`. Scope: viewer.v2 provenance,
+Cold Trails selection/UI remediations, and export-history hardening since that
+merge.
 
-Suite target **504** OK (1 skip). Prefer clean PASS; PASS WITH FIXES acceptable
-only when remaining findings are Medium/Low test-oracle coverage with no `src/`
-runtime changes (same bar as merged PR #4).
+Suite target **506** Python OK (1 skip) plus **43** viewer JS tests
+(`npm test` in `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only
+when remaining findings are Medium/Low with no Critical/High security, privacy,
+evidence-integrity, or reproducibility defect.
 <!-- CYCLE-CONTEXT-END -->

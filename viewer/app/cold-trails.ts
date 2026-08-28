@@ -11,7 +11,8 @@ export type TrailType =
   | "distant_neighbors"
   | "bridge"
   | "island"
-  | "reinforced";
+  | "reinforced"
+  | "dormant";
 
 export type TrailTrust = "authored" | "candidate" | "structural";
 
@@ -62,6 +63,26 @@ export type ColdTrailsFeedback = {
 
 const EVIDENCE_FLOOR = 0.25;
 const DEFAULT_TOUR_LENGTH = 6;
+const DORMANT_MIN_DAYS = 180;
+const MS_PER_DAY = 86_400_000;
+
+function parseUtcTimestamp(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return new Date(parsed);
+}
+
+function daysSince(value: string | null | undefined, nowMs: number): number | null {
+  const parsed = parseUtcTimestamp(value);
+  if (!parsed) return null;
+  return Math.max(0, (nowMs - parsed.getTime()) / MS_PER_DAY);
+}
+
+function ageFactor(days: number | null): number {
+  if (days === null) return 0;
+  return Math.min(days / 365, 1);
+}
 
 export function weightedTotal(breakdown: Omit<ScoreBreakdown, "total">): number {
   return Math.max(
@@ -101,6 +122,8 @@ export function trailTypeLabel(type: TrailType): string {
       return "Island";
     case "reinforced":
       return "Reinforced";
+    case "dormant":
+      return "Dormant";
     default:
       return type;
   }
@@ -420,6 +443,11 @@ function scoreCandidateTrail(
   const distance = distanceScore(source, target, interDomainCounts);
   const centrality = centralityScore(edge.source, edge.target, degrees, p90);
   const structure = type === "bridge" || type === "island" ? 0.2 : 0;
+  const olderDays = Math.max(
+    daysSince(source.modified_at, Date.now()) ?? 0,
+    daysSince(target.modified_at, Date.now()) ?? 0,
+  );
+  const ageBonus = 0.15 * ageFactor(olderDays > 0 ? olderDays : null);
   let penalties = 0;
   if (feedback.usedNodeIds.has(edge.source) || feedback.usedNodeIds.has(edge.target)) {
     penalties += 0.3;
@@ -438,7 +466,7 @@ function scoreCandidateTrail(
     distance,
     evidence,
     centrality,
-    structure,
+    structure: Math.min(1, structure + ageBonus),
     penalties,
   };
   const total = weightedTotal(breakdown);
@@ -620,6 +648,60 @@ function islandTrails(
         headline: "This note is structurally isolated but has multiple candidate edges.",
         structuralFacts: [
           `Authored degree ${authoredDegree(graph, node.id)}; ${candidateCounts.get(node.id) || 0} candidate edges.`,
+        ],
+      };
+    });
+}
+
+function dormantTrails(
+  graph: GraphDocument,
+  degrees: Map<string, number>,
+  p90: number,
+  nowMs: number = Date.now(),
+): ColdTrail[] {
+  const candidateCounts = new Map<string, number>();
+  candidateEdges(graph).forEach((edge) => {
+    candidateCounts.set(edge.source, (candidateCounts.get(edge.source) || 0) + 1);
+    candidateCounts.set(edge.target, (candidateCounts.get(edge.target) || 0) + 1);
+  });
+  return graph.nodes
+    .filter((node) => {
+      const days = daysSince(node.modified_at, nowMs);
+      return (
+        days !== null &&
+        days >= DORMANT_MIN_DAYS &&
+        (candidateCounts.get(node.id) || 0) >= 1
+      );
+    })
+    .map((node) => {
+      const days = daysSince(node.modified_at, nowMs) || 0;
+      const age = ageFactor(days);
+      const centrality = centralityScore(node.id, node.id, degrees, p90);
+      const breakdown = {
+        novelty: 0,
+        distance: 0,
+        evidence: 0,
+        centrality,
+        structure: Math.min(1, 0.4 + age),
+        penalties: 0,
+      };
+      const total = weightedTotal(breakdown);
+      return {
+        type: "dormant" as const,
+        trust: "structural" as const,
+        sourceId: node.id,
+        targetId: node.id,
+        nodeId: node.id,
+        surpriseTerms: [],
+        score: total,
+        scoreBreakdown: {
+          ...breakdown,
+          total,
+        },
+        headline: "This note has been unmodified for a long time while discovery signals remain.",
+        structuralFacts: [
+          `Observed modified_at ${node.modified_at}; ${Math.floor(days)} days before this tour.`,
+          `${candidateCounts.get(node.id) || 0} candidate edge(s) still touch this note.`,
         ],
       };
     });
@@ -823,7 +905,7 @@ function pickTrail(
 }
 
 function isStructuralTrail(trail: ColdTrail): boolean {
-  return trail.type === "bridge" || trail.type === "island";
+  return trail.type === "bridge" || trail.type === "island" || trail.type === "dormant";
 }
 
 function selectTourTrails(
@@ -849,7 +931,7 @@ function selectTourTrails(
     : null;
 
   const phases: Array<(trail: ColdTrail) => boolean> = [
-    (trail) => trail.type === "bridge" || trail.type === "island",
+    (trail) => trail.type === "bridge" || trail.type === "island" || trail.type === "dormant",
     (trail) => trail.type === "unwritten_link" || trail.type === "distant_neighbors",
     (trail) => trail.type === "unwritten_link" || trail.type === "distant_neighbors",
     (trail) => {
@@ -1018,6 +1100,7 @@ export function buildColdTrails(
   const pool: ColdTrail[] = [
     ...bridgeTrails(graph, nodes, degrees, p90),
     ...islandTrails(graph, degrees, p90),
+    ...dormantTrails(graph, degrees, p90),
   ];
 
   if (includeCandidates) {
@@ -1044,7 +1127,7 @@ export function buildColdTrails(
 
   if (
     !pool.some((trail) => trail.surpriseTerms.length >= 2) &&
-    !pool.some((trail) => trail.type === "bridge" || trail.type === "island")
+    !pool.some((trail) => isStructuralTrail(trail))
   ) {
     return {
       status: "refused",

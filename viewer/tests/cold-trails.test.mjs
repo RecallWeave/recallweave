@@ -684,7 +684,7 @@ test("allows two same-domain trails before exhausting the domain touch limit", (
 });
 
 function isStructuralTrail(trail) {
-  return trail.type === "bridge" || trail.type === "island";
+  return trail.type === "bridge" || trail.type === "island" || trail.type === "dormant";
 }
 
 test("requires three covered domains when the eligible pool spans three", () => {
@@ -753,6 +753,59 @@ test("requires three covered domains when the eligible pool spans three", () => 
     }),
   );
   assert.ok(domains.size >= 3);
+});
+
+test("detects dormant trails from unmodified notes with candidate edges", () => {
+  const oldStamp = "2024-01-01T00:00:00Z";
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Core", modified_at: "2026-08-01T00:00:00Z" },
+      { id: "sleep.md", title: "Sleep", path: "sleep.md", domain: "Archive", modified_at: oldStamp },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      {
+        id: "c1",
+        source: "sleep.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("sleep.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "n5.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("n5.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  const dormant = result.trails.find((trail) => trail.type === "dormant");
+  assert.ok(dormant);
+  assert.equal(dormant?.nodeId, "sleep.md");
+  assert.equal(dormant?.trust, "structural");
+  assert.match(dormant?.structuralFacts.join(" ") ?? "", /modified_at/);
 });
 
 test("reported scores match the weighted scoring formula", () => {

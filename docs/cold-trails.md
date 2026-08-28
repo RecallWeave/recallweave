@@ -63,10 +63,10 @@ The first implementation should support five types:
 | Bridge | A note has authored edges into at least two weakly connected domains | Structural fact |
 | Island | A note has degree at most one and at least two candidate edges | Structural fact |
 | Reinforced | Candidate has at least two independent signals | Structural fact plus weighted prompt |
+| Dormant | A note with valid `modified_at` at least 180 days old that still has candidate edges | Structural fact naming the observed timestamp |
 
-Later, after `viewer.v2`, timestamps and export history can support Dormant,
-Parallel invention, and Drift trail types. These additions must state exactly
-which observed fields triggered them.
+Later trail types still pending: Parallel invention and Drift. These additions must
+state exactly which observed fields triggered them.
 
 ## Surprise qualification
 
