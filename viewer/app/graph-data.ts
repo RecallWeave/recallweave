@@ -150,14 +150,11 @@ export function safeContentHash(value: unknown): string | null {
 }
 
 const UTC_ISO_TIMESTAMP =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/u;
 
-export function safeIsoTimestamp(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  if (typeof value !== "string") return null;
-  if (value !== value.trim()) return null;
-  const cleaned = value.trim();
-  const match = UTC_ISO_TIMESTAMP.exec(cleaned);
+/** Absolute UTC microseconds since Unix epoch, preserving up to microsecond precision. */
+export function utcEpochMicros(value: string): bigint | null {
+  const match = UTC_ISO_TIMESTAMP.exec(value);
   if (!match) return null;
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -170,12 +167,36 @@ export function safeIsoTimestamp(value: unknown): string | null {
   }
   const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
   if (day > daysInMonth) return null;
-  const parsed = Date.parse(cleaned);
-  if (!Number.isFinite(parsed)) return null;
-  const asUtc = new Date(parsed);
-  // Canonicalize the parsed instant to UTC. Do not require the source wall-clock
-  // components to equal UTC components — nonzero offsets would always fail that.
-  return asUtc.toISOString().replace(/\.000Z$/u, "Z");
+  const tz = match[8];
+  let offsetMinutes = 0;
+  if (tz !== "Z") {
+    const sign = tz.startsWith("-") ? -1 : 1;
+    offsetMinutes = sign * (Number(tz.slice(1, 3)) * 60 + Number(tz.slice(4, 6)));
+  }
+  const secondMs = Date.UTC(year, month - 1, day, hour, minute, second) - offsetMinutes * 60_000;
+  if (!Number.isFinite(secondMs)) return null;
+  const microsPart = BigInt((match[7] || "").padEnd(6, "0").slice(0, 6) || "0");
+  return BigInt(secondMs) * BigInt(1000) + microsPart;
+}
+
+function formatUtcMicros(epochMicros: bigint): string {
+  const microsInSecond = epochMicros % BigInt(1_000_000);
+  const secondMs = Number((epochMicros - microsInSecond) / BigInt(1000));
+  const asUtc = new Date(secondMs);
+  const base = asUtc.toISOString().replace(/\.\d{3}Z$/u, "Z").replace(/Z$/u, "");
+  if (microsInSecond === BigInt(0)) return `${base}Z`;
+  const frac = microsInSecond.toString().padStart(6, "0").replace(/0+$/u, "");
+  return `${base}.${frac}Z`;
+}
+
+export function safeIsoTimestamp(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return null;
+  if (value !== value.trim()) return null;
+  const cleaned = value.trim();
+  const epoch = utcEpochMicros(cleaned);
+  if (epoch === null) return null;
+  return formatUtcMicros(epoch);
 }
 
 export function safeVaultLabel(value: unknown): string {

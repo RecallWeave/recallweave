@@ -651,6 +651,9 @@ test("rejects non-UTC and malformed graph generated_at instead of preserving lab
   const fractional = normalizeGraph(graph({ generated_at: "2026-08-28T00:00:00.001Z" }));
   assert.equal(fractional.generated_at, "2026-08-28T00:00:00.001Z");
 
+  const micro = normalizeGraph(graph({ generated_at: "2026-06-15T00:00:00.000001Z" }));
+  assert.equal(micro.generated_at, "2026-06-15T00:00:00.000001Z");
+
   const offsetNodes = normalizeGraph(
     graph({
       schema_version: VIEWER_SCHEMA_V2,

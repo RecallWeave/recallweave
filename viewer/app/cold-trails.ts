@@ -1,6 +1,7 @@
 import {
   citationPath,
   safeCitation,
+  utcEpochMicros,
   type GraphDocument,
   type GraphEdge,
   type GraphNode,
@@ -72,22 +73,26 @@ const MS_PER_DAY = 86_400_000;
 
 function parseUtcTimestamp(value: string | null | undefined): Date | null {
   if (!value) return null;
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed);
+  const epoch = utcEpochMicros(value);
+  if (epoch === null) return null;
+  return new Date(Number(epoch / BigInt(1000)));
 }
 
 function daysSince(value: string | null | undefined, nowMs: number): number | null {
-  const parsed = parseUtcTimestamp(value);
-  if (!parsed) return null;
-  return Math.max(0, (nowMs - parsed.getTime()) / MS_PER_DAY);
+  const epoch = value ? utcEpochMicros(value) : null;
+  if (epoch === null) return null;
+  const nowMicros = BigInt(Math.trunc(nowMs)) * BigInt(1000);
+  const diff = nowMicros - epoch;
+  return Math.max(0, Number(diff) / (MS_PER_DAY * 1000));
 }
 
 function daysBetween(a: string | null | undefined, b: string | null | undefined): number | null {
-  const left = parseUtcTimestamp(a);
-  const right = parseUtcTimestamp(b);
-  if (!left || !right) return null;
-  return Math.abs(left.getTime() - right.getTime()) / MS_PER_DAY;
+  if (!a || !b) return null;
+  const left = utcEpochMicros(a);
+  const right = utcEpochMicros(b);
+  if (left === null || right === null) return null;
+  const diffMicros = left > right ? left - right : right - left;
+  return Number(diffMicros) / (MS_PER_DAY * 1000);
 }
 
 function ageFactor(days: number | null): number {
