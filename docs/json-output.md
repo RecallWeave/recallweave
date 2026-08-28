@@ -149,6 +149,7 @@ Options:
 
 - `--verified-only` excludes deterministic discovery candidates;
 - `--include-excerpts` adds bounded note summaries and evidence passages;
+- `--vault-name` sets a vault label claim (not a filesystem path);
 - `--force` permits replacing an existing regular output file;
 - `--title` overrides the graph title.
 
@@ -174,7 +175,7 @@ written:
 
 ```json
 {
-  "schema_version": "recallweave.viewer.v1",
+  "schema_version": "recallweave.viewer.v2",
   "operation": "export_viewer",
   "output": "/absolute/path/graph.json",
   "notes": 6,
