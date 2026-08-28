@@ -96,6 +96,18 @@ function daysBetween(a: string | null | undefined, b: string | null | undefined)
   return Number(diffMicros) / (MS_PER_DAY * 1000);
 }
 
+/** Signed days from `earlier` to `later`; null if either timestamp is invalid. */
+function daysFromTo(
+  earlier: string | null | undefined,
+  later: string | null | undefined,
+): number | null {
+  if (!earlier || !later) return null;
+  const start = utcEpochMicros(earlier);
+  const end = utcEpochMicros(later);
+  if (start === null || end === null) return null;
+  return Number(end - start) / (MS_PER_DAY * 1000);
+}
+
 function ageFactor(days: number | null): number {
   if (days === null) return 0;
   return Math.min(days / 365, 1);
@@ -722,7 +734,7 @@ function dormantTrails(
       const days = daysSince(node.modified_at, nowMs);
       if (days === null || days < DORMANT_MIN_DAYS) return false;
       if ((candidateCounts.get(node.id) || 0) < 1) return false;
-      const spanDays = daysBetween(node.created_at, node.modified_at);
+      const spanDays = daysFromTo(node.created_at, node.modified_at);
       if (spanDays !== null && spanDays >= DRIFT_MIN_DAYS) return false;
       return true;
     })
@@ -777,7 +789,7 @@ function driftTrails(
     : 0;
   return graph.nodes
     .filter((node) => {
-      const spanDays = daysBetween(node.created_at, node.modified_at);
+      const spanDays = daysFromTo(node.created_at, node.modified_at);
       return (
         spanDays !== null &&
         spanDays >= DRIFT_MIN_DAYS &&
@@ -785,7 +797,7 @@ function driftTrails(
       );
     })
     .map((node) => {
-      const spanDays = daysBetween(node.created_at, node.modified_at) || 0;
+      const spanDays = daysFromTo(node.created_at, node.modified_at) || 0;
       const centrality = centralityScore(node.id, node.id, degrees, p90);
       const historyBonus = historyChanged > 0 ? 0.2 : 0;
       const breakdown = {
