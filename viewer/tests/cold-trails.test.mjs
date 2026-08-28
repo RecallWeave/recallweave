@@ -808,6 +808,60 @@ test("detects dormant trails from unmodified notes with candidate edges", () => 
   assert.match(dormant?.structuralFacts.join(" ") ?? "", /modified_at/);
 });
 
+test("detects parallel invention from near-simultaneous cross-domain candidates", () => {
+  const stampA = "2026-06-01T00:00:00Z";
+  const stampB = "2026-06-08T00:00:00Z";
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
+      { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+      {
+        id: "parallel",
+        source: "alpha.md",
+        target: "beta.md",
+        verified: false,
+        evidence: citedEvidence("alpha.md", "beta.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c2",
+        source: "n5.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("n5.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  const parallel = result.trails.find((trail) => trail.type === "parallel_invention");
+  assert.ok(parallel);
+  assert.equal(parallel?.trust, "candidate");
+  assert.match(parallel?.structuralFacts.join(" ") ?? "", /created_at/);
+});
+
 test("reported scores match the weighted scoring formula", () => {
   const fixture = graph({
     nodes: [

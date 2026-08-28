@@ -12,7 +12,8 @@ export type TrailType =
   | "bridge"
   | "island"
   | "reinforced"
-  | "dormant";
+  | "dormant"
+  | "parallel_invention";
 
 export type TrailTrust = "authored" | "candidate" | "structural";
 
@@ -64,6 +65,7 @@ export type ColdTrailsFeedback = {
 const EVIDENCE_FLOOR = 0.25;
 const DEFAULT_TOUR_LENGTH = 6;
 const DORMANT_MIN_DAYS = 180;
+const PARALLEL_MAX_DAY_GAP = 14;
 const MS_PER_DAY = 86_400_000;
 
 function parseUtcTimestamp(value: string | null | undefined): Date | null {
@@ -124,6 +126,8 @@ export function trailTypeLabel(type: TrailType): string {
       return "Reinforced";
     case "dormant":
       return "Dormant";
+    case "parallel_invention":
+      return "Parallel invention";
     default:
       return type;
   }
@@ -488,6 +492,11 @@ function scoreCandidateTrail(
       authoredPathWithinHops(adjacency, edge.source, edge.target, 3)
         ? "An authored path exists within three hops."
         : "No authored path within three hops.",
+      ...(type === "parallel_invention" && source.created_at && target.created_at
+        ? [
+            `Observed created_at ${source.created_at} and ${target.created_at} within ${PARALLEL_MAX_DAY_GAP} days across domains.`,
+          ]
+        : []),
     ],
   };
 }
@@ -526,12 +535,22 @@ function classifyCandidateEdge(
   const target = nodes.get(edge.target);
   if (!source || !target) return [];
   const types: TrailType[] = [];
-  if (!authoredPathWithinHops(adjacency, edge.source, edge.target, 3)) {
-    types.push("unwritten_link");
-  }
   const sourceDomain = source.domain || "Unclassified";
   const targetDomain = target.domain || "Unclassified";
-  if (sourceDomain !== targetDomain) {
+  const sourceCreated = daysSince(source.created_at, Date.now());
+  const targetCreated = daysSince(target.created_at, Date.now());
+  const isParallel =
+    sourceCreated !== null &&
+    targetCreated !== null &&
+    sourceDomain !== targetDomain &&
+    Math.abs(sourceCreated - targetCreated) <= PARALLEL_MAX_DAY_GAP &&
+    surpriseTerms(source, target, edge).length >= 2;
+  if (isParallel) {
+    types.push("parallel_invention");
+  } else if (!authoredPathWithinHops(adjacency, edge.source, edge.target, 3)) {
+    types.push("unwritten_link");
+  }
+  if (!isParallel && sourceDomain !== targetDomain) {
     const key = sourceDomain < targetDomain
       ? `${sourceDomain}|${targetDomain}`
       : `${targetDomain}|${sourceDomain}`;
