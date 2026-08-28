@@ -722,12 +722,8 @@ function dormantTrails(
       const days = daysSince(node.modified_at, nowMs);
       if (days === null || days < DORMANT_MIN_DAYS) return false;
       if ((candidateCounts.get(node.id) || 0) < 1) return false;
-      const created = parseUtcTimestamp(node.created_at);
-      const modified = parseUtcTimestamp(node.modified_at);
-      if (created && modified) {
-        const spanDays = (modified.getTime() - created.getTime()) / MS_PER_DAY;
-        if (spanDays >= DRIFT_MIN_DAYS) return false;
-      }
+      const spanDays = daysBetween(node.created_at, node.modified_at);
+      if (spanDays !== null && spanDays >= DRIFT_MIN_DAYS) return false;
       return true;
     })
     .map((node) => {
@@ -781,16 +777,15 @@ function driftTrails(
     : 0;
   return graph.nodes
     .filter((node) => {
-      const created = parseUtcTimestamp(node.created_at);
-      const modified = parseUtcTimestamp(node.modified_at);
-      if (!created || !modified) return false;
-      const spanDays = (modified.getTime() - created.getTime()) / MS_PER_DAY;
-      return spanDays >= DRIFT_MIN_DAYS && (candidateCounts.get(node.id) || 0) >= 1;
+      const spanDays = daysBetween(node.created_at, node.modified_at);
+      return (
+        spanDays !== null &&
+        spanDays >= DRIFT_MIN_DAYS &&
+        (candidateCounts.get(node.id) || 0) >= 1
+      );
     })
     .map((node) => {
-      const created = parseUtcTimestamp(node.created_at)!;
-      const modified = parseUtcTimestamp(node.modified_at)!;
-      const spanDays = (modified.getTime() - created.getTime()) / MS_PER_DAY;
+      const spanDays = daysBetween(node.created_at, node.modified_at) || 0;
       const centrality = centralityScore(node.id, node.id, degrees, p90);
       const historyBonus = historyChanged > 0 ? 0.2 : 0;
       const breakdown = {
