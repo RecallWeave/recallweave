@@ -95,13 +95,14 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 28e — PR #7 milestone review after invalid-offset and ageBonus remediations
-(`4c7993b`): fractional timestamps, timezone-less exporter rejection,
-Bridge/Island opening contract, Show-another/keyboard hardening, Drift
-history conflict gating. Base: merged PR #6 squash `43730aa` on `main`.
+Cycle 29 — post-PR #7 stewardship remediations on `foundry/steward` (`8d94b9a`):
+citation-backed candidates without passage text; Parallel co-typed with
+Unwritten/Distant and reserved out of early Unwritten/Distant slots; malformed
+prior graphs rejected as export-history predecessors. Base: merged PR #7 squash
+`1fd322a` on `main` (fresh steward cut `ba3bdf1`).
 
-Suite target **509** Python OK (1 skip) plus **56** viewer JS tests
-(`npm test` in `viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only
-when remaining findings are Medium/Low with no Critical/High security, privacy,
+Suite target **510** Python OK (1 skip) plus viewer JS tests (`npm test` in
+`viewer/`). Prefer clean PASS; PASS WITH FIXES acceptable only when remaining
+findings are Medium/Low with no Critical/High security, privacy,
 evidence-integrity, or reproducibility defect.
 <!-- CYCLE-CONTEXT-END -->

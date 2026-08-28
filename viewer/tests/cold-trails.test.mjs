@@ -1056,6 +1056,86 @@ test("detects drift trails from long-lived notes with candidate edges", () => {
   assert.match(drift?.structuralFacts.join(" ") ?? "", /export history/i);
 });
 
+test("refuses drift when modified_at precedes created_at", () => {
+  const fixture = graph({
+    nodes: [
+      {
+        id: "hub.md",
+        title: "Hub",
+        path: "hub.md",
+        domain: "Core",
+        created_at: "2026-07-01T00:00:00Z",
+        modified_at: "2026-07-02T00:00:00Z",
+      },
+      {
+        id: "core-b.md",
+        title: "Core B",
+        path: "core-b.md",
+        domain: "Core",
+        created_at: "2026-07-01T00:00:00Z",
+        modified_at: "2026-07-02T00:00:00Z",
+      },
+      {
+        id: "reversed.md",
+        title: "Reversed",
+        path: "reversed.md",
+        domain: "Archive",
+        created_at: "2026-06-01T00:00:00Z",
+        modified_at: "2024-01-01T00:00:00Z",
+      },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "core-b.md", verified: true },
+      {
+        id: "c1",
+        source: "reversed.md",
+        target: "n4.md",
+        verified: false,
+        evidence: {
+          source_evidence: { citation: "reversed.md:10-12", passage: "reversed signal" },
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        },
+      },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(!result.trails.some((trail) => trail.type === "drift"));
+});
+
 test("buildColdTrails is deterministic for the same graph and reference clock", () => {
   const fixture = graph({
     generated_at: "2026-08-28T12:00:00Z",
