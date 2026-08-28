@@ -629,6 +629,52 @@ test("flags malformed export-history counters instead of coercing them", () => {
   assert.equal(normalized.export_history?.claim_conflict, true);
 });
 
+test("omitting any required export_history counter claims conflict", () => {
+  const baseHistory = {
+    export_id: "first-export",
+    previous_content_hash: null,
+    node_content_hashes_changed: 0,
+    node_content_hashes_unchanged: 0,
+    nodes_added: 1,
+    nodes_removed: 0,
+  };
+  for (const omitted of [
+    "node_content_hashes_changed",
+    "node_content_hashes_unchanged",
+    "nodes_added",
+    "nodes_removed",
+  ]) {
+    const history = { ...baseHistory };
+    delete history[omitted];
+    const normalized = normalizeGraph({
+      schema_version: VIEWER_SCHEMA_V2,
+      nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
+      edges: [],
+      export_history: history,
+    });
+    assert.equal(
+      normalized.export_history?.claim_conflict,
+      true,
+      `expected claim_conflict when omitting ${omitted}`,
+    );
+  }
+});
+
+test("graph-data source requires own-property check for previous_content_hash", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const sourcePath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../app/graph-data.ts",
+  );
+  const source = await readFile(sourcePath, "utf8");
+  assert.match(
+    source,
+    /hasOwnProperty\.call\(\s*raw,\s*["']previous_content_hash["']\s*\)/,
+  );
+});
+
 test("citationPath extracts the note path from validated citations", () => {
   assert.equal(citationPath("Folder/Note.md:12"), "Folder/Note.md");
   assert.equal(citationPath("Folder/Note.md:12-18"), "Folder/Note.md");
