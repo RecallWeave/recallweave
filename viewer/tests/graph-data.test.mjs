@@ -975,13 +975,13 @@ test("normalizeGraph load path feeds AtlasExportPrivacyChrome the same way Graph
     "utf8",
   );
   assert.ok(
-    explorerSource.indexOf("const next = normalizeGraph(parsed)") <
+    explorerSource.indexOf("graphFromLoadedFileText") <
       explorerSource.indexOf("setGraph(next)"),
-    "loadFile must normalize before setting graph state",
+    "loadFile must parse via graphFromLoadedFileText before setting graph state",
   );
   assert.match(explorerSource, /<AtlasExportPrivacyChrome\s+graph=\{graph\}\s*\/>/);
 
-  // Mirror the post-loadFile UI: normalize untrusted JSON, then render the banner GraphExplorer mounts.
+  // Mirror the post-loadFile UI: parse file text, then render the banner GraphExplorer mounts.
   const raw = {
     schema_version: VIEWER_SCHEMA_V2,
     nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) }],
@@ -995,7 +995,8 @@ test("normalizeGraph load path feeds AtlasExportPrivacyChrome the same way Graph
       nodes_removed: 0,
     },
   };
-  const loaded = normalizeGraph(raw);
+  const { graphFromLoadedFileText } = await import("../app/graph-load.ts");
+  const loaded = graphFromLoadedFileText(JSON.stringify(raw));
   const html = renderToStaticMarkup(
     createElement(AtlasExportPrivacyChrome, { graph: loaded }),
   );

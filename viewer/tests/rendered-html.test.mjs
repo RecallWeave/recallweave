@@ -124,10 +124,12 @@ test("client import and keyboard focus guards remain wired", async () => {
     "utf8",
   );
   assert.ok(
-    source.indexOf("const next = normalizeGraph(parsed)") <
+    source.indexOf("graphFromLoadedFileText") <
       source.indexOf("userLoadedRef.current = true"),
     "a rejected import must not suppress the bundled sample",
   );
+  assert.match(source, /assertGraphFileWithinLimit/);
+  assert.match(source, /graphFromLoadedFileText/);
   assert.match(source, /sampleAbortRef\.current\?\.abort\(\)/);
   assert.match(source, /tabIndex=\{-1\}/);
   assert.match(source, /role="group" aria-label="Connection filters"/);
