@@ -532,6 +532,21 @@ test("normalizes viewer.v2 provenance claims and reconciles export history", () 
     },
   });
   assert.equal(conflict.export_history?.claim_conflict, true);
+
+  const omittedPrior = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [{ id: "a.md", title: "A", path: "a.md", content_hash: hashA }],
+    edges: [],
+    export_history: {
+      export_id: "export-omitted-prior",
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 1,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(omittedPrior.export_history?.previous_content_hash, null);
+  assert.equal(omittedPrior.export_history?.claim_conflict, true);
 });
 
 test("flags subsequent export with missing overlap counters", () => {

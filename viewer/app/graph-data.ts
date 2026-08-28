@@ -287,12 +287,14 @@ function parseExportHistory(
   const raw = value as Record<string, unknown>;
   const export_id = safeIdentifier(raw.export_id);
   if (!export_id) return undefined;
+  const priorAbsent = !Object.prototype.hasOwnProperty.call(raw, "previous_content_hash");
   const priorRaw = raw.previous_content_hash;
   const previous_content_hash = safeContentHash(priorRaw);
   const priorMalformed =
-    priorRaw !== null &&
-    priorRaw !== undefined &&
-    previous_content_hash === null;
+    priorAbsent ||
+    (priorRaw !== null &&
+      priorRaw !== undefined &&
+      previous_content_hash === null);
   const node_content_hashes_changed = optionalNonNegativeInteger(
     raw.node_content_hashes_changed,
   );

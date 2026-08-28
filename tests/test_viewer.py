@@ -16,6 +16,7 @@ from recallweave.policy import IndexPolicy
 from recallweave.viewer import (
     VIEWER_SCHEMA_VERSION,
     _nullable_timestamp,
+    _valid_previous_viewer_nodes,
     build_viewer_document,
     export_viewer_graph,
 )
@@ -128,6 +129,258 @@ class ViewerExportTest(unittest.TestCase):
         self.assertGreaterEqual(
             second["export_history"]["node_content_hashes_unchanged"], 1
         )
+
+    def test_malformed_prior_export_is_not_used_as_history(self) -> None:
+        output = Path(self.temporary.name) / "malformed-prior.json"
+        export_viewer_graph(self.database, output)
+        history = {
+            "export_id": "prior-export",
+            "previous_content_hash": None,
+            "node_content_hashes_changed": 0,
+            "node_content_hashes_unchanged": 0,
+            "nodes_added": 0,
+            "nodes_removed": 0,
+        }
+        malformed = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {"title": "missing id"},
+                {"id": "dup.md", "title": "Dup", "path": "dup.md", "content_hash": "a" * 64},
+                {"id": "dup.md", "title": "Dup2", "path": "dup.md", "content_hash": "b" * 64},
+            ],
+            "edges": [],
+            "export_history": history,
+        }
+        output.write_text(json.dumps(malformed), encoding="utf-8")
+        export_viewer_graph(self.database, output, force=True)
+        second = json.loads(output.read_text(encoding="utf-8"))
+        self.assertIsNone(second["export_history"]["previous_content_hash"])
+        self.assertIsNone(_valid_previous_viewer_nodes(malformed))
+        emptyish = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [None, {"id": 12}],
+            "edges": [],
+            "export_history": history,
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(emptyish))
+        missing_fields = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [{"id": "a.md"}],
+            "edges": [],
+            "export_history": history,
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(missing_fields))
+        bad_hashes = [
+            "not-a-sha256",
+            "A" * 64,
+            "ab",
+            "",
+            "g" * 64,
+        ]
+        for digest in bad_hashes:
+            bad_hash = {
+                "schema_version": VIEWER_SCHEMA_VERSION,
+                "nodes": [
+                    {
+                        "id": "a.md",
+                        "title": "A",
+                        "path": "a.md",
+                        "content_hash": digest,
+                    }
+                ],
+                "edges": [],
+                "export_history": history,
+            }
+            self.assertIsNone(
+                _valid_previous_viewer_nodes(bad_hash),
+                msg=f"expected reject for content_hash={digest!r}",
+            )
+        missing_hash_key = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [{"id": "a.md", "title": "A", "path": "a.md"}],
+            "edges": [],
+            "export_history": history,
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(missing_hash_key))
+        missing_edges = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "a.md",
+                    "title": "A",
+                    "path": "a.md",
+                    "content_hash": "a" * 64,
+                }
+            ],
+            "export_history": history,
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(missing_edges))
+        missing_history = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "a.md",
+                    "title": "A",
+                    "path": "a.md",
+                    "content_hash": "a" * 64,
+                }
+            ],
+            "edges": [],
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(missing_history))
+        empty_missing_edges = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [],
+            "export_history": history,
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(empty_missing_edges))
+        for omitted in (
+            "export_id",
+            "previous_content_hash",
+            "node_content_hashes_changed",
+            "node_content_hashes_unchanged",
+            "nodes_added",
+            "nodes_removed",
+        ):
+            incomplete_history = dict(history)
+            del incomplete_history[omitted]
+            incomplete = {
+                "schema_version": VIEWER_SCHEMA_VERSION,
+                "nodes": [
+                    {
+                        "id": "a.md",
+                        "title": "A",
+                        "path": "a.md",
+                        "content_hash": "a" * 64,
+                    }
+                ],
+                "edges": [],
+                "export_history": incomplete_history,
+            }
+            self.assertIsNone(
+                _valid_previous_viewer_nodes(incomplete),
+                msg=f"expected reject when export_history omits {omitted}",
+            )
+            output.write_text(json.dumps(incomplete), encoding="utf-8")
+            export_viewer_graph(self.database, output, force=True)
+            forced = json.loads(output.read_text(encoding="utf-8"))
+            self.assertIsNone(
+                forced["export_history"]["previous_content_hash"],
+                msg=f"forced replace must ignore prior missing {omitted}",
+            )
+        contradictory_first = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "a.md",
+                    "title": "A",
+                    "path": "a.md",
+                    "content_hash": "a" * 64,
+                }
+            ],
+            "edges": [],
+            "export_history": {
+                "export_id": "contradictory-first",
+                "previous_content_hash": None,
+                "node_content_hashes_changed": 0,
+                "node_content_hashes_unchanged": 0,
+                "nodes_added": 0,
+                "nodes_removed": 0,
+            },
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(contradictory_first))
+        output.write_text(json.dumps(contradictory_first), encoding="utf-8")
+        export_viewer_graph(self.database, output, force=True)
+        forced_contradictory = json.loads(output.read_text(encoding="utf-8"))
+        self.assertIsNone(
+            forced_contradictory["export_history"]["previous_content_hash"]
+        )
+        contradictory_subsequent = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "a.md",
+                    "title": "A",
+                    "path": "a.md",
+                    "content_hash": "a" * 64,
+                },
+                {
+                    "id": "b.md",
+                    "title": "B",
+                    "path": "b.md",
+                    "content_hash": "b" * 64,
+                },
+            ],
+            "edges": [],
+            "export_history": {
+                "export_id": "contradictory-subsequent",
+                "previous_content_hash": "c" * 64,
+                "node_content_hashes_changed": 0,
+                "node_content_hashes_unchanged": 0,
+                "nodes_added": 0,
+                "nodes_removed": 0,
+            },
+        }
+        self.assertIsNone(_valid_previous_viewer_nodes(contradictory_subsequent))
+
+    def test_valid_empty_prior_export_is_used_as_history(self) -> None:
+        empty_prior = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "title": "Empty predecessor",
+            "generated_at": "2026-08-01T00:00:00+00:00",
+            "nodes": [],
+            "edges": [],
+            "diagnostics": {"unresolved_links": 0},
+            "privacy": {
+                "export_profile": "empty_graph",
+                "requested_profile": "without_passage_text",
+                "metadata_only": True,
+                "includes_excerpts": False,
+                "includes_passage_text": False,
+                "includes_note_derived_terms": False,
+                "includes_paths_titles_tags": False,
+                "generated_locally": True,
+            },
+            "export_history": {
+                "export_id": "empty-prior",
+                "previous_content_hash": None,
+                "node_content_hashes_changed": 0,
+                "node_content_hashes_unchanged": 0,
+                "nodes_added": 0,
+                "nodes_removed": 0,
+            },
+        }
+        self.assertEqual(_valid_previous_viewer_nodes(empty_prior), [])
+        output = Path(self.temporary.name) / "from-empty-prior.json"
+        output.write_text(json.dumps(empty_prior), encoding="utf-8")
+        export_viewer_graph(self.database, output, force=True)
+        second = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(
+            second["export_history"]["previous_content_hash"],
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        self.assertGreaterEqual(second["export_history"]["nodes_added"], 1)
+        null_hash_prior = {
+            "schema_version": VIEWER_SCHEMA_VERSION,
+            "nodes": [
+                {
+                    "id": "legacy.md",
+                    "title": "Legacy",
+                    "path": "legacy.md",
+                    "content_hash": None,
+                }
+            ],
+            "edges": [],
+            "export_history": {
+                "export_id": "legacy-prior",
+                "previous_content_hash": None,
+                "node_content_hashes_changed": 0,
+                "node_content_hashes_unchanged": 0,
+                "nodes_added": 1,
+                "nodes_removed": 0,
+            },
+        }
+        self.assertIsNotNone(_valid_previous_viewer_nodes(null_hash_prior))
 
     def test_vault_name_rejects_path_like_labels(self) -> None:
         with self.assertRaisesRegex(ValueError, "vault label"):

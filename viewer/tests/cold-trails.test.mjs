@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { VIEWER_SCHEMA_V2 } from "../app/graph-data.ts";
-import { buildColdTrails, exportSavedTrailsMarkdown, refusalMessage, trailTrustLabel } from "../app/cold-trails.ts";
+import {
+  buildColdTrails,
+  classifyCandidateEdgeTypes,
+  exportSavedTrailsMarkdown,
+  refusalMessage,
+  trailTrustLabel,
+} from "../app/cold-trails.ts";
 
 function citedEvidence(source, target, extra = {}) {
   return {
@@ -850,14 +856,37 @@ test("detects parallel invention from near-simultaneous cross-domain candidates"
       { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
       { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
       { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
       { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
       { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
       { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
       { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+      { id: "n8.md", title: "Eight", path: "n8.md", domain: "Finance" },
     ],
     edges: [
       { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
       { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+      // Authored path through hub so Parallel still qualifies but Unwritten does not.
+      { id: "auth-3", source: "hub.md", target: "alpha.md", verified: true },
+      { id: "auth-4", source: "hub.md", target: "beta.md", verified: true },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
       {
         id: "parallel",
         source: "alpha.md",
@@ -868,20 +897,11 @@ test("detects parallel invention from near-simultaneous cross-domain candidates"
         }),
       },
       {
-        id: "c2",
-        source: "n5.md",
-        target: "n6.md",
-        verified: false,
-        evidence: citedEvidence("n5.md", "n6.md", {
-          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
-        }),
-      },
-      {
         id: "c3",
         source: "n7.md",
-        target: "n4.md",
+        target: "n8.md",
         verified: false,
-        evidence: citedEvidence("n7.md", "n4.md", {
+        evidence: citedEvidence("n7.md", "n8.md", {
           signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
         }),
       },
@@ -1040,6 +1060,86 @@ test("detects drift trails from long-lived notes with candidate edges", () => {
   assert.equal(drift?.nodeId, "drift.md");
   assert.match(drift?.structuralFacts.join(" ") ?? "", /created_at/);
   assert.match(drift?.structuralFacts.join(" ") ?? "", /export history/i);
+});
+
+test("refuses drift when modified_at precedes created_at", () => {
+  const fixture = graph({
+    nodes: [
+      {
+        id: "hub.md",
+        title: "Hub",
+        path: "hub.md",
+        domain: "Core",
+        created_at: "2026-07-01T00:00:00Z",
+        modified_at: "2026-07-02T00:00:00Z",
+      },
+      {
+        id: "core-b.md",
+        title: "Core B",
+        path: "core-b.md",
+        domain: "Core",
+        created_at: "2026-07-01T00:00:00Z",
+        modified_at: "2026-07-02T00:00:00Z",
+      },
+      {
+        id: "reversed.md",
+        title: "Reversed",
+        path: "reversed.md",
+        domain: "Archive",
+        created_at: "2026-06-01T00:00:00Z",
+        modified_at: "2024-01-01T00:00:00Z",
+      },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n3.md", title: "Three", path: "n3.md", domain: "Core" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Archive" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "core-b.md", verified: true },
+      {
+        id: "c1",
+        source: "reversed.md",
+        target: "n4.md",
+        verified: false,
+        evidence: {
+          source_evidence: { citation: "reversed.md:10-12", passage: "reversed signal" },
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        },
+      },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n3.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n3.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(!result.trails.some((trail) => trail.type === "drift"));
 });
 
 test("buildColdTrails is deterministic for the same graph and reference clock", () => {
@@ -1238,7 +1338,7 @@ test("successful tours satisfy aggregate selection invariants", () => {
   }
 });
 
-test("omits candidate trails when the export has no passage text", () => {
+test("keeps citation-backed candidate trails when the export has no passage text", () => {
   const fixture = graph({
     privacy: {
       export_profile: "graph_metadata_and_note_derived_terms",
@@ -1292,8 +1392,8 @@ test("omits candidate trails when the export has no passage text", () => {
   });
   const result = buildColdTrails(fixture);
   assert.equal(result.status, "ok");
-  assert.ok(result.trails.every((trail) => trail.trust === "structural"));
-  assert.match(result.notice ?? "", /structural-only/i);
+  assert.ok(result.trails.some((trail) => trail.trust === "candidate"));
+  assert.match(result.notice ?? "", /citations and signals only/i);
 });
 
 test("counts same-domain endpoint trails once against the domain touch limit", () => {
@@ -1425,14 +1525,36 @@ test("parallel invention includes the exact 14-day boundary and excludes one mil
         { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
         { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
         { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+        { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
         { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
         { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
         { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
         { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+        { id: "n8.md", title: "Eight", path: "n8.md", domain: "Finance" },
       ],
       edges: [
         { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
         { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+        { id: "auth-3", source: "hub.md", target: "alpha.md", verified: true },
+        { id: "auth-4", source: "hub.md", target: "beta.md", verified: true },
+        {
+          id: "c-leaf-1",
+          source: "leaf.md",
+          target: "n5.md",
+          verified: false,
+          evidence: citedEvidence("leaf.md", "n5.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c-leaf-2",
+          source: "leaf.md",
+          target: "n6.md",
+          verified: false,
+          evidence: citedEvidence("leaf.md", "n6.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
         {
           id: "parallel",
           source: "alpha.md",
@@ -1443,20 +1565,11 @@ test("parallel invention includes the exact 14-day boundary and excludes one mil
           }),
         },
         {
-          id: "c2",
-          source: "n5.md",
-          target: "n6.md",
-          verified: false,
-          evidence: citedEvidence("n5.md", "n6.md", {
-            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
-          }),
-        },
-        {
           id: "c3",
           source: "n7.md",
-          target: "n4.md",
+          target: "n8.md",
           verified: false,
-          evidence: citedEvidence("n7.md", "n4.md", {
+          evidence: citedEvidence("n7.md", "n8.md", {
             signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
           }),
         },
@@ -1825,4 +1938,169 @@ test("preserves fractional seconds through normalizeGraph for parallel invention
     microBeyond,
   );
   assert.ok(!buildColdTrails(microNormalized).trails?.some((trail) => trail.type === "parallel_invention"));
+});
+
+test("emits Parallel invention without suppressing Unwritten or Distant classifications", () => {
+  const stampA = "2026-06-01T00:00:00Z";
+  const stampB = "2026-06-08T00:00:00Z";
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      { id: "alpha.md", title: "Alpha", path: "alpha.md", domain: "Labs", created_at: stampA },
+      { id: "beta.md", title: "Beta", path: "beta.md", domain: "Field", created_at: stampB },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "parallel",
+        source: "alpha.md",
+        target: "beta.md",
+        verified: false,
+        evidence: citedEvidence("alpha.md", "beta.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n4.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n4.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const parallelEdge = fixture.edges.find((edge) => edge.id === "parallel");
+  assert.ok(parallelEdge);
+  const classified = new Set(classifyCandidateEdgeTypes(fixture, parallelEdge));
+  assert.ok(classified.has("parallel_invention"));
+  assert.ok(classified.has("unwritten_link"));
+  assert.ok(classified.has("distant_neighbors"));
+
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  const types = new Set(result.trails.map((trail) => trail.type));
+  assert.ok(types.has("island"));
+  // Reservation holds Parallel pairs out of early Unwritten/Distant slots.
+  assert.ok(result.trails.some((trail) => trail.type === "parallel_invention"));
+  assert.ok(
+    result.trails.some(
+      (trail) =>
+        trail.type === "unwritten_link" || trail.type === "distant_neighbors",
+    ),
+  );
+});
+
+test("selects Parallel invention when the same pair is also the reserved Reinforced candidate", () => {
+  const stampA = "2026-06-01T00:00:00Z";
+  const stampB = "2026-06-08T00:00:00Z";
+  const fixture = graph({
+    nodes: [
+      { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+      { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+      {
+        id: "alpha.md",
+        title: "Alpha",
+        path: "alpha.md",
+        domain: "Labs",
+        created_at: stampA,
+        tags: ["experiments"],
+      },
+      {
+        id: "beta.md",
+        title: "Beta",
+        path: "beta.md",
+        domain: "Field",
+        created_at: stampB,
+        tags: ["experiments"],
+      },
+      { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+      { id: "n4.md", title: "Four", path: "n4.md", domain: "Core" },
+      { id: "n5.md", title: "Five", path: "n5.md", domain: "Garden" },
+      { id: "n6.md", title: "Six", path: "n6.md", domain: "Garden" },
+      { id: "n7.md", title: "Seven", path: "n7.md", domain: "Finance" },
+      { id: "n8.md", title: "Eight", path: "n8.md", domain: "Finance" },
+    ],
+    edges: [
+      { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+      { id: "auth-2", source: "hub.md", target: "n4.md", verified: true },
+      {
+        id: "c-leaf-1",
+        source: "leaf.md",
+        target: "n5.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n5.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+        }),
+      },
+      {
+        id: "c-leaf-2",
+        source: "leaf.md",
+        target: "n6.md",
+        verified: false,
+        evidence: citedEvidence("leaf.md", "n6.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+      {
+        id: "parallel",
+        source: "alpha.md",
+        target: "beta.md",
+        verified: false,
+        evidence: citedEvidence("alpha.md", "beta.md", {
+          signals: {
+            lexical_terms: ["quasar", "ripple", "vector", "tensor"],
+            shared_tags: ["experiments"],
+          },
+        }),
+      },
+      {
+        id: "c3",
+        source: "n7.md",
+        target: "n8.md",
+        verified: false,
+        evidence: citedEvidence("n7.md", "n8.md", {
+          signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+        }),
+      },
+    ],
+  });
+  const parallelEdge = fixture.edges.find((edge) => edge.id === "parallel");
+  assert.ok(parallelEdge);
+  const classified = new Set(classifyCandidateEdgeTypes(fixture, parallelEdge));
+  assert.ok(classified.has("parallel_invention"));
+  assert.ok(classified.has("reinforced"));
+
+  const result = buildColdTrails(fixture);
+  assert.equal(result.status, "ok");
+  assert.ok(
+    result.trails.some(
+      (trail) => trail.type === "parallel_invention" && trail.edgeId === "parallel",
+    ),
+  );
 });

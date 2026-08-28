@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from .safe_write import _install_non_replacing, install, prepare_destination, ve
 VIEWER_SCHEMA_VERSION = "recallweave.viewer.v2"
 MAX_SUMMARY_CHARACTERS = 280
 MAX_EVIDENCE_CHARACTERS = 500
+_SHA256_HEX = re.compile(r"^[a-f0-9]{64}$")
+_REQUIRED_PREVIOUS_NODE_FIELDS = ("id", "title", "path")
 
 
 def _json_list(value: str) -> list[str]:
@@ -180,6 +183,112 @@ def _aggregate_content_digest(nodes: list[dict[str, Any]]) -> str:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+def _valid_predecessor_content_hash(value: object) -> bool:
+    """Null hashes are legacy-ok; non-null must be lowercase hex SHA-256."""
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    return _SHA256_HEX.fullmatch(value) is not None
+
+
+def _valid_predecessor_export_history(value: object, *, node_count: int) -> bool:
+    if not isinstance(value, dict):
+        return False
+    required_keys = (
+        "export_id",
+        "previous_content_hash",
+        "node_content_hashes_changed",
+        "node_content_hashes_unchanged",
+        "nodes_added",
+        "nodes_removed",
+    )
+    if any(key not in value for key in required_keys):
+        return False
+    export_id = value["export_id"]
+    if not isinstance(export_id, str) or not export_id.strip():
+        return False
+    if not _valid_predecessor_content_hash(value["previous_content_hash"]):
+        return False
+    for field in (
+        "node_content_hashes_changed",
+        "node_content_hashes_unchanged",
+        "nodes_added",
+        "nodes_removed",
+    ):
+        count = value[field]
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            return False
+    changed = value["node_content_hashes_changed"]
+    unchanged = value["node_content_hashes_unchanged"]
+    added = value["nodes_added"]
+    removed = value["nodes_removed"]
+    prior_hash = value["previous_content_hash"]
+    overlap = changed + unchanged
+    # Match Atlas claim_conflict: first-export vs subsequent-export accounting.
+    if prior_hash is None:
+        if added != node_count or overlap != 0 or removed != 0:
+            return False
+    elif overlap + added != node_count:
+        return False
+    return True
+
+
+def _valid_previous_viewer_nodes(
+    previous_document: dict[str, Any] | None,
+) -> list[dict[str, Any]] | None:
+    """Return prior nodes only when the previous document is a usable predecessor.
+
+    Recognized schemas may carry an empty node list (valid empty export). A
+    predecessor must include an ``edges`` array; viewer.v2 also requires a
+    complete ``export_history`` object. Non-empty node lists must supply unique
+    ids plus required title/path strings and schema-appropriate content hashes
+    before any history digest is derived.
+    """
+    if not isinstance(previous_document, dict):
+        return None
+    schema = previous_document.get("schema_version")
+    if schema not in {
+        "recallweave.viewer.v1",
+        "recallweave.viewer.v2",
+    }:
+        return None
+    raw_nodes = previous_document.get("nodes")
+    if not isinstance(raw_nodes, list):
+        return None
+    edges = previous_document.get("edges")
+    if not isinstance(edges, list):
+        return None
+    if schema == "recallweave.viewer.v2" and not _valid_predecessor_export_history(
+        previous_document.get("export_history"),
+        node_count=len(raw_nodes),
+    ):
+        return None
+    if not raw_nodes:
+        return []
+
+    validated: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    require_content_hash_key = schema == "recallweave.viewer.v2"
+    for item in raw_nodes:
+        if not isinstance(item, dict):
+            return None
+        for field in _REQUIRED_PREVIOUS_NODE_FIELDS:
+            value = item.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return None
+        node_id = str(item["id"])
+        if node_id in seen_ids:
+            return None
+        seen_ids.add(node_id)
+        if require_content_hash_key and "content_hash" not in item:
+            return None
+        if not _valid_predecessor_content_hash(item.get("content_hash")):
+            return None
+        validated.append(item)
+    return validated
+
+
 def _normalize_vault_label(value: str | None) -> str | None:
     if value is None:
         return None
@@ -201,11 +310,11 @@ def _export_history(
         for node in nodes
         if isinstance(node.get("id"), str)
     }
+    prior_nodes = _valid_previous_viewer_nodes(previous_document)
     previous_hashes: dict[str, str | None] = {}
-    if isinstance(previous_document, dict):
-        for node in previous_document.get("nodes") or []:
-            if isinstance(node, dict) and isinstance(node.get("id"), str):
-                previous_hashes[str(node["id"])] = node.get("content_hash")
+    if prior_nodes is not None:
+        for node in prior_nodes:
+            previous_hashes[str(node["id"])] = node.get("content_hash")
 
     added = sum(1 for node_id in current_hashes if node_id not in previous_hashes)
     removed = sum(1 for node_id in previous_hashes if node_id not in current_hashes)
@@ -219,13 +328,9 @@ def _export_history(
         else:
             changed += 1
 
-    previous_digest = None
-    if isinstance(previous_document, dict):
-        prior_nodes = previous_document.get("nodes")
-        if isinstance(prior_nodes, list):
-            previous_digest = _aggregate_content_digest(
-                [n for n in prior_nodes if isinstance(n, dict) and isinstance(n.get("id"), str)]
-            )
+    previous_digest = (
+        _aggregate_content_digest(prior_nodes) if prior_nodes is not None else None
+    )
 
     return {
         "export_id": str(uuid.uuid4()),
@@ -423,10 +528,7 @@ def export_viewer_graph(
             loaded = json.loads(output.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, UnicodeError):
             loaded = None
-        if isinstance(loaded, dict) and loaded.get("schema_version") in {
-            "recallweave.viewer.v1",
-            "recallweave.viewer.v2",
-        }:
+        if isinstance(loaded, dict) and _valid_previous_viewer_nodes(loaded) is not None:
             previous_document = loaded
 
     document = build_viewer_document(

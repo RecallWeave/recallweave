@@ -175,7 +175,8 @@ Select greedily and rescore after every choice:
 Shorten the tour rather than relax a constraint. Sequence the stops:
 
 1. one unarguable Bridge or Island;
-2. the two strongest qualified Unwritten link or Distant neighbors;
+2. the two strongest qualified Unwritten link or Distant neighbors
+   (pairs that also qualify as Parallel invention are held for step 3);
 3. a different type;
 4. a trail from domains not yet emphasized;
 5. the strongest Reinforced candidate.
@@ -239,7 +240,7 @@ Cold Trails should say no when evidence does not support a useful tour:
 | --- | --- |
 | Fewer than eight nodes | Graph is small enough to explore directly |
 | Fewer than three candidates | Not enough discovery candidates |
-| No passage text | Structural-only degraded tour; never fabricate evidence |
+| No passage text | Candidates may still qualify from citations and signals; notice the limitation |
 | Fewer than three eligible trails | Show the shorter count and explain why |
 | No candidates pass surprise terms | Say the overlap mirrors existing labels |
 | One domain | Omit cross-domain types and state the limitation |
