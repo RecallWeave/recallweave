@@ -933,6 +933,21 @@ export function buildColdTrails(
     };
   }
 
+  const poolDomains = new Set<string>();
+  pool.forEach((trail) => {
+    touchedDomainsForTrail(trail, nodes).forEach((domain) => poolDomains.add(domain));
+  });
+  const coveredDomains = new Set(
+    selected.flatMap((trail) => touchedDomainsForTrail(trail, nodes)),
+  );
+  if (poolDomains.size >= 3 && coveredDomains.size < 3) {
+    return {
+      status: "refused",
+      reason: "insufficient_eligible_trails",
+      message: refusalMessage("insufficient_eligible_trails"),
+    };
+  }
+
   return {
     status: "ok",
     trails: selected,

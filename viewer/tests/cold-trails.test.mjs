@@ -687,6 +687,74 @@ function isStructuralTrail(trail) {
   return trail.type === "bridge" || trail.type === "island";
 }
 
+test("requires three covered domains when the eligible pool spans three", () => {
+  const result = buildColdTrails(
+    graph({
+      nodes: [
+        { id: "hub.md", title: "Hub", path: "hub.md", domain: "Core" },
+        { id: "edge.md", title: "Edge", path: "edge.md", domain: "Edge" },
+        { id: "leaf.md", title: "Leaf", path: "leaf.md", domain: "Garden" },
+        { id: "only-b.md", title: "Only B", path: "only-b.md", domain: "Only" },
+        { id: "only-c.md", title: "Only C", path: "only-c.md", domain: "Only" },
+        { id: "only-d.md", title: "Only D", path: "only-d.md", domain: "Only" },
+        { id: "only-e.md", title: "Only E", path: "only-e.md", domain: "Only" },
+        { id: "only-f.md", title: "Only F", path: "only-f.md", domain: "Only" },
+      ],
+      edges: [
+        { id: "auth-1", source: "hub.md", target: "edge.md", verified: true },
+        { id: "auth-2", source: "hub.md", target: "leaf.md", verified: true },
+        {
+          id: "c1",
+          source: "only-b.md",
+          target: "only-c.md",
+          verified: false,
+          evidence: citedEvidence("only-b.md", "only-c.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "vector", "tensor"] },
+          }),
+        },
+        {
+          id: "c2",
+          source: "only-d.md",
+          target: "only-e.md",
+          verified: false,
+          evidence: citedEvidence("only-d.md", "only-e.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "matrix", "phase"] },
+          }),
+        },
+        {
+          id: "c3",
+          source: "only-f.md",
+          target: "edge.md",
+          verified: false,
+          evidence: citedEvidence("only-f.md", "edge.md", {
+            signals: { lexical_terms: ["quasar", "ripple", "theta", "phase"] },
+          }),
+        },
+      ],
+    }),
+  );
+  assert.equal(result.status, "ok");
+  const domainById = new Map(
+    [
+      ["hub.md", "Core"],
+      ["edge.md", "Edge"],
+      ["leaf.md", "Garden"],
+      ["only-b.md", "Only"],
+      ["only-c.md", "Only"],
+      ["only-d.md", "Only"],
+      ["only-e.md", "Only"],
+      ["only-f.md", "Only"],
+    ],
+  );
+  const domains = new Set(
+    result.trails.flatMap((trail) => {
+      const ids = trail.nodeId ? [trail.nodeId] : [trail.sourceId, trail.targetId];
+      return ids.map((id) => domainById.get(id) || "Unclassified");
+    }),
+  );
+  assert.ok(domains.size >= 3);
+});
+
 test("reported scores match the weighted scoring formula", () => {
   const fixture = graph({
     nodes: [
