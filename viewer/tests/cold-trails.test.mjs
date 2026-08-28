@@ -1432,12 +1432,14 @@ test("parallel invention includes the exact 14-day boundary and excludes one mil
 
 test("dormant 180-day boundary is identical across timezones for normalized graphs", async () => {
   const { spawnSync } = await import("node:child_process");
-  const { fileURLToPath } = await import("node:url");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
   const path = await import("node:path");
   const root = path.dirname(fileURLToPath(import.meta.url));
+  const graphDataUrl = pathToFileURL(path.join(root, "../app/graph-data.ts")).href;
+  const coldTrailsUrl = pathToFileURL(path.join(root, "../app/cold-trails.ts")).href;
   const script = `
-import { normalizeGraph } from ${JSON.stringify(path.join(root, "../app/graph-data.ts"))};
-import { buildColdTrails } from ${JSON.stringify(path.join(root, "../app/cold-trails.ts"))};
+import { normalizeGraph } from ${JSON.stringify(graphDataUrl)};
+import { buildColdTrails } from ${JSON.stringify(coldTrailsUrl)};
 
 const generatedAt = "2026-08-28T00:00:00Z";
 const atBoundary = "2026-03-01T00:00:00Z";
