@@ -124,16 +124,20 @@ with source path, line, link kind, target text, and reason such as `not_found`,
 Returns index freshness, row counts, and the same `discovery` diagnostics
 recorded during indexing.
 
-## `export-viewer` and `recallweave.viewer.v1`
+## `export-viewer` and `recallweave.viewer.v2`
 
 `export-viewer` writes a local graph document and returns a stdout receipt. Both
-use:
+use the current schema:
 
 ```json
 {
-  "schema_version": "recallweave.viewer.v1"
+  "schema_version": "recallweave.viewer.v2"
 }
 ```
+
+`recallweave.viewer.v1` remains readable by Atlas for legacy exports; new exports
+use v2 (see [viewer.v2 contract](#export-viewer-and-recallweaveviewerv2-frozen-schema)
+below).
 
 Create a structure-only graph from an existing index:
 

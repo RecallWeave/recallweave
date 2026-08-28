@@ -101,6 +101,8 @@ class ViewerExportTest(unittest.TestCase):
         ):
             self.assertIn(key, history)
         self.assertIsNone(history["previous_content_hash"])
+        self.assertEqual(history["node_content_hashes_changed"], 0)
+        self.assertEqual(history["node_content_hashes_unchanged"], 0)
         self.assertEqual(history["nodes_added"], len(document["nodes"]))
         for node in document["nodes"]:
             self.assertIn("created_at", node)
@@ -125,6 +127,14 @@ class ViewerExportTest(unittest.TestCase):
         self.assertGreaterEqual(
             second["export_history"]["node_content_hashes_unchanged"], 1
         )
+
+    def test_vault_name_rejects_path_like_labels(self) -> None:
+        with self.assertRaisesRegex(ValueError, "vault label"):
+            build_viewer_document(self.database, vault_name="/Users/alice/Vault")
+        with self.assertRaisesRegex(ValueError, "vault label"):
+            build_viewer_document(self.database, vault_name="../secrets")
+        document = build_viewer_document(self.database, vault_name="Research Vault")
+        self.assertEqual(document["vault_name"], "Research Vault")
 
     def test_export_refuses_overwrite_without_force(self) -> None:
         output = Path(self.temporary.name) / "graph.json"

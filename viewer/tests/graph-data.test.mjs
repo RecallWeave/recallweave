@@ -492,8 +492,8 @@ test("normalizes viewer.v2 provenance claims and reconciles export history", () 
     export_history: {
       export_id: "export-v2",
       previous_content_hash: null,
-      node_content_hashes_changed: 1,
-      node_content_hashes_unchanged: 1,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
       nodes_added: 2,
       nodes_removed: 0,
     },
@@ -524,14 +524,34 @@ test("normalizes viewer.v2 provenance claims and reconciles export history", () 
     edges: [],
     export_history: {
       export_id: "export-conflict",
-      previous_content_hash: null,
-      node_content_hashes_changed: 0,
+      previous_content_hash: "b".repeat(64),
+      node_content_hashes_changed: 3,
       node_content_hashes_unchanged: 0,
-      nodes_added: 3,
+      nodes_added: 0,
       nodes_removed: 0,
     },
   });
   assert.equal(conflict.export_history?.claim_conflict, true);
+});
+
+test("accepts producer-shaped first export history", () => {
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "a.md", title: "A", path: "a.md", content_hash: "a".repeat(64) },
+      { id: "b.md", title: "B", path: "b.md", content_hash: "b".repeat(64) },
+    ],
+    edges: [],
+    export_history: {
+      export_id: "first-export",
+      previous_content_hash: null,
+      node_content_hashes_changed: 0,
+      node_content_hashes_unchanged: 0,
+      nodes_added: 2,
+      nodes_removed: 0,
+    },
+  });
+  assert.equal(normalized.export_history?.claim_conflict, false);
 });
 
 test("citationPath extracts the note path from validated citations", () => {

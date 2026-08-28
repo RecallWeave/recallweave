@@ -293,11 +293,9 @@ function evidenceScore(edge: GraphEdge): number {
   const terms = sharedTerms(edge);
   const tags = edge.evidence?.signals?.shared_tags?.length || 0;
   const neighbors = edge.evidence?.signals?.mutual_neighbor_ids?.length || 0;
-  const passage = Boolean(
-    edge.evidence?.source_evidence?.passage ||
-      edge.evidence?.target_evidence?.passage ||
-      edge.evidence?.source_text,
-  );
+  const passage =
+    Boolean(edge.evidence?.source_evidence?.passage || edge.evidence?.source_text) &&
+    Boolean(edge.evidence?.target_evidence?.passage);
   return (
     0.4 * Math.min(terms.length / 6, 1) +
     (passage ? 0.3 : 0) +

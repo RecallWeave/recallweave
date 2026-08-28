@@ -161,6 +161,19 @@ def _aggregate_content_digest(nodes: list[dict[str, Any]]) -> str | None:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+def _normalize_vault_label(value: str | None) -> str | None:
+    if value is None:
+        return None
+    label = " ".join(str(value).split()).strip()[:120]
+    if not label or label.startswith(".") or ".." in label:
+        return None
+    if "/" in label or "\\" in label or ":" in label:
+        return None
+    if "obsidian" in label.casefold():
+        return None
+    return label
+
+
 def _export_history(
     previous_document: dict[str, Any] | None, nodes: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -352,8 +365,13 @@ def build_viewer_document(
         },
         "export_history": _export_history(previous_document, nodes),
     }
-    if vault_name:
-        document["vault_name"] = vault_name
+    if vault_name is not None:
+        normalized_vault = _normalize_vault_label(vault_name)
+        if normalized_vault is None:
+            raise ValueError(
+                "vault_name must be a vault label, not a filesystem path or URL fragment."
+            )
+        document["vault_name"] = normalized_vault
     if policy_row is not None and str(policy_row[0]).strip():
         document["policy_config_sha256"] = str(policy_row[0]).strip()
     return document

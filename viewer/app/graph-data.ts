@@ -223,10 +223,11 @@ function parseExportHistory(
   const nodes_added = nonNegativeInteger(raw.nodes_added);
   const nodes_removed = nonNegativeInteger(raw.nodes_removed);
   const hashedNodes = nodes.filter((node) => node.content_hash).length;
-  const hashCountMismatch =
-    node_content_hashes_changed + node_content_hashes_unchanged !== hashedNodes;
-  const firstExportMismatch =
-    previous_content_hash === null && nodes_added !== nodes.length;
+  const overlapHashes = node_content_hashes_changed + node_content_hashes_unchanged;
+  const claim_conflict =
+    previous_content_hash === null
+      ? nodes_added !== nodes.length
+      : overlapHashes > hashedNodes;
   return {
     export_id,
     previous_content_hash,
@@ -234,7 +235,7 @@ function parseExportHistory(
     node_content_hashes_unchanged,
     nodes_added,
     nodes_removed,
-    claim_conflict: hashCountMismatch || firstExportMismatch,
+    claim_conflict,
   };
 }
 
