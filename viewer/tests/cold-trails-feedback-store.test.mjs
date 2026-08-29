@@ -143,6 +143,35 @@ test("clear history invalidates a pending dismiss write", async () => {
   assert.deepEqual(await loadDismissedPairDigests(fingerprint, storage), []);
 });
 
+test("clearDismissedPairDigests propagates storage deletion failures", async () => {
+  const fingerprint = await graphFeedbackFingerprint(demoGraph("export-fail-clear"));
+  const throwing = {
+    removeItem() {
+      throw new Error("denied");
+    },
+    getItem() {
+      return null;
+    },
+  };
+  await assert.rejects(
+    () => clearDismissedPairDigests(fingerprint, throwing),
+    /denied/,
+  );
+
+  const sticky = {
+    removeItem() {
+      // pretend deletion was ignored
+    },
+    getItem() {
+      return "[]";
+    },
+  };
+  await assert.rejects(
+    () => clearDismissedPairDigests(fingerprint, sticky),
+    /was not removed/,
+  );
+});
+
 test("dismiss digests do not bleed across unrelated export fingerprints", async () => {
   const storage = memoryStorage();
   const first = await graphFeedbackFingerprint(demoGraph("export-one"));

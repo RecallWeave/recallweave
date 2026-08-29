@@ -68,13 +68,16 @@ export async function saveDismissedPairDigests(
 
 export async function clearDismissedPairDigests(
   fingerprint: string,
-  storage: Pick<Storage, "removeItem"> | null | undefined = globalThis.localStorage,
+  storage: Pick<Storage, "removeItem" | "getItem"> | null | undefined = globalThis.localStorage,
 ): Promise<void> {
-  if (!fingerprint || !storage) return;
-  try {
-    storage.removeItem(STORAGE_PREFIX + fingerprint);
-  } catch {
-    // ignore
+  if (!fingerprint) return;
+  if (!storage) {
+    throw new Error("Browser storage is unavailable for Cold Trails dismiss history.");
+  }
+  storage.removeItem(STORAGE_PREFIX + fingerprint);
+  const remaining = storage.getItem?.(STORAGE_PREFIX + fingerprint);
+  if (remaining != null) {
+    throw new Error("Cold Trails dismiss history was not removed from browser storage.");
   }
 }
 

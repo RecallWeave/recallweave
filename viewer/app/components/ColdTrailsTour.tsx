@@ -238,17 +238,20 @@ export function ColdTrailsTour({
     setExplainOpen(false);
     setAnnouncement(
       next.status === "ok"
-        ? `Cold Trails history cleared. Loaded ${next.trails.length} stops.`
-        : `Cold Trails history cleared. ${next.message}`,
+        ? `Cold Trails session history cleared. Loaded ${next.trails.length} stops.`
+        : `Cold Trails session history cleared. ${next.message}`,
     );
+    onStatus("Cold Trails session dismissals cleared. Updating browser storage…");
     void persistRef.current
       .enqueue(async () => {
         const fingerprint = await graphFeedbackFingerprint(graph);
         await clearDismissedPairDigests(fingerprint);
-        onStatus("Cold Trails dismiss history cleared.");
+        onStatus("Cold Trails dismiss history cleared from browser storage.");
       })
       .catch(() => {
-        onStatus("Could not clear Cold Trails dismiss history from browser storage.");
+        onStatus(
+          "Session dismissals were cleared, but browser storage could not be updated. Stored history may return next time.",
+        );
       });
   }
 
