@@ -6,7 +6,7 @@ automatically whenever the local suite is green and the tree is clean.
 
 **Do not merge, promote, release, or deploy from this branch.**
 
-- Latest adversarial review verdict: **pending** (fresh cut after PR #15 merge `9803802`)
+- Latest adversarial review verdict: **PASS** (`.codex-reviews/review-20260829T011040Z.md`, cycle 37 shared_tags)
 - Promotion to `main` happens only through a milestone pull request with human
   merge approval, and only after the adversarial review returns PASS.
 - A failing or absent review does **not** block this checkpoint, because the
