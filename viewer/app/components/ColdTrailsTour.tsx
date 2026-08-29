@@ -19,6 +19,16 @@ import {
   type ColdTrailsFeedback,
   type ColdTrailsResult,
 } from "../cold-trails";
+import {
+  candidateDismissKeys,
+  clearDismissedPairDigests,
+  createPersistCoordinator,
+  filterDismissedPairsByStoredDigests,
+  graphFeedbackFingerprint,
+  hashDismissedPairKey,
+  loadDismissedPairDigests,
+  saveDismissedPairDigests,
+} from "../cold-trails-feedback-store";
 import { citationPath, type GraphDocument, type GraphEdge } from "../graph-data";
 
 type ColdTrailsTourProps = {
@@ -31,9 +41,9 @@ type ColdTrailsTourProps = {
   onStatus: (message: string) => void;
 };
 
-function initialFeedback(): ColdTrailsFeedback {
+function initialFeedback(dismissedPairs: Iterable<string> = []): ColdTrailsFeedback {
   return {
-    dismissedPairs: new Set(),
+    dismissedPairs: new Set(dismissedPairs),
     shownPairs: new Set(),
     usedDomains: new Set(),
     usedTypes: new Map(),
@@ -81,6 +91,7 @@ export function ColdTrailsTour({
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const feedbackRef = useRef<ColdTrailsFeedback>(initialFeedback());
+  const persistRef = useRef(createPersistCoordinator());
   const [result, setResult] = useState<ColdTrailsResult | null>(null);
   const [trails, setTrails] = useState<ColdTrail[]>([]);
   const [index, setIndex] = useState(0);
@@ -106,19 +117,43 @@ export function ColdTrailsTour({
 
   useEffect(() => {
     if (!open) return;
-    feedbackRef.current = initialFeedback();
-    const next = buildColdTrails(graph, feedbackRef.current);
-    setResult(next);
-    setTrails(next.status === "ok" ? next.trails : []);
-    setIndex(0);
-    setSaved([]);
-    setExplainOpen(false);
-    setAnnouncement(
-      next.status === "ok"
-        ? `Cold Trails loaded ${next.trails.length} stops.`
-        : `Cold Trails unavailable: ${next.message}`,
-    );
-    requestAnimationFrame(() => closeRef.current?.focus());
+    let cancelled = false;
+    (async () => {
+      const fingerprint = await graphFeedbackFingerprint(graph);
+      const storedDigests = await loadDismissedPairDigests(fingerprint);
+      const dismissed = await filterDismissedPairsByStoredDigests(
+        candidateDismissKeys(graph),
+        storedDigests,
+      );
+      if (cancelled) return;
+      feedbackRef.current = initialFeedback(dismissed);
+      const next = buildColdTrails(graph, feedbackRef.current);
+      setResult(next);
+      setTrails(next.status === "ok" ? next.trails : []);
+      setIndex(0);
+      setSaved([]);
+      setExplainOpen(false);
+      setAnnouncement(
+        next.status === "ok"
+          ? `Cold Trails loaded ${next.trails.length} stops.`
+          : `Cold Trails unavailable: ${next.message}`,
+      );
+      requestAnimationFrame(() => closeRef.current?.focus());
+    })().catch(() => {
+      if (cancelled) return;
+      feedbackRef.current = initialFeedback();
+      const next = buildColdTrails(graph, feedbackRef.current);
+      setResult(next);
+      setTrails(next.status === "ok" ? next.trails : []);
+      setAnnouncement(
+        next.status === "ok"
+          ? `Cold Trails loaded ${next.trails.length} stops.`
+          : `Cold Trails unavailable: ${next.message}`,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [graph, open]);
 
   useEffect(() => {
@@ -176,6 +211,14 @@ export function ColdTrailsTour({
   function dismissTrail() {
     if (!current) return;
     feedbackRef.current.dismissedPairs.add(trailPairKey(current));
+    const dismissedSnapshot = [...feedbackRef.current.dismissedPairs];
+    void persistRef.current.enqueue(async () => {
+      const fingerprint = await graphFeedbackFingerprint(graph);
+      const digests = await Promise.all(
+        dismissedSnapshot.map((key) => hashDismissedPairKey(key)),
+      );
+      await saveDismissedPairDigests(fingerprint, digests);
+    });
     const replacement = buildColdTrails(graph, feedbackRef.current);
     if (replacement.status === "ok") {
       setTrails(replacement.trails);
@@ -183,6 +226,33 @@ export function ColdTrailsTour({
       setResult(replacement);
     }
     onStatus("Trail dismissed for future ranking.");
+  }
+
+  function clearHistory() {
+    persistRef.current.bump();
+    feedbackRef.current = initialFeedback();
+    const next = buildColdTrails(graph, feedbackRef.current);
+    setResult(next);
+    setTrails(next.status === "ok" ? next.trails : []);
+    setIndex(0);
+    setExplainOpen(false);
+    setAnnouncement(
+      next.status === "ok"
+        ? `Cold Trails session history cleared. Loaded ${next.trails.length} stops.`
+        : `Cold Trails session history cleared. ${next.message}`,
+    );
+    onStatus("Cold Trails session dismissals cleared. Updating browser storage…");
+    void persistRef.current
+      .enqueue(async () => {
+        const fingerprint = await graphFeedbackFingerprint(graph);
+        await clearDismissedPairDigests(fingerprint);
+        onStatus("Cold Trails dismiss history cleared from browser storage.");
+      })
+      .catch(() => {
+        onStatus(
+          "Session dismissals were cleared, but browser storage could not be updated. Stored history may return next time.",
+        );
+      });
   }
 
   function showAnother() {
@@ -234,7 +304,7 @@ export function ColdTrailsTour({
   function handleDialogKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
-      onClose();
+      endTour();
       return;
     }
     const target = event.target as HTMLElement | null;
@@ -301,7 +371,7 @@ export function ColdTrailsTour({
         type="button"
         className="cold-trails-backdrop-dismiss"
         aria-label="Close Cold Trails"
-        onClick={onClose}
+        onClick={endTour}
       />
       <div
         ref={dialogRef}
@@ -318,7 +388,7 @@ export function ColdTrailsTour({
             <div className="detail-kicker">Guided discovery</div>
             <h2 id="cold-trails-title">Cold Trails</h2>
           </div>
-          <button ref={closeRef} className="ghost-button" onClick={onClose} aria-label="Close Cold Trails">
+          <button ref={closeRef} className="ghost-button" onClick={endTour} aria-label="Close Cold Trails">
             Close
           </button>
         </div>
@@ -434,6 +504,13 @@ export function ColdTrailsTour({
           <button className="primary-button" onClick={goNext} disabled={!current || index >= trails.length - 1}>Next</button>
           <button className="ghost-button" onClick={saveTrail} disabled={!current}>Save</button>
           <button className="ghost-button" onClick={dismissTrail} disabled={!current}>Dismiss</button>
+          <button
+            className="ghost-button"
+            onClick={clearHistory}
+            aria-label="Clear Cold Trails dismiss history"
+          >
+            Clear history
+          </button>
           <button className="ghost-button" onClick={() => setExplainOpen((value) => !value)} disabled={!current}>
             Explain
           </button>
