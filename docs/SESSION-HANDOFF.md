@@ -1,4 +1,4 @@
-# Session handoff — RecallWeave task contract capability
+# Session handoff — RecallWeave stewardship
 
 Written at planner rotation. Resume from **durable repo state + Beads + this
 file + `SWARM-RUNBOOK.md`**. Do not reconstruct the previous transcript;
@@ -7,27 +7,25 @@ hypothesis until you re-probe it — it was true when written, not necessarily n
 
 ## 1. Current objective
 
-Ship a **task contract / scoped work-packet export** for RecallWeave: given a
-task spec, emit a minimal, portable context bundle for another AI agent,
-exposing only the context that task requires. Canonical output is JSON
-(`recallweave.contract.v1`); the Markdown artifact is a **safe human-readable
-projection** of it.
-
-The capability is **built, reviewed, promoted and merged**. The objective is now
-*stewardship*: keep it correct, keep the checkpoint durable, and do not reopen
-settled design.
+Keep RecallWeave correct and the checkpoint durable. Task contracts
+(`recallweave.contract.v1`) and Atlas viewer.v2 + Cold Trails are **shipped**.
+Do not reopen settled design. Product follow-through is the post-`iyd`
+stewardship epic `recallweave-k7i` (docs/sample honesty, optional later fields).
 
 ## 2. Current phase / checkpoint
 
-**Phase: STEWARDSHIP + product — post-PR #5; epic `recallweave-iyd` active.**
+**Phase: STEWARDSHIP — post-PR #17; epic `recallweave-iyd` closed; `recallweave-k7i` active.**
 
-- Integration branch: **`foundry/steward`** cut from `main` @ `4bd4bcf` (PR #5).
+- Integration branch: **`foundry/steward`** (fresh cuts from `main` after each
+  stewardship promotion).
 - `foundry/task-contracts` remains **HISTORICAL**. **Never merge it into current work.**
-- Latest promoted adversarial verdict: cycle **26c PASS WITH FIXES** (scanner
-  stewardship on main).
-- `CHECKPOINT_NOT_APPROVED.md` is **restored** on the fresh steward.
-- Supervisor **unpaused** after this cut.
-- Active epic: **`recallweave-iyd`** Atlas viewer.v2 + Cold Trails foundation.
+- Latest promoted work on `main`: Cold Trails dismiss persistence + Clear history
+  (PR #17, `878aa90`). Prior: `signals.shared_tags` emission (PR #16).
+- Adversarial cycles through **cycle-36+** and dismiss-persistence PASS are on
+  the promoted lineage; re-probe `.codex-reviews/` for the latest file.
+- `CHECKPOINT_NOT_APPROVED.md` must be **present** on `foundry/steward` whenever
+  the branch is the durability checkpoint (not mid-promotion).
+- Active epic: **`recallweave-k7i`** post-iyd Atlas/Cold Trails product completion.
 
 ## 3. Architecture decisions already approved — DO NOT REOPEN
 
@@ -77,6 +75,10 @@ already paid for.
 15. **Squash is the promotion mechanism.** `main` enforces linear history and
     feature branches carry merge commits, so merge-commit and rebase are both
     refused by GitHub. Lineage lives on the retired branch and in the PR.
+16. **`recallweave.viewer.v2` is frozen** in `docs/json-output.md`. Emitters and
+    Atlas consume it; Cold Trails v1 (including timestamp trail types) is shipped.
+    Do not invent `vault_name` labels or reopen the Obsidian-open gate without
+    aligning `docs/cold-trails.md`.
 
 ## 4. Open blockers
 
@@ -105,12 +107,22 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 4. **`eaf runbook` project-awareness** recorded in `bd remember` as a Factory
    fix (`recallweave-eaf-runbook-gap`), not actionable in this repo.
 
+Standing merge authority (Josh, 2026-08-28): after Codex PASS within ≤3
+remediation rounds, stewardship milestone PRs may be squash-merged without a
+fresh ask. Still never force-push `main`, never skip hooks, never promote on a
+non-PASS review.
+
 ## 6. Active beads and worker assignments
 
-- Epic **`recallweave-iyd`** — Atlas viewer.v2 + Cold Trails foundation.
-  - **`iyd.1` in progress** — freeze viewer.v2 schema (docs).
-  - `iyd.2`–`iyd.4` blocked in sequence (emit, Atlas consume, Cold Trails v1).
-- Closed: `6ie` (PR #5), `7a4`, `86e`, `07h`, `94b`, stewardship-24 queue.
+- Epic **`recallweave-k7i`** — post-iyd Atlas/Cold Trails product completion.
+  - **`k7i.1` closed** — emit `signals.shared_tags` from note tag intersection.
+  - **`k7i.2` closed** — Cold Trails dismiss persistence + Clear history.
+  - **`k7i.3`** — refresh SESSION-HANDOFF / viewer README / sample-graph to v2
+    (this handoff refresh is part of that bead).
+- Optional later (not queued until human asks): `created_at` filesystem birth
+  fallback; `vault_name` Obsidian open (needs cold-trails.md alignment).
+- Closed epic **`recallweave-iyd`** — viewer.v2 schema, emitter, Atlas consume,
+  Cold Trails v1.
 
 ## 7. Known failure modes and traps
 
@@ -168,41 +180,45 @@ All four items from the 2026-08-23 rotation queue were resolved by Josh on
 
 ## 8. Supervisor / coordinator status
 
-- **Running.** Supervisor was unpaused after PR #4 merge and fresh steward cut.
+- Re-probe `~/.particle-supervisor/PAUSED` and live supervisor ticks before
+  assuming dispatch is running.
 - **The supervisor owns the routine loop** — integrate, gate, rotate, nudge,
   push, dispatch. Do not hand-drive it in parallel; two dispatchers produce
   duplicate work and lost commits.
 
 ## 9. Review state
 
-- Adversarial gate: cycle **25c PASS WITH FIXES** at `6d0260a` (scanner hardening;
-  no runtime Critical/High). Three remediation cycles consumed (25→25b→25c).
+- Re-probe `.codex-reviews/` for the latest verdict on the working tree.
+- Promotion and milestone merge still require PASS (or PASS WITH FIXES when that
+  is the accepted gate for the cycle) plus standing or explicit human merge
+  authority.
 
 ## 10. Do NOT replan or reconsider
 
-- The fifteen approved decisions in §3.
+- The approved decisions in §3.
 - The Beads graph and its `OWNS:` boundaries.
 - The git cadence and the checkpoint/promotion split.
 - Codex's role as independent reviewer.
 - `schema_version: "2"` and the `recallweave.contract.v1` JSON schema.
+- The frozen `recallweave.viewer.v2` contract and shipped Cold Trails v1 surface.
 - The branch topology: `main` protected, `foundry/steward` active,
   `foundry/task-contracts` historical and never merged forward.
 - The `SWARM-RUNBOOK.md` §11 overrides.
 
 Anything not listed here is open to the next planner's judgement.
 
-## 11. Verified state at handoff (2026-08-24 post-merge)
+## 11. Verified state at handoff (2026-08-29 post-PR #17)
 
 Re-probe before acting. Any un-rechecked read of live state is a hypothesis.
 
 | Check | Value |
 |---|---|
 | Repo path | `/Users/josh/particle-workers/recallweave` |
-| Git branch | `foundry/steward` (fresh cut from `main` @ `4bd4bcf`) |
-| Marker | **present** |
-| Supervisor | **running** |
-| Latest verdict | 26c PASS WITH FIXES (promoted via PR #5) |
-| Beads authoritative | **yes** — `iyd.1` in progress |
+| Git branch | `foundry/steward` (checkpoint after `main` @ `878aa90`) |
+| Marker | **present** (re-probe) |
+| Supervisor | **re-probe** |
+| Latest promoted main tip | PR #17 dismiss persistence (`878aa90`) |
+| Beads authoritative | **yes** — `recallweave-k7i` / `k7i.3` |
 | Resumable without transcript | **yes** |
 
 **Any approved planner (Claude, Cursor, Codex) can resume from this repo alone.**

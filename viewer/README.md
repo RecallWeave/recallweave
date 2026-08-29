@@ -47,8 +47,8 @@ sharing a graph:
 }
 ```
 
-See [the JSON contract](../docs/json-output.md#export-viewer-and-recallweaveviewerv1)
-for the complete schema.
+See [the JSON contract](../docs/json-output.md#export-viewer-and-recallweaveviewerv2)
+for the complete `recallweave.viewer.v2` schema (`viewer.v1` remains readable).
 
 ## Run locally
 
@@ -85,12 +85,15 @@ When it is absent or invalid, Atlas uses the neutral reserved origin
 - Exported graph files may contain private metadata. Keep them outside Git and
   do not share them unless you have reviewed their contents.
 - Note and evidence excerpts are opt-in at export time.
-- The current `recallweave.viewer.v1` contract does not render direct Obsidian
-  links from imported graph fields.
+- Direct Obsidian open links stay gated on an explicit `vault_name` label claim
+  and the Cold Trails contract; do not invent vault labels in fixtures.
 
-## Roadmap: Cold Trails
+## Cold Trails
 
-[Cold Trails](../docs/cold-trails.md) is the proposed deterministic guided tour
-for high-value graph discoveries. It is a design artifact, not a shipped
-feature. Implementation waits for a reviewed `recallweave.viewer.v2` schema and
-the privacy, accessibility, and evidence gates in that design.
+[Cold Trails](../docs/cold-trails.md) is the shipped deterministic guided tour for
+high-value graph discoveries. It runs in browser memory against a loaded
+`recallweave.viewer.v2` graph (timestamps, `content_hash`, `export_history`, and
+evidence `signals`). Dismissals persist under a graph fingerprint in
+localStorage, with Clear history and Escape/Close ending the tour. The bundled
+sample is a hand-authored v2 fixture so the demo can exercise provenance chrome
+and timestamp trail types without claiming to be an exporter output.

@@ -140,8 +140,10 @@
   script attributes correctly, and exercises legend overflow in the sample;
 - complete source distributions including policy examples and contributor
   documentation, plus a synthetic bilateral-evidence demonstration;
-- Cold Trails guided discovery documented as a design-only roadmap, pending a
-  reviewed `recallweave.viewer.v2` schema;
+- Cold Trails guided discovery shipped in Atlas against frozen
+  `recallweave.viewer.v2` (structural and timestamp trail types, dismiss
+  persistence, Clear history); the bundled sample graph is an honest v2 fixture
+  with timestamps, export history, and evidence signals;
 - local, atomic SQLite indexing for Markdown and Obsidian vaults;
 - safe data-only frontmatter parsing;
 - verified authored wikilink and Markdown-link edges;
