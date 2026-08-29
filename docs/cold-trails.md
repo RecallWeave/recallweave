@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Cold Trails would turn a graph a person *can* explore into a short, evidence-led
+Cold Trails turns a graph a person *can* explore into a short, evidence-led
 walk through connections they were unlikely to search for. A trail is useful
 only when it helps someone reopen source thinking, form a question, or dismiss
 a weak connection with confidence.
@@ -14,7 +14,7 @@ It is not a vault summary, tutorial, recommendation engine, or claim generator.
 Atlas may present graph structure as fact. It must present inferred meaning as a
 question.
 
-Success would be measured locally:
+Local success goals for evaluating tours (not transmitted telemetry):
 
 - at least half of shown trails earn **Save** or **Open source**;
 - at least 60 percent involve a note the user has not already selected;
@@ -27,17 +27,18 @@ No success measurement is transmitted.
 
 ## Release gates and schema prerequisites
 
-Cold Trails implementation waits for:
+v1 shipped after these gates cleared:
 
-1. Atlas privacy, accessibility, import-integrity, reset, and evidence gates to
-   pass independently;
+1. Atlas privacy, accessibility, import-integrity, reset, and evidence gates
+   passed independently;
 2. clickable source citations or a safe copy-path fallback;
 3. deterministic unit fixtures for scoring, selection, diversification, and
    refusal;
-4. a separately reviewed `recallweave.viewer.v2` schema.
+4. a separately reviewed, now **frozen** `recallweave.viewer.v2` schema.
 
 The **`recallweave.viewer.v2` schema is frozen** in `docs/json-output.md`
-(section “export-viewer and recallweave.viewer.v2”). Required additions:
+(section “export-viewer and recallweave.viewer.v2”). Required additions (now
+emitted by `export-viewer` and consumed by Atlas):
 
 - `created_at` and `modified_at` per node (nullable when unknown);
 - `content_hash` per node plus graph-level `export_history`;
@@ -46,11 +47,11 @@ The **`recallweave.viewer.v2` schema is frozen** in `docs/json-output.md`
 - distinct evidence `signals` (`lexical_terms`, `shared_tags`,
   `mutual_neighbor_ids`).
 
-Until exporters emit those fields, Atlas cannot honestly claim dormancy,
-rediscovery, drift over time, or a direct source-opening capability.
-Contradiction, causality, semantic similarity without shared vocabulary, and
-importance remain out of scope even for `viewer.v2`; they require a model or
-human review and an explicit trust design.
+When an export omits those fields (legacy `viewer.v1` or incomplete v2), Atlas
+must not claim dormancy, rediscovery, drift over time, or a direct
+source-opening capability. Contradiction, causality, semantic similarity without
+shared vocabulary, and importance remain out of scope even for `viewer.v2`; they
+require a model or human review and an explicit trust design.
 
 ## Deterministically supportable trail types
 

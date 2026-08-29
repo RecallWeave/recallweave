@@ -291,6 +291,14 @@ class DocsPerFieldProjectionTest(unittest.TestCase):
         self.assertIn("per field", text)
         self.assertIn("evidence boundary", text)
 
+    def test_cold_trails_contract_does_not_claim_implementation_is_waiting(self) -> None:
+        # Canonical contract status is "v1 shipped"; future-tense release-gate
+        # wording must not contradict that claim (Codex cycle finding).
+        text = _text("docs/cold-trails.md")
+        self.assertIn("v1 shipped in Atlas", text)
+        self.assertNotIn("Cold Trails implementation waits for", text)
+        self.assertNotIn("Cold Trails would turn", text)
+
 
 if __name__ == "__main__":
     unittest.main()
