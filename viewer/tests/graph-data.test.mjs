@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   citationPath,
+  formatAtlasProvenanceClaims,
   formatExportHistoryDetail,
   importDiagnosticMessage,
   normalizeGraph,
@@ -340,6 +341,47 @@ test("bundled sample exercises the legend overflow path", async () => {
   const domains = new Set(sample.nodes.map((node) => node.domain || "Unclassified"));
   assert.equal(sample.nodes.length, 16);
   assert.equal(domains.size, 7);
+});
+
+test("bundled sample is honest viewer.v2 with provenance and Cold Trails types", async () => {
+  const { buildColdTrails } = await import("../app/cold-trails.ts");
+  const sample = JSON.parse(
+    await readFile(new URL("../public/sample-graph.json", import.meta.url), "utf8"),
+  );
+  assert.equal(sample.schema_version, VIEWER_SCHEMA_V2);
+  assert.ok(sample.export_history?.export_id);
+  assert.equal(typeof sample.export_history.previous_content_hash, "string");
+  for (const node of sample.nodes) {
+    assert.ok(node.created_at);
+    assert.ok(node.modified_at);
+    assert.match(node.content_hash, /^[a-f0-9]{64}$/u);
+  }
+  const candidates = sample.edges.filter((edge) => edge.verified === false);
+  for (const candidate of candidates) {
+    assert.ok(candidate.evidence?.signals?.lexical_terms?.length);
+  }
+  const normalized = normalizeGraph(sample);
+  assert.equal(normalized.schema_version, VIEWER_SCHEMA_V2);
+  assert.equal(normalized.export_history?.claim_conflict, false);
+  assert.match(formatAtlasProvenanceClaims(normalized), /export history claim:/);
+  const tour = buildColdTrails(normalized);
+  assert.equal(tour.status, "ok");
+  const types = new Set(tour.trails.map((trail) => trail.type));
+  assert.ok(types.has("parallel_invention"), "sample tour should include Parallel invention");
+  assert.ok(types.has("dormant"), "sample tour should include Dormant");
+  const generatedMs = Date.parse(sample.generated_at);
+  const candidateTouch = new Map();
+  for (const edge of candidates) {
+    candidateTouch.set(edge.source, (candidateTouch.get(edge.source) || 0) + 1);
+    candidateTouch.set(edge.target, (candidateTouch.get(edge.target) || 0) + 1);
+  }
+  const driftEligible = sample.nodes.some((node) => {
+    const spanDays =
+      (Date.parse(node.modified_at) - Date.parse(node.created_at)) / 86_400_000;
+    return spanDays >= 90 && (candidateTouch.get(node.id) || 0) >= 1;
+  });
+  assert.ok(driftEligible, "sample should keep Drift-eligible timestamped notes");
+  assert.ok(Number.isFinite(generatedMs));
 });
 
 test("reconciles displayed explanation and shared terms against privacy claims", () => {

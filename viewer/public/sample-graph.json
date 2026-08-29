@@ -1,8 +1,8 @@
 {
-  "schema_version": "recallweave.viewer.v1",
-  "title": "Northstar Studio — synthetic excerpt-rich demonstration",
+  "schema_version": "recallweave.viewer.v2",
+  "title": "Northstar Studio \u2014 synthetic excerpt-rich demonstration",
   "generated_at": "2026-07-29T00:00:00Z",
-  "sample_notice": "Synthetic, hand-authored, excerpt-rich demonstration fixture; not an exporter output.",
+  "sample_notice": "Synthetic, hand-authored, excerpt-rich demonstration fixture shaped as recallweave.viewer.v2; not an exporter output. Timestamps, content hashes, export_history, and evidence signals are fixture claims so Cold Trails can exercise Dormant, Drift, Parallel invention, and provenance chrome.",
   "nodes": [
     {
       "id": "strategy/north-star.md",
@@ -11,8 +11,15 @@
       "status": "canonical",
       "domain": "Strategy",
       "summary": "The durable outcome the product should create: faster confident decisions with less context hunting.",
-      "tags": ["strategy", "product", "canon"],
-      "section_count": 6
+      "tags": [
+        "strategy",
+        "product",
+        "canon"
+      ],
+      "section_count": 6,
+      "created_at": "2025-11-01T00:00:00Z",
+      "modified_at": "2026-06-15T00:00:00Z",
+      "content_hash": "c659bff1b270fba67a6f31ee8c321a7e71c01d2edf31169d44fe1c4b841d04a3"
     },
     {
       "id": "strategy/principles.md",
@@ -21,8 +28,14 @@
       "status": "canonical",
       "domain": "Strategy",
       "summary": "Small set of constraints used to resolve product and operating tradeoffs.",
-      "tags": ["principles", "decisions"],
-      "section_count": 8
+      "tags": [
+        "principles",
+        "decisions"
+      ],
+      "section_count": 8,
+      "created_at": "2025-10-01T00:00:00Z",
+      "modified_at": "2026-05-20T00:00:00Z",
+      "content_hash": "ac51421e1be16e2f3ab15764433bbfbfe653a2689e9683c7e1d4d59c4ef72c64"
     },
     {
       "id": "strategy/pricing-hypotheses.md",
@@ -31,8 +44,14 @@
       "status": "working",
       "domain": "Strategy",
       "summary": "Current beliefs about value metrics, packaging, and willingness to pay.",
-      "tags": ["pricing", "experiments"],
-      "section_count": 5
+      "tags": [
+        "pricing",
+        "experiments"
+      ],
+      "section_count": 5,
+      "created_at": "2026-03-01T00:00:00Z",
+      "modified_at": "2026-07-10T00:00:00Z",
+      "content_hash": "4f5d5971b4bb8a6f39843e26f59477a8eead0257bd402a2fe87f742864b2d0bd"
     },
     {
       "id": "research/customer-interviews.md",
@@ -41,8 +60,14 @@
       "status": "canonical",
       "domain": "Research",
       "summary": "Recurring jobs, anxieties, and language from twelve customer conversations.",
-      "tags": ["research", "voice-of-customer"],
-      "section_count": 11
+      "tags": [
+        "research",
+        "voice-of-customer"
+      ],
+      "section_count": 11,
+      "created_at": "2025-09-01T00:00:00Z",
+      "modified_at": "2026-06-01T00:00:00Z",
+      "content_hash": "623b65f2b836af9e4bb31796418823e15cd5f4ccea89137da1af9f381ed4f8ca"
     },
     {
       "id": "research/churn-signals.md",
@@ -51,8 +76,15 @@
       "status": "working",
       "domain": "Research",
       "summary": "Patterns that appear in the two weeks before a workspace becomes inactive.",
-      "tags": ["retention", "signals"],
-      "section_count": 7
+      "tags": [
+        "retention",
+        "signals",
+        "review"
+      ],
+      "section_count": 7,
+      "created_at": "2024-01-15T12:00:00Z",
+      "modified_at": "2026-06-01T00:00:00Z",
+      "content_hash": "2e5b778bffa4ce121529c2d638efbff5082c8c40fad1d8d55223e8ed8a2ecf4f"
     },
     {
       "id": "research/support-patterns.md",
@@ -61,8 +93,14 @@
       "status": "working",
       "domain": "Research",
       "summary": "Themes from support conversations, grouped by friction and user intent.",
-      "tags": ["support", "research"],
-      "section_count": 9
+      "tags": [
+        "support",
+        "research"
+      ],
+      "section_count": 9,
+      "created_at": "2025-12-01T00:00:00Z",
+      "modified_at": "2026-06-20T00:00:00Z",
+      "content_hash": "68c922176b7bac628ac38a2a88256b32dbd16028b6b10ebfbd5c74c9a8e0625a"
     },
     {
       "id": "research/onboarding-findings.md",
@@ -71,8 +109,14 @@
       "status": "canonical",
       "domain": "Research",
       "summary": "What helps a new workspace reach the first useful map in under ten minutes.",
-      "tags": ["onboarding", "activation"],
-      "section_count": 8
+      "tags": [
+        "onboarding",
+        "activation"
+      ],
+      "section_count": 8,
+      "created_at": "2025-08-15T00:00:00Z",
+      "modified_at": "2026-05-01T00:00:00Z",
+      "content_hash": "fafbc7abe4a9cea48d543e9b2981d6e119dfccc2b8c5eb07666178e906638276"
     },
     {
       "id": "product/system-map.md",
@@ -81,8 +125,14 @@
       "status": "canonical",
       "domain": "Product",
       "summary": "The product architecture, information boundaries, and critical dependencies.",
-      "tags": ["architecture", "systems"],
-      "section_count": 12
+      "tags": [
+        "architecture",
+        "systems"
+      ],
+      "section_count": 12,
+      "created_at": "2025-07-01T00:00:00Z",
+      "modified_at": "2026-06-10T00:00:00Z",
+      "content_hash": "9ce0fc7dc010c772f8fd897e1df03ffcdcf2978abb6727945e15b0e4f34de202"
     },
     {
       "id": "product/search-model.md",
@@ -91,8 +141,14 @@
       "status": "working",
       "domain": "Product",
       "summary": "How lexical evidence, authored links, and candidates combine without collapsing trust levels.",
-      "tags": ["retrieval", "evidence"],
-      "section_count": 10
+      "tags": [
+        "retrieval",
+        "evidence"
+      ],
+      "section_count": 10,
+      "created_at": "2025-09-15T00:00:00Z",
+      "modified_at": "2026-07-01T00:00:00Z",
+      "content_hash": "378435c3f1e2b7761f630ba95d46b1d6ce1bc1cc7f707f3479adbdff382948ac"
     },
     {
       "id": "product/evidence-drawer.md",
@@ -101,8 +157,14 @@
       "status": "working",
       "domain": "Product",
       "summary": "Interaction design for explaining why a connection exists and where it came from.",
-      "tags": ["ux", "citations"],
-      "section_count": 6
+      "tags": [
+        "ux",
+        "citations"
+      ],
+      "section_count": 6,
+      "created_at": "2024-01-20T12:00:00Z",
+      "modified_at": "2026-06-10T00:00:00Z",
+      "content_hash": "eff9f3022dbf2247b167ec4177c22e16c2b2fecc26bb5171e43d59ccc96bc463"
     },
     {
       "id": "product/launch-checklist.md",
@@ -111,8 +173,14 @@
       "status": "canonical",
       "domain": "Product",
       "summary": "Release gates covering privacy, recovery, evidence quality, and the public demo.",
-      "tags": ["launch", "quality"],
-      "section_count": 7
+      "tags": [
+        "launch",
+        "quality"
+      ],
+      "section_count": 7,
+      "created_at": "2026-01-10T00:00:00Z",
+      "modified_at": "2026-07-20T00:00:00Z",
+      "content_hash": "3ec1d9b5979177c0d83bcd9ff8007ae7d9fe08dca91095e2415d241248b19f39"
     },
     {
       "id": "operations/decision-log.md",
@@ -121,8 +189,14 @@
       "status": "canonical",
       "domain": "Governance",
       "summary": "Dated decisions with rationale, alternatives considered, and supersession notes.",
-      "tags": ["decisions", "history"],
-      "section_count": 14
+      "tags": [
+        "decisions",
+        "history"
+      ],
+      "section_count": 14,
+      "created_at": "2025-05-01T00:00:00Z",
+      "modified_at": "2026-04-01T00:00:00Z",
+      "content_hash": "0c9b9c393816eff9095155759bb431bdf56d32e3e94edd5f41b43547237dfeb1"
     },
     {
       "id": "operations/experiment-ledger.md",
@@ -131,8 +205,14 @@
       "status": "working",
       "domain": "Learning",
       "summary": "What was tested, what happened, and which assumptions changed.",
-      "tags": ["experiments", "learning"],
-      "section_count": 13
+      "tags": [
+        "experiments",
+        "learning"
+      ],
+      "section_count": 13,
+      "created_at": "2023-05-01T00:00:00Z",
+      "modified_at": "2024-06-01T00:00:00Z",
+      "content_hash": "86a6a6ae73de20611c34bdd5b2a68816b082d6bd5c6dc757786527efb13c8239"
     },
     {
       "id": "operations/weekly-review.md",
@@ -141,8 +221,14 @@
       "status": "working",
       "domain": "Operations",
       "summary": "A recurring scan for stale beliefs, unresolved links, and forgotten ideas.",
-      "tags": ["cadence", "review"],
-      "section_count": 5
+      "tags": [
+        "cadence",
+        "review"
+      ],
+      "section_count": 5,
+      "created_at": "2025-10-01T00:00:00Z",
+      "modified_at": "2026-06-15T00:00:00Z",
+      "content_hash": "e11c136c1f5ae62297737e0b87b2bc45f3d870c29dda55e9dd2d6901af48e554"
     },
     {
       "id": "brand/voice-tone.md",
@@ -151,8 +237,14 @@
       "status": "canonical",
       "domain": "Brand",
       "summary": "Language principles: precise, curious, evidence-backed, and never artificially certain.",
-      "tags": ["brand", "writing"],
-      "section_count": 6
+      "tags": [
+        "brand",
+        "writing"
+      ],
+      "section_count": 6,
+      "created_at": "2025-11-20T00:00:00Z",
+      "modified_at": "2026-05-15T00:00:00Z",
+      "content_hash": "102e17681994dc61729128b26919926d01c2c182b185f3f4e5e00ab48587ffc8"
     },
     {
       "id": "brand/story.md",
@@ -161,8 +253,14 @@
       "status": "working",
       "domain": "Brand",
       "summary": "The narrative from scattered notes to a living, inspectable map of institutional memory.",
-      "tags": ["narrative", "launch"],
-      "section_count": 7
+      "tags": [
+        "narrative",
+        "launch"
+      ],
+      "section_count": 7,
+      "created_at": "2024-01-01T00:00:00Z",
+      "modified_at": "2025-12-01T00:00:00Z",
+      "content_hash": "6df966bc078f68ba51e1022079f59387fa605952777cdfce67ba94145c7fb0b8"
     }
   ],
   "edges": [
@@ -311,27 +409,22 @@
       }
     },
     {
-      "id": "e13",
-      "source": "brand/story.md",
-      "target": "product/launch-checklist.md",
-      "kind": "wikilink",
-      "verified": true,
-      "score": 1,
-      "evidence": {
-        "citation": "brand/story.md:73-76",
-        "source_text": "The public story ships with the launch checklist."
-      }
-    },
-    {
       "id": "c01",
       "source": "research/churn-signals.md",
       "target": "product/evidence-drawer.md",
       "kind": "discovery_candidate",
       "verified": false,
-      "score": 0.78,
+      "score": 0.88,
       "evidence": {
         "explanation": "Candidate only: both notes repeatedly connect trust, explanation, and abandonment.",
-        "shared_terms": ["trust", "explanation", "friction", "evidence"],
+        "shared_terms": [
+          "trust",
+          "explanation",
+          "friction",
+          "abandonment",
+          "inspectable",
+          "workspace"
+        ],
         "source_evidence": {
           "citation": "research/churn-signals.md:41-48",
           "passage": "Workspaces often go quiet after repeated retrieval friction leaves people unsure why a result appeared."
@@ -339,6 +432,17 @@
         "target_evidence": {
           "citation": "product/evidence-drawer.md:22-28",
           "passage": "The evidence drawer must make each connection inspectable before a person decides whether it is useful."
+        },
+        "citation": "research/churn-signals.md:41-48",
+        "signals": {
+          "lexical_terms": [
+            "trust",
+            "explanation",
+            "friction",
+            "abandonment",
+            "inspectable",
+            "workspace"
+          ]
         }
       }
     },
@@ -351,7 +455,12 @@
       "score": 0.72,
       "evidence": {
         "explanation": "Candidate only: pricing language overlaps with interview language about confidence and time saved.",
-        "shared_terms": ["confidence", "time", "value", "decision"],
+        "shared_terms": [
+          "confidence",
+          "time",
+          "value",
+          "decision"
+        ],
         "source_evidence": {
           "citation": "strategy/pricing-hypotheses.md:38-45",
           "passage": "The strongest pricing signal is confidence gained and decision time returned, not the number of notes indexed."
@@ -359,6 +468,15 @@
         "target_evidence": {
           "citation": "research/customer-interviews.md:54-60",
           "passage": "Interviewees described value as reaching a confident next decision without rebuilding context from scratch."
+        },
+        "citation": "strategy/pricing-hypotheses.md:38-45",
+        "signals": {
+          "lexical_terms": [
+            "confidence",
+            "time",
+            "value",
+            "decision"
+          ]
         }
       }
     },
@@ -371,7 +489,12 @@
       "score": 0.67,
       "evidence": {
         "explanation": "Candidate only: both notes discuss silence, inactivity, and stale state.",
-        "shared_terms": ["inactive", "stale", "signal", "review"],
+        "shared_terms": [
+          "inactive",
+          "stale",
+          "signal",
+          "review"
+        ],
         "source_evidence": {
           "citation": "operations/weekly-review.md:51-58",
           "passage": "The weekly review should call out quiet projects and beliefs that have not received a fresh signal."
@@ -379,6 +502,18 @@
         "target_evidence": {
           "citation": "research/churn-signals.md:41-48",
           "passage": "A workspace becoming quiet is often preceded by stale searches and fewer evidence checks."
+        },
+        "citation": "operations/weekly-review.md:51-58",
+        "signals": {
+          "lexical_terms": [
+            "inactive",
+            "stale",
+            "signal",
+            "review"
+          ],
+          "shared_tags": [
+            "review"
+          ]
         }
       }
     },
@@ -391,7 +526,12 @@
       "score": 0.66,
       "evidence": {
         "explanation": "Candidate only: the product story may be a public expression of the internal North Star.",
-        "shared_terms": ["context", "memory", "decision", "useful"],
+        "shared_terms": [
+          "context",
+          "memory",
+          "decision",
+          "useful"
+        ],
         "source_evidence": {
           "citation": "strategy/north-star.md:24-30",
           "passage": "The North Star is a faster, more confident decision made with inspectable context."
@@ -399,6 +539,15 @@
         "target_evidence": {
           "citation": "brand/story.md:14-21",
           "passage": "RecallWeave turns scattered memory into a living map people can inspect before they decide."
+        },
+        "citation": "strategy/north-star.md:24-30",
+        "signals": {
+          "lexical_terms": [
+            "context",
+            "memory",
+            "decision",
+            "useful"
+          ]
         }
       }
     },
@@ -411,7 +560,12 @@
       "score": 0.64,
       "evidence": {
         "explanation": "Candidate only: weekly review could become the human calibration loop for discovery quality.",
-        "shared_terms": ["review", "candidate", "quality", "calibration"],
+        "shared_terms": [
+          "review",
+          "candidate",
+          "quality",
+          "calibration"
+        ],
         "source_evidence": {
           "citation": "product/search-model.md:133-138",
           "passage": "Candidate quality improves when useful and misleading connections are reviewed as separate evidence."
@@ -419,26 +573,49 @@
         "target_evidence": {
           "citation": "operations/weekly-review.md:70-76",
           "passage": "Weekly review records which surfaced connections were useful, surprising, or safely ignored."
+        },
+        "citation": "product/search-model.md:133-138",
+        "signals": {
+          "lexical_terms": [
+            "review",
+            "candidate",
+            "quality",
+            "calibration"
+          ]
         }
       }
     },
     {
       "id": "c06",
-      "source": "research/onboarding-findings.md",
-      "target": "brand/voice-tone.md",
+      "source": "operations/experiment-ledger.md",
+      "target": "operations/weekly-review.md",
       "kind": "discovery_candidate",
       "verified": false,
-      "score": 0.59,
+      "score": 0.55,
       "evidence": {
-        "explanation": "Candidate only: onboarding success correlates with plain, low-jargon explanations.",
-        "shared_terms": ["plain", "language", "confidence", "first"],
+        "explanation": "Candidate only: the ledger and weekly review both track quiet experiments and stale beliefs.",
+        "shared_terms": [
+          "quiet",
+          "stale",
+          "experiment",
+          "belief"
+        ],
+        "citation": "operations/experiment-ledger.md:88-94",
         "source_evidence": {
-          "citation": "research/onboarding-findings.md:61-69",
-          "passage": "New users reached a first useful map sooner when explanations avoided graph terminology."
+          "citation": "operations/experiment-ledger.md:88-94",
+          "passage": "Quiet experiments leave stale beliefs on the ledger until a review forces a written update."
         },
         "target_evidence": {
-          "citation": "brand/voice-tone.md:19-25",
-          "passage": "Use plain language, name uncertainty directly, and make the next action easy to understand."
+          "citation": "operations/weekly-review.md:51-58",
+          "passage": "The weekly review should call out quiet projects and beliefs that have not received a fresh signal."
+        },
+        "signals": {
+          "lexical_terms": [
+            "quiet",
+            "stale",
+            "experiment",
+            "belief"
+          ]
         }
       }
     }
@@ -455,5 +632,13 @@
     "includes_note_derived_terms": true,
     "includes_paths_titles_tags": true,
     "generated_locally": false
+  },
+  "export_history": {
+    "export_id": "sample-northstar-v2-demo",
+    "previous_content_hash": "4a79d5c4df768ea9f12e63129698039dca960bd9338b6f633105865b410a8972",
+    "node_content_hashes_changed": 4,
+    "node_content_hashes_unchanged": 11,
+    "nodes_added": 1,
+    "nodes_removed": 0
   }
 }
