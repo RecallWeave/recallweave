@@ -108,6 +108,13 @@ test("Cold Trails tour dialog meets accessibility and trust boundaries", async (
   assert.match(tour, /label="Source evidence"/);
   assert.match(tour, /label="Target evidence"/);
   assert.match(tour, /Show on map/);
+  assert.match(tour, /Clear history/);
+  assert.match(tour, /saveDismissedPairKeys/);
+  assert.match(tour, /clearDismissedPairKeys/);
+  assert.match(
+    tour,
+    /if \(event\.key === "Escape"\) \{\s*event\.preventDefault\(\);\s*endTour\(\);/s,
+  );
   assert.doesNotMatch(tour, /obsidian:\/\//);
 
   const explorer = await readFile(

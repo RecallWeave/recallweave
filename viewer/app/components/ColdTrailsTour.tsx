@@ -19,6 +19,12 @@ import {
   type ColdTrailsFeedback,
   type ColdTrailsResult,
 } from "../cold-trails";
+import {
+  clearDismissedPairKeys,
+  graphFeedbackFingerprint,
+  loadDismissedPairKeys,
+  saveDismissedPairKeys,
+} from "../cold-trails-feedback-store";
 import { citationPath, type GraphDocument, type GraphEdge } from "../graph-data";
 
 type ColdTrailsTourProps = {
@@ -31,9 +37,9 @@ type ColdTrailsTourProps = {
   onStatus: (message: string) => void;
 };
 
-function initialFeedback(): ColdTrailsFeedback {
+function initialFeedback(dismissedPairs: Iterable<string> = []): ColdTrailsFeedback {
   return {
-    dismissedPairs: new Set(),
+    dismissedPairs: new Set(dismissedPairs),
     shownPairs: new Set(),
     usedDomains: new Set(),
     usedTypes: new Map(),
@@ -106,7 +112,9 @@ export function ColdTrailsTour({
 
   useEffect(() => {
     if (!open) return;
-    feedbackRef.current = initialFeedback();
+    const fingerprint = graphFeedbackFingerprint(graph);
+    const stored = loadDismissedPairKeys(fingerprint);
+    feedbackRef.current = initialFeedback(stored);
     const next = buildColdTrails(graph, feedbackRef.current);
     setResult(next);
     setTrails(next.status === "ok" ? next.trails : []);
@@ -176,6 +184,10 @@ export function ColdTrailsTour({
   function dismissTrail() {
     if (!current) return;
     feedbackRef.current.dismissedPairs.add(trailPairKey(current));
+    saveDismissedPairKeys(
+      graphFeedbackFingerprint(graph),
+      feedbackRef.current.dismissedPairs,
+    );
     const replacement = buildColdTrails(graph, feedbackRef.current);
     if (replacement.status === "ok") {
       setTrails(replacement.trails);
@@ -183,6 +195,23 @@ export function ColdTrailsTour({
       setResult(replacement);
     }
     onStatus("Trail dismissed for future ranking.");
+  }
+
+  function clearHistory() {
+    const fingerprint = graphFeedbackFingerprint(graph);
+    clearDismissedPairKeys(fingerprint);
+    feedbackRef.current = initialFeedback();
+    const next = buildColdTrails(graph, feedbackRef.current);
+    setResult(next);
+    setTrails(next.status === "ok" ? next.trails : []);
+    setIndex(0);
+    setExplainOpen(false);
+    setAnnouncement(
+      next.status === "ok"
+        ? `Cold Trails history cleared. Loaded ${next.trails.length} stops.`
+        : `Cold Trails history cleared. ${next.message}`,
+    );
+    onStatus("Cold Trails dismiss history cleared.");
   }
 
   function showAnother() {
@@ -234,7 +263,7 @@ export function ColdTrailsTour({
   function handleDialogKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
-      onClose();
+      endTour();
       return;
     }
     const target = event.target as HTMLElement | null;
@@ -301,7 +330,7 @@ export function ColdTrailsTour({
         type="button"
         className="cold-trails-backdrop-dismiss"
         aria-label="Close Cold Trails"
-        onClick={onClose}
+        onClick={endTour}
       />
       <div
         ref={dialogRef}
@@ -318,7 +347,7 @@ export function ColdTrailsTour({
             <div className="detail-kicker">Guided discovery</div>
             <h2 id="cold-trails-title">Cold Trails</h2>
           </div>
-          <button ref={closeRef} className="ghost-button" onClick={onClose} aria-label="Close Cold Trails">
+          <button ref={closeRef} className="ghost-button" onClick={endTour} aria-label="Close Cold Trails">
             Close
           </button>
         </div>
@@ -434,6 +463,13 @@ export function ColdTrailsTour({
           <button className="primary-button" onClick={goNext} disabled={!current || index >= trails.length - 1}>Next</button>
           <button className="ghost-button" onClick={saveTrail} disabled={!current}>Save</button>
           <button className="ghost-button" onClick={dismissTrail} disabled={!current}>Dismiss</button>
+          <button
+            className="ghost-button"
+            onClick={clearHistory}
+            aria-label="Clear Cold Trails dismiss history"
+          >
+            Clear history
+          </button>
           <button className="ghost-button" onClick={() => setExplainOpen((value) => !value)} disabled={!current}>
             Explain
           </button>
