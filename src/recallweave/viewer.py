@@ -79,6 +79,7 @@ def _edge_evidence(
     target_path: str,
     include_excerpts: bool,
     mutual_neighbor_ids: list[str] | None = None,
+    shared_tags: list[str] | None = None,
 ) -> dict[str, Any]:
     try:
         parsed = json.loads(raw)
@@ -145,10 +146,12 @@ def _edge_evidence(
     if isinstance(explanation, str):
         evidence["explanation"] = _excerpt(explanation, MAX_EVIDENCE_CHARACTERS)
 
-    shared_tags = parsed.get("shared_tags")
-    tag_terms: list[str] = []
-    if isinstance(shared_tags, list):
-        tag_terms = [str(tag) for tag in shared_tags if isinstance(tag, str)][:12]
+    # Prefer index-derived tag intersection over any producer-claimed list.
+    tag_terms = list(shared_tags or [])[:12]
+    if not tag_terms:
+        claimed = parsed.get("shared_tags")
+        if isinstance(claimed, list):
+            tag_terms = [str(tag) for tag in claimed if isinstance(tag, str)][:12]
 
     signals: dict[str, Any] = {}
     if lexical_terms:
@@ -170,6 +173,15 @@ def _mutual_neighbors(
     shared.discard(source)
     shared.discard(target)
     return sorted(shared)
+
+
+def _intersecting_tags(
+    tags_by_id: dict[str, list[str]], source: str, target: str
+) -> list[str]:
+    """Deterministic shared tags from endpoint node tags (index claims)."""
+    source_tags = {tag for tag in tags_by_id.get(source, []) if isinstance(tag, str) and tag}
+    target_tags = {tag for tag in tags_by_id.get(target, []) if isinstance(tag, str) and tag}
+    return sorted(source_tags & target_tags)
 
 
 def _aggregate_content_digest(nodes: list[dict[str, Any]]) -> str:
@@ -391,7 +403,9 @@ def build_viewer_document(
         ).fetchone()
 
     nodes = []
+    tags_by_id: dict[str, list[str]] = {}
     for row in note_rows:
+        tags = _json_list(str(row["tags_json"]))
         node = {
             "id": str(row["relative_path"]),
             "title": str(row["title"]),
@@ -403,13 +417,14 @@ def build_viewer_document(
                 if include_excerpts
                 else ""
             ),
-            "tags": _json_list(str(row["tags_json"])),
+            "tags": tags,
             "section_count": int(row["section_count"]),
             "created_at": _nullable_timestamp(row["created_at"]),
             "modified_at": _nullable_timestamp(row["modified_at"]),
             "content_hash": _content_hash(row["content_hash"]),
         }
         nodes.append(node)
+        tags_by_id[node["id"]] = tags
 
     adjacency: dict[str, set[str]] = {node["id"]: set() for node in nodes}
     for row in edge_rows:
@@ -439,6 +454,9 @@ def build_viewer_document(
                     include_excerpts=include_excerpts,
                     mutual_neighbor_ids=_mutual_neighbors(
                         adjacency, source_path, target_path
+                    ),
+                    shared_tags=_intersecting_tags(
+                        tags_by_id, source_path, target_path
                     ),
                 ),
             }
