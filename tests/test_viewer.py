@@ -117,6 +117,29 @@ class ViewerExportTest(unittest.TestCase):
             candidate["evidence"]["signals"].get("lexical_terms"),
             candidate["evidence"].get("shared_terms"),
         )
+        shared_tag_edge = next(
+            edge
+            for edge in document["edges"]
+            if not edge["verified"]
+            and edge["source"] == "Operations/Review Cadence.md"
+            and edge["target"] == "Projects/Growth Atlas.md"
+        )
+        self.assertEqual(
+            shared_tag_edge["evidence"]["signals"].get("shared_tags"),
+            ["operating-system"],
+        )
+        source_tags = next(
+            node["tags"]
+            for node in document["nodes"]
+            if node["id"] == "Operations/Review Cadence.md"
+        )
+        target_tags = next(
+            node["tags"]
+            for node in document["nodes"]
+            if node["id"] == "Projects/Growth Atlas.md"
+        )
+        self.assertIn("operating-system", source_tags)
+        self.assertIn("operating-system", target_tags)
 
         output = Path(self.temporary.name) / "v2-graph.json"
         export_viewer_graph(self.database, output, vault_name="synthetic-vault")
