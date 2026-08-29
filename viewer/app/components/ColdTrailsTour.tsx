@@ -22,6 +22,7 @@ import {
 import {
   candidateDismissKeys,
   clearDismissedPairDigests,
+  createPersistCoordinator,
   filterDismissedPairsByStoredDigests,
   graphFeedbackFingerprint,
   hashDismissedPairKey,
@@ -90,6 +91,7 @@ export function ColdTrailsTour({
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const feedbackRef = useRef<ColdTrailsFeedback>(initialFeedback());
+  const persistRef = useRef(createPersistCoordinator());
   const [result, setResult] = useState<ColdTrailsResult | null>(null);
   const [trails, setTrails] = useState<ColdTrail[]>([]);
   const [index, setIndex] = useState(0);
@@ -209,13 +211,14 @@ export function ColdTrailsTour({
   function dismissTrail() {
     if (!current) return;
     feedbackRef.current.dismissedPairs.add(trailPairKey(current));
-    void (async () => {
+    const dismissedSnapshot = [...feedbackRef.current.dismissedPairs];
+    void persistRef.current.enqueue(async () => {
       const fingerprint = await graphFeedbackFingerprint(graph);
       const digests = await Promise.all(
-        [...feedbackRef.current.dismissedPairs].map((key) => hashDismissedPairKey(key)),
+        dismissedSnapshot.map((key) => hashDismissedPairKey(key)),
       );
       await saveDismissedPairDigests(fingerprint, digests);
-    })();
+    });
     const replacement = buildColdTrails(graph, feedbackRef.current);
     if (replacement.status === "ok") {
       setTrails(replacement.trails);
@@ -226,10 +229,7 @@ export function ColdTrailsTour({
   }
 
   function clearHistory() {
-    void (async () => {
-      const fingerprint = await graphFeedbackFingerprint(graph);
-      await clearDismissedPairDigests(fingerprint);
-    })();
+    persistRef.current.bump();
     feedbackRef.current = initialFeedback();
     const next = buildColdTrails(graph, feedbackRef.current);
     setResult(next);
@@ -241,7 +241,15 @@ export function ColdTrailsTour({
         ? `Cold Trails history cleared. Loaded ${next.trails.length} stops.`
         : `Cold Trails history cleared. ${next.message}`,
     );
-    onStatus("Cold Trails dismiss history cleared.");
+    void persistRef.current
+      .enqueue(async () => {
+        const fingerprint = await graphFeedbackFingerprint(graph);
+        await clearDismissedPairDigests(fingerprint);
+        onStatus("Cold Trails dismiss history cleared.");
+      })
+      .catch(() => {
+        onStatus("Could not clear Cold Trails dismiss history from browser storage.");
+      });
   }
 
   function showAnother() {

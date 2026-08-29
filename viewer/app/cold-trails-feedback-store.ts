@@ -110,6 +110,43 @@ export function candidateDismissKeys(graph: GraphDocument): string[] {
   return [...keys];
 }
 
+export type PersistCoordinator = {
+  /** Invalidate every earlier pending write (e.g. before Clear history). */
+  bump: () => number;
+  /** Run a persistence task only if its epoch is still current when it starts. */
+  enqueue: (task: () => Promise<void>) => Promise<void>;
+};
+
+/** Serializes dismiss/clear writes so Clear history cannot be overwritten. */
+export function createPersistCoordinator(): PersistCoordinator {
+  let epoch = 0;
+  let chain: Promise<void> = Promise.resolve();
+  return {
+    bump() {
+      epoch += 1;
+      return epoch;
+    },
+    enqueue(task) {
+      const taskEpoch = epoch;
+      const next = chain.then(
+        async () => {
+          if (taskEpoch !== epoch) return;
+          await task();
+        },
+        async () => {
+          if (taskEpoch !== epoch) return;
+          await task();
+        },
+      );
+      chain = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    },
+  };
+}
+
 async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const subtle = globalThis.crypto?.subtle;

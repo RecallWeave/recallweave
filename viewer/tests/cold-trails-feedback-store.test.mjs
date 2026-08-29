@@ -5,6 +5,7 @@ import { webcrypto } from "node:crypto";
 import { VIEWER_SCHEMA_V2 } from "../app/graph-data.ts";
 import {
   clearDismissedPairDigests,
+  createPersistCoordinator,
   filterDismissedPairsByStoredDigests,
   graphFeedbackFingerprint,
   hashDismissedPairKey,
@@ -109,6 +110,37 @@ test("hostile export_id is hashed in the storage key", async () => {
   const serialized = JSON.stringify(storage.entries());
   assert.doesNotMatch(serialized, /passwd/);
   assert.doesNotMatch(serialized, /script/);
+});
+
+test("clear history invalidates a pending dismiss write", async () => {
+  const storage = memoryStorage();
+  const graph = demoGraph("export-race");
+  const pairKey = "Health/Therapy Notes.md|Legal/Divorce Strategy.md";
+  const coordinator = createPersistCoordinator();
+  let releaseDismiss;
+  const dismissGate = new Promise((resolve) => {
+    releaseDismiss = resolve;
+  });
+
+  void coordinator.enqueue(async () => {
+    await dismissGate;
+    const fingerprint = await graphFeedbackFingerprint(graph);
+    const digest = await hashDismissedPairKey(pairKey);
+    await saveDismissedPairDigests(fingerprint, [digest], storage);
+  });
+
+  coordinator.bump();
+  const clearDone = coordinator.enqueue(async () => {
+    const fingerprint = await graphFeedbackFingerprint(graph);
+    await clearDismissedPairDigests(fingerprint, storage);
+  });
+
+  releaseDismiss();
+  await clearDone;
+  // Allow any stale dismiss task to finish if it wrongly ran.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const fingerprint = await graphFeedbackFingerprint(graph);
+  assert.deepEqual(await loadDismissedPairDigests(fingerprint, storage), []);
 });
 
 test("dismiss digests do not bleed across unrelated export fingerprints", async () => {
