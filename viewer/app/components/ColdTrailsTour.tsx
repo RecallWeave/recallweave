@@ -20,10 +20,13 @@ import {
   type ColdTrailsResult,
 } from "../cold-trails";
 import {
-  clearDismissedPairKeys,
+  candidateDismissKeys,
+  clearDismissedPairDigests,
+  filterDismissedPairsByStoredDigests,
   graphFeedbackFingerprint,
-  loadDismissedPairKeys,
-  saveDismissedPairKeys,
+  hashDismissedPairKey,
+  loadDismissedPairDigests,
+  saveDismissedPairDigests,
 } from "../cold-trails-feedback-store";
 import { citationPath, type GraphDocument, type GraphEdge } from "../graph-data";
 
@@ -112,21 +115,43 @@ export function ColdTrailsTour({
 
   useEffect(() => {
     if (!open) return;
-    const fingerprint = graphFeedbackFingerprint(graph);
-    const stored = loadDismissedPairKeys(fingerprint);
-    feedbackRef.current = initialFeedback(stored);
-    const next = buildColdTrails(graph, feedbackRef.current);
-    setResult(next);
-    setTrails(next.status === "ok" ? next.trails : []);
-    setIndex(0);
-    setSaved([]);
-    setExplainOpen(false);
-    setAnnouncement(
-      next.status === "ok"
-        ? `Cold Trails loaded ${next.trails.length} stops.`
-        : `Cold Trails unavailable: ${next.message}`,
-    );
-    requestAnimationFrame(() => closeRef.current?.focus());
+    let cancelled = false;
+    (async () => {
+      const fingerprint = await graphFeedbackFingerprint(graph);
+      const storedDigests = await loadDismissedPairDigests(fingerprint);
+      const dismissed = await filterDismissedPairsByStoredDigests(
+        candidateDismissKeys(graph),
+        storedDigests,
+      );
+      if (cancelled) return;
+      feedbackRef.current = initialFeedback(dismissed);
+      const next = buildColdTrails(graph, feedbackRef.current);
+      setResult(next);
+      setTrails(next.status === "ok" ? next.trails : []);
+      setIndex(0);
+      setSaved([]);
+      setExplainOpen(false);
+      setAnnouncement(
+        next.status === "ok"
+          ? `Cold Trails loaded ${next.trails.length} stops.`
+          : `Cold Trails unavailable: ${next.message}`,
+      );
+      requestAnimationFrame(() => closeRef.current?.focus());
+    })().catch(() => {
+      if (cancelled) return;
+      feedbackRef.current = initialFeedback();
+      const next = buildColdTrails(graph, feedbackRef.current);
+      setResult(next);
+      setTrails(next.status === "ok" ? next.trails : []);
+      setAnnouncement(
+        next.status === "ok"
+          ? `Cold Trails loaded ${next.trails.length} stops.`
+          : `Cold Trails unavailable: ${next.message}`,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [graph, open]);
 
   useEffect(() => {
@@ -184,10 +209,13 @@ export function ColdTrailsTour({
   function dismissTrail() {
     if (!current) return;
     feedbackRef.current.dismissedPairs.add(trailPairKey(current));
-    saveDismissedPairKeys(
-      graphFeedbackFingerprint(graph),
-      feedbackRef.current.dismissedPairs,
-    );
+    void (async () => {
+      const fingerprint = await graphFeedbackFingerprint(graph);
+      const digests = await Promise.all(
+        [...feedbackRef.current.dismissedPairs].map((key) => hashDismissedPairKey(key)),
+      );
+      await saveDismissedPairDigests(fingerprint, digests);
+    })();
     const replacement = buildColdTrails(graph, feedbackRef.current);
     if (replacement.status === "ok") {
       setTrails(replacement.trails);
@@ -198,8 +226,10 @@ export function ColdTrailsTour({
   }
 
   function clearHistory() {
-    const fingerprint = graphFeedbackFingerprint(graph);
-    clearDismissedPairKeys(fingerprint);
+    void (async () => {
+      const fingerprint = await graphFeedbackFingerprint(graph);
+      await clearDismissedPairDigests(fingerprint);
+    })();
     feedbackRef.current = initialFeedback();
     const next = buildColdTrails(graph, feedbackRef.current);
     setResult(next);
