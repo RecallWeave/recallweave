@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sys
+import tempfile
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from .safe_write import is_link_like
+
+STEWARD_SCHEMA_VERSION = "recallweave.steward.v1"
+
+STEWARD_SUBDIRS = (
+    "checkpoints",
+    "changes",
+    "assessments",
+    "proposals",
+    "receipts",
+    "reports",
+    "backups",
+)
+
+
+def _application_data_root() -> Path:
+    if sys.platform == "win32":
+        return Path(
+            os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+        ) / "RecallWeave"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "RecallWeave"
+    base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / "recallweave"
+
+
+def steward_state_root(registry_path: Path) -> Path:
+    resolved = registry_path.expanduser().resolve()
+    fingerprint = hashlib.sha256(
+        resolved.as_posix().casefold().encode("utf-8")
+    ).hexdigest()
+    return _application_data_root() / "steward" / fingerprint
+
+
+def ensure_state_layout(root: Path) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for name in STEWARD_SUBDIRS:
+        subdir = root / name
+        subdir.mkdir(parents=True, exist_ok=True)
+        result[name] = subdir
+    return result
+
+
+class StateLock:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.lock_path = root / "steward.lock"
+        self._held = False
+
+    def acquire(self) -> None:
+        root = self.root
+        root.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "pid": os.getpid(),
+            "acquired_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            fd = os.open(
+                self.lock_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError as error:
+            detail = self._existing_detail()
+            raise ValueError(
+                f"Another steward run holds the lock: {self.lock_path}."
+                + (
+                    f" It records pid={detail[0]} acquired_at={detail[1]}."
+                    if detail is not None
+                    else ""
+                )
+                + " If no steward process is running, remove the file to recover."
+            ) from error
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=True, sort_keys=True, indent=2)
+        except BaseException:
+            try:
+                self.lock_path.unlink()
+            except OSError:
+                pass
+            raise
+        self._held = True
+
+    def _existing_detail(self) -> tuple[str, str] | None:
+        try:
+            data = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        pid = data.get("pid")
+        acquired_at = data.get("acquired_at")
+        if pid is None or acquired_at is None:
+            return None
+        return str(pid), str(acquired_at)
+
+    def release(self) -> None:
+        if self._held:
+            try:
+                self.lock_path.unlink()
+            except OSError:
+                pass
+            self._held = False
+
+    def __enter__(self) -> "StateLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.release()
+
+
+@contextmanager
+def lock_state(root: Path) -> Iterator[StateLock]:
+    lock = StateLock(root)
+    lock.acquire()
+    try:
+        yield lock
+    finally:
+        lock.release()
+
+
+def atomic_write_json(path: Path, payload: dict) -> None:
+    if is_link_like(path):
+        raise ValueError(f"Refusing to replace a symlink or junction: {path}")
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, indent=2
+    ).encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
