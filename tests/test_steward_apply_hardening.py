@@ -1297,5 +1297,133 @@ class RecoverRevertDriftWindowTest(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"newer operator work")
 
 
+
+
+class MalformedJournalBoundaryTest(unittest.TestCase):
+    """Round 4: a corrupt/edited journal must surface as the structured,
+    path-redacted JSON error envelope, never a raw traceback."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.vault = TempVault(dir=self.base)
+        self.vault.write("a.md", "hello")
+        self.database = self.base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.registry_path = self.base / "sources.json"
+        self.registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(self.vault.root),
+                            "mode": "appliable",
+                            "policy": {"include_paths": ["a.md"]},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.registry = load_registry(self.registry_path)
+        self.state_root = self.base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+        self.policy_path = self.base / "wp.json"
+        self.policy_path.write_text(
+            json.dumps({"spec_version": "recallweave.steward.policy.v1"}),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def _write_journal_text(self, text: str) -> str:
+        name = "20260101T000000000000Z-malformed.json"
+        (self.dirs["journal"] / name).write_text(text, encoding="utf-8")
+        return name
+
+    def _run(self, selector: str, value: str):
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from recallweave.cli import main as cli_main
+
+        out, err = StringIO(), StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli_main(
+                [
+                    "steward-apply",
+                    str(self.registry_path),
+                    "--database",
+                    str(self.database),
+                    "--state-dir",
+                    str(self.state_root),
+                    "--write-policy",
+                    str(self.policy_path),
+                    selector,
+                    value,
+                    "--execute",
+                ]
+            )
+        return code, out.getvalue(), err.getvalue()
+
+    def _assert_clean_envelope(self, code, out, err):
+        self.assertEqual(code, 2)
+        self.assertNotIn("Traceback", out + err)
+        payload = json.loads(err.getvalue()) if err.strip() else json.loads(out)
+        self.assertNotIn(str(self.base), payload["message"])
+        self.assertNotIn("/Users/", payload["message"])
+
+    def test_operations_null_is_a_clean_error(self) -> None:
+        name = self._write_journal_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "apply_journal",
+                    "source": "src",
+                    "status": "intent",
+                    "backup_dir": "b",
+                    "operations": None,
+                }
+            )
+        )
+        code, out, err = self._run("--recover", name)
+        self.assertEqual(code, 2)
+        self.assertNotIn("Traceback", out + err)
+        payload = json.loads(err)
+        self.assertNotIn(str(self.base), payload["message"])
+
+    def test_non_object_journal_is_a_clean_error(self) -> None:
+        name = self._write_journal_text("[1, 2, 3]")
+        code, out, err = self._run("--recover", name)
+        self.assertEqual(code, 2)
+        self.assertNotIn("Traceback", out + err)
+        payload = json.loads(err)
+        self.assertNotIn(str(self.base), payload["message"])
+
+    def test_revert_operations_wrong_type_is_a_clean_error(self) -> None:
+        name = self._write_journal_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "apply_journal",
+                    "source": "src",
+                    "status": "applied",
+                    "backup_dir": "b",
+                    "operations": "not-a-list",
+                }
+            )
+        )
+        code, out, err = self._run("--revert", name)
+        self.assertEqual(code, 2)
+        self.assertNotIn("Traceback", out + err)
+        payload = json.loads(err)
+        self.assertNotIn(str(self.base), payload["message"])
+
+
 if __name__ == "__main__":
     unittest.main()

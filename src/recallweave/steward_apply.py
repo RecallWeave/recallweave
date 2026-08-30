@@ -1290,8 +1290,13 @@ def _validated_journal_ops(
     backup_dir = backups_root / backup_dir_name
     resolved_source = source.root.resolve()
 
+    operations = journal.get("operations", [])
+    if not isinstance(operations, list):
+        raise ApplyError(
+            f"Journal {journal_name} operations must be a list."
+        )
     completed: list[dict[str, Any]] = []
-    for op in journal.get("operations", []):
+    for op in operations:
         if not isinstance(op, dict):
             raise ApplyError(f"Journal {journal_name} carries a malformed operation.")
         state = op.get("state")
@@ -1509,7 +1514,16 @@ def recover_journal(
     journal_path = journal_dir / journal_name
     if not journal_path.is_file():
         raise ApplyError(f"No such journal: {journal_name}")
-    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ApplyError(
+            f"Journal {journal_name} is not valid JSON: {error}"
+        ) from error
+    if not isinstance(journal, dict):
+        raise ApplyError(
+            f"Journal {journal_name} is not a JSON object."
+        )
     if journal.get("status") not in ("intent",):
         raise ApplyError(
             f"Journal {journal_name} has status {journal.get('status')!r}; "
@@ -1631,7 +1645,16 @@ def revert_journal(
     journal_path = journal_dir / journal_name
     if not journal_path.is_file():
         raise ApplyError(f"No such journal: {journal_name}")
-    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ApplyError(
+            f"Journal {journal_name} is not valid JSON: {error}"
+        ) from error
+    if not isinstance(journal, dict):
+        raise ApplyError(
+            f"Journal {journal_name} is not a JSON object."
+        )
     if journal.get("status") != "applied":
         raise ApplyError(
             f"Journal {journal_name} has status {journal.get('status')!r}; "
