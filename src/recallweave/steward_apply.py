@@ -783,12 +783,18 @@ def _guarded_replace(
     *,
     create_dirs: bool = False,
     create_only: bool = False,
+    restore_mode: int | None = None,
     root_identity: tuple[int, int] | None = None,
 ) -> list[Path]:
     """Write ``data`` to ``target`` via a same-directory fsync'd temp file and
     an atomic replace, anchored by a descriptor to ``boundary`` so a
     parent-directory swap between validation and the syscall cannot redirect
     the write. Returns any directories this call created (for rollback).
+
+    When the target already exists its permission bits are preserved. When it
+    does not (e.g. restoring a ``move_to_trash`` deletion, whose target is
+    absent), ``restore_mode`` -- the mode captured before the delete -- is
+    applied instead, so a private (0600) note is not silently returned as 0644.
 
     Recovery comes from the journaled state-directory backup, so no in-source
     backup rotation is performed."""
@@ -827,10 +833,15 @@ def _guarded_replace(
                     handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
-                if existing_mode is not None:
+                mode_to_apply = (
+                    existing_mode if existing_mode is not None else restore_mode
+                )
+                if mode_to_apply is not None:
                     # Preserve the original file's permission bits so a private
-                    # (e.g. 0600) note is not widened to the umask default.
-                    os.chmod(temp_name, existing_mode, dir_fd=parent_fd)
+                    # (e.g. 0600) note is not widened to the umask default --
+                    # from the live target when replacing, or from the captured
+                    # pre-delete mode when restoring an absent (trashed) target.
+                    os.chmod(temp_name, mode_to_apply, dir_fd=parent_fd)
                 if create_only:
                     # Atomic create-or-fail: link refuses if the target now
                     # exists, closing the preflight->write window.
@@ -909,8 +920,9 @@ def _guarded_replace(
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-    if existing_mode is not None:
-        os.chmod(temp, existing_mode)
+    mode_to_apply = existing_mode if existing_mode is not None else restore_mode
+    if mode_to_apply is not None:
+        os.chmod(temp, mode_to_apply)
     try:
         if create_only:
             try:
@@ -997,7 +1009,19 @@ def _rollback(
             if op["had_file"]:
                 if live == before:
                     continue  # already at pre-apply bytes; nothing to undo
-                if after is not None and live != after:
+                if after is None:
+                    # A deletion (move_to_trash) rollback restores its backup
+                    # into an EXPECTED-ABSENT path. If another writer recreated
+                    # the path (live is not None and != before), overwriting it
+                    # would destroy unrelated content -- refuse instead.
+                    if live is not None:
+                        failures.append(
+                            f"{op['relative_path']}: a different file now occupies "
+                            f"the deleted path; refusing to overwrite it, backup "
+                            f"retained at {op.get('backup_path')}"
+                        )
+                        continue
+                elif live != after:
                     failures.append(
                         f"{op['relative_path']}: target changed after the apply "
                         f"(drift); refusing to overwrite it, backup retained at "
@@ -1012,7 +1036,11 @@ def _rollback(
                         f"retained at {backup}"
                     )
                     continue
-                _guarded_replace(target, data, boundary, root_identity=root_identity)
+                _guarded_replace(
+                    target, data, boundary,
+                    restore_mode=op.get("original_mode"),
+                    root_identity=root_identity,
+                )
                 restored = target.read_bytes()
                 if _sha256_bytes(restored) != before:
                     failures.append(
@@ -1288,7 +1316,18 @@ def apply_proposal(
 
             had_file = plan["current"] is not None
             backup_path: Path | None = None
+            original_mode: int | None = None
             if had_file:
+                # Capture the live permission bits before any mutation so a
+                # deletion (move_to_trash) can be restored with its original
+                # mode -- the restored target is absent, so its mode cannot be
+                # recovered from the filesystem later.
+                try:
+                    original_mode = stat.S_IMODE(
+                        os.stat(target, follow_symlinks=False).st_mode
+                    )
+                except OSError:
+                    original_mode = None
                 backup_path = _write_backup(
                     backup_dir,
                     op["backup_name"],
@@ -1296,6 +1335,7 @@ def apply_proposal(
                     within=backups_root,
                 )
 
+            op["original_mode"] = original_mode
             # The op joins the rollback set BEFORE its mutation: a failure
             # anywhere after this point (including a post-write verification
             # failure) must restore this target, and restoring an unmutated
@@ -1308,6 +1348,7 @@ def apply_proposal(
                     "backup_path": str(backup_path) if backup_path else None,
                     "content_hash_before": op["content_hash_before"],
                     "content_hash_after": op["content_hash_after"],
+                    "original_mode": original_mode,
                 }
             )
             op["state"] = "in_progress"
@@ -1333,6 +1374,21 @@ def apply_proposal(
                     root_identity=root_identity,
                 )
                 created_dirs.extend(made)
+                if made:
+                    # Journal the directories this op created (relative to the
+                    # source root) BEFORE post-write verification, so a verified
+                    # recovery after a crash can remove them too -- otherwise
+                    # recovery would delete only the created file and leave empty
+                    # directories behind, unlike the in-process rollback path.
+                    recorded = journal.setdefault("created_dirs", [])
+                    for made_dir in made:
+                        try:
+                            recorded.append(
+                                Path(made_dir).relative_to(source.root).as_posix()
+                            )
+                        except ValueError:
+                            pass
+                    atomic_write_json(journal_path, journal, within=journal_dir)
                 written = target.read_bytes()
                 if _sha256_bytes(written) != op["content_hash_after"]:
                     raise ApplyError(
@@ -1532,6 +1588,7 @@ def _validated_journal_ops(
                 "backup_path": str(backup_path),
                 "content_hash_before": op.get("content_hash_before"),
                 "content_hash_after": op.get("content_hash_after"),
+                "original_mode": op.get("original_mode"),
                 "state": state,
                 "_op": op,
             }
@@ -1709,6 +1766,37 @@ def _require_journal_registry(
         )
 
 
+def _journaled_created_dirs(journal: dict, source_root: Path) -> list[Path]:
+    """Resolve the journal's recorded created-directory list to absolute paths
+    under the source root, re-validating each as a clean, symlink-free relative
+    path. Anything malformed or traversing a symlink is dropped (never removed)
+    rather than raising, so an untrusted journal cannot drive an rmdir outside
+    the source; _remove_created_dirs then removes only the empty ones."""
+
+    recorded = journal.get("created_dirs")
+    if not isinstance(recorded, list):
+        return []
+    result: list[Path] = []
+    for rel in recorded:
+        if not isinstance(rel, str):
+            continue
+        try:
+            _require_clean_relative_path(rel)
+        except ApplyError:
+            continue
+        candidate = source_root / rel
+        chain_ok = True
+        probe = source_root
+        for part in Path(rel).parts:
+            probe = probe / part
+            if is_link_like(probe):
+                chain_ok = False
+                break
+        if chain_ok:
+            result.append(candidate)
+    return result
+
+
 def recover_journal(
     journal_name: str,
     *,
@@ -1824,6 +1912,15 @@ def recover_journal(
         creates_removed += 1
     _rollback(completed, journal_path, journal, journal_dir,
               boundary=source.root, root_identity=_source_identity(source))
+    # Remove directories the interrupted apply created, mirroring the in-process
+    # rollback path so recovery never marks a transaction rolled back while
+    # leaving empty directories behind. rmdir is empty-only, so a directory that
+    # has since gained unrelated content is left in place.
+    _remove_created_dirs(
+        _journaled_created_dirs(journal, source.root),
+        source.root,
+        _recover_identity,
+    )
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": "apply_recovery_receipt",
@@ -1924,6 +2021,13 @@ def revert_journal(
     ]
     _rollback(completed, journal_path, journal, journal_dir,
               boundary=source.root, root_identity=_source_identity(source))
+    # Remove directories the apply created, mirroring recovery and the
+    # in-process rollback, so a reverted create leaves no empty directories.
+    _remove_created_dirs(
+        _journaled_created_dirs(journal, source.root),
+        source.root,
+        _source_identity(source),
+    )
     journal["status"] = "reverted"
     atomic_write_json(journal_path, journal, within=journal_dir)
     return {
@@ -1943,7 +2047,7 @@ def apply_latest(
     state_root: Path,
     database: Path,
     *,
-    write_policy: WritePolicy,
+    write_policy: WritePolicy | None = None,
     proposal_id: str | None = None,
     approve_class: str | None = None,
     recover: str | None = None,
@@ -1954,7 +2058,9 @@ def apply_latest(
     """CLI entry point: apply one named proposal, a mutation class, or recover.
 
     Exactly one of ``proposal_id``, ``approve_class``, ``recover`` must be
-    given. Dry-run is the only mode without ``execute``."""
+    given. Dry-run is the only mode without ``execute``. ``write_policy`` is
+    required only for proposal/class execution; ``--recover``/``--revert``
+    restore from the journal and verified backups and never consult it."""
 
     chosen = [
         value for value in (proposal_id, approve_class, recover, revert) if value
@@ -1963,6 +2069,10 @@ def apply_latest(
         raise ApplyError(
             "Exactly one of a proposal id, --approve-class, --recover, or "
             "--revert is required."
+        )
+    if recover is None and revert is None and write_policy is None:
+        raise ApplyError(
+            "A write policy is required to apply a proposal or mutation class."
         )
 
     state_root = Path(state_root)
@@ -2076,16 +2186,39 @@ def apply_latest(
                 raise
             receipts.append(receipt)
             if execute and receipt.get("applied"):
-                updated = dict(document)
-                updated["status"] = "applied"
-                updated["applied_receipt_ref"] = receipt.get("journal_ref")
-                atomic_write_json(path, updated, within=dirs["proposals"])
-                receipt_name = f"{_file_timestamp(receipt['generated_at'])}-{document['proposal_id']}.json"
-                atomic_write_json(
-                    dirs["receipts"] / receipt_name,
-                    receipt,
-                    within=dirs["receipts"],
-                )
+                # apply_proposal has already mutated the vault and written its
+                # applied journal. If persisting the proposal-status update or
+                # the receipt now fails (e.g. the state volume is full), the
+                # vault is changed but the generic envelope would report nothing
+                # applied. Attach the completed mutations -- including this one
+                # -- so the operator learns the vault changed and can find the
+                # journal to revert.
+                try:
+                    updated = dict(document)
+                    updated["status"] = "applied"
+                    updated["applied_receipt_ref"] = receipt.get("journal_ref")
+                    atomic_write_json(path, updated, within=dirs["proposals"])
+                    receipt_name = f"{_file_timestamp(receipt['generated_at'])}-{document['proposal_id']}.json"
+                    atomic_write_json(
+                        dirs["receipts"] / receipt_name,
+                        receipt,
+                        within=dirs["receipts"],
+                    )
+                except (OSError, ValueError) as error:
+                    error.partial_applied = [
+                        {
+                            "proposal_id": applied.get("proposal_id"),
+                            "journal_ref": applied.get("journal_ref"),
+                            "steward_vault_mutations": applied.get(
+                                "steward_vault_mutations", 0
+                            ),
+                        }
+                        for applied in receipts
+                        if applied.get("applied")
+                    ]
+                    error.failed_proposal_id = document.get("proposal_id")
+                    error.receipt_persist_failed = True
+                    raise
 
         return {
             "schema_version": STEWARD_SCHEMA_VERSION,

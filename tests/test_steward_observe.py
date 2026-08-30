@@ -318,6 +318,52 @@ class ObserveSourceTest(unittest.TestCase):
         added = {c["relative_path"] for c in receipt["changes"] if c["change_type"] == "added"}
         self.assertIn("b.md", added)
 
+    def test_frontmatter_read_failure_does_not_abort_observation(self) -> None:
+        # A file that becomes unreadable during frontmatter admission must not
+        # abort the whole observation.
+        self.source = _source(
+            "src", self.vault.root,
+            policy=IndexPolicy(deny_frontmatter={"sensitivity": ["sealed"]}),
+        )
+        self.vault.write("a.md", "---\ntitle: A\n---\nbody\n")
+        self.vault.write("b.md", "---\ntitle: B\n---\nbody\n")
+        real_parse = __import__(
+            "recallweave.steward_observe", fromlist=["parse_note"]
+        ).parse_note
+
+        def flaky(path, root):
+            if path.name == "a.md":
+                raise OSError("vanished during frontmatter read")
+            return real_parse(path, root)
+
+        with patch("recallweave.steward_observe.parse_note", side_effect=flaky):
+            receipt = self.observe(now="2026-01-01T00:00:00+00:00")
+        self.assertIn("a.md", receipt["changed_during_observe"])
+        added = {c["relative_path"] for c in receipt["changes"] if c["change_type"] == "added"}
+        self.assertIn("b.md", added)
+
+    def test_unreadable_subtree_is_not_reported_as_deletions(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX directory permissions")
+        # Baseline: a note inside a subdirectory is observed and checkpointed.
+        self.vault.write("sub/keep.md", "kept note")
+        self.vault.write("top.md", "top note")
+        self.observe(now="2026-01-01T00:00:00+00:00")
+        subdir = self.vault.root / "sub"
+        os.chmod(subdir, 0o000)
+        try:
+            receipt = self.observe(now="2026-01-02T00:00:00+00:00")
+        finally:
+            os.chmod(subdir, 0o755)
+        removed = {c["relative_path"] for c in receipt["changes"] if c["change_type"] == "removed"}
+        self.assertNotIn(
+            "sub/keep.md", removed,
+            "an unreadable subtree was reported as deletions",
+        )
+        # The prior entry is retained in the checkpoint (not dropped).
+        cp = self.checkpoint()
+        self.assertIn("sub/keep.md", {e["relative_path"] for e in cp["entries"]})
+
     def test_byte_identical_except_generated_at(self) -> None:
         self.vault.write("a.md", "hello")
         self.observe(now="2026-01-01T00:00:00+00:00")

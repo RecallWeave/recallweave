@@ -149,6 +149,16 @@ class AtomicWriteJsonTest(unittest.TestCase):
         self.assertTrue(path.is_file())
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"a": 2, "b": 1})
 
+    def test_parent_directory_is_fsynced_for_durability(self) -> None:
+        # The rename must itself be made durable (parent-dir fsync), so a
+        # journal write cannot be lost while the mutation it authorizes lands.
+        path = self.root / "data.json"
+        with patch(
+            "recallweave.steward_state._fsync_parent_dir"
+        ) as fsync_dir:
+            atomic_write_json(path, {"value": 1})
+        fsync_dir.assert_called_once_with(self.root)
+
     def test_crash_in_replace_leaves_old_file(self) -> None:
         path = self.root / "data.json"
         atomic_write_json(path, {"value": "old"})

@@ -925,18 +925,31 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                 )
 
         # Conflict-link across the full computed set (existing + new) so a newly
-        # written proposal references every counterpart; only missing files are
-        # actually written, and never an already-present (or applied) one.
+        # written proposal references every counterpart.
         _assign_conflicts([proposal for _fn, proposal, _new in all_computed])
 
         written = 0
+        conflicts_synced = 0
         for filename, proposal, is_new in all_computed:
-            if not is_new:
+            path = proposals_dir / filename
+            if is_new:
+                atomic_write_json(path, proposal, within=proposals_dir)
+                written += 1
                 continue
-            atomic_write_json(
-                proposals_dir / filename, proposal, within=proposals_dir
-            )
-            written += 1
+            # An EXISTING pending proposal may have gained a conflict with a
+            # newly written counterpart. If so, sync only its conflicts_with so
+            # both sides declare the conflict (an un-updated side would still be
+            # applyable despite the overlap). Never rewrite an applied proposal.
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(existing, dict) or existing.get("status") == "applied":
+                continue
+            if existing.get("conflicts_with") != proposal.get("conflicts_with"):
+                existing["conflicts_with"] = proposal.get("conflicts_with", [])
+                atomic_write_json(path, existing, within=proposals_dir)
+                conflicts_synced += 1
 
         return {
             "schema_version": STEWARD_SCHEMA_VERSION,
@@ -944,6 +957,7 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
             "operation": "steward_propose",
             "generated_at": generated_at,
             "proposals_created": written,
+            "conflicts_synced": conflicts_synced,
             "per_source": per_source,
             "network_calls": 0,
             "vault_writes": 0,

@@ -236,6 +236,25 @@ def lock_state(root: Path) -> Iterator[StateLock]:
         lock.release()
 
 
+def _fsync_parent_dir(directory: Path) -> None:
+    """Best-effort fsync of a directory so a rename into it is durable.
+
+    POSIX only; on platforms/filesystems where a directory cannot be opened for
+    fsync (notably Windows) this is a no-op, matching the platform's weaker but
+    still-atomic rename guarantees."""
+
+    try:
+        dir_fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
 def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) -> None:
     if within is not None:
         guard_within(path, within)
@@ -255,6 +274,11 @@ def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) 
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_name, path)
+        # Fsync the containing directory so the rename is itself durable. Without
+        # this, a crash after os.replace can lose the new directory entry even
+        # though the file's bytes were fsynced -- which for a journal write would
+        # let recovery restart from a journal that omits an already-landed op.
+        _fsync_parent_dir(parent)
     except BaseException:
         try:
             os.unlink(temp_name)

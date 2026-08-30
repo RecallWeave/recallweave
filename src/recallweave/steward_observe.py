@@ -59,14 +59,32 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _walk_markdown(source_root: Path, skipped: Counter[str]) -> list[Path]:
+def _walk_markdown(
+    source_root: Path,
+    skipped: Counter[str],
+    traversal_failures: list[Path] | None = None,
+) -> list[Path]:
     """Mirror index._markdown_files but keep per-file stat reachable later.
 
     Reserved directories are pruned in place; symlinks, hardlinks, paths that
     resolve outside the root, and duplicate resolved targets are skipped and
-    counted by reason. Only *.md candidates are returned."""
+    counted by reason. Only *.md candidates are returned.
+
+    A subtree whose ``scandir`` fails (a transient permission or I/O error) is
+    recorded in ``traversal_failures`` rather than being silently omitted --
+    the caller retains that subtree's prior checkpoint entries instead of
+    reporting every note under it as deleted."""
+
+    def _on_error(error: OSError) -> None:
+        skipped["traversal_error"] += 1
+        name = getattr(error, "filename", None)
+        if traversal_failures is not None and isinstance(name, str):
+            traversal_failures.append(Path(name))
+
     candidates: list[tuple[Path, Path]] = []
-    for root, directory_names, file_names in os.walk(source_root, followlinks=False):
+    for root, directory_names, file_names in os.walk(
+        source_root, followlinks=False, onerror=_on_error
+    ):
         root_path = Path(root)
         kept_directories = []
         for name in directory_names:
@@ -113,7 +131,12 @@ def _walk_markdown(source_root: Path, skipped: Counter[str]) -> list[Path]:
     return paths
 
 
-def _admitted_paths(source: StewardSource, root: Path, skipped: Counter[str]) -> list[Path]:
+def _admitted_paths(
+    source: StewardSource,
+    root: Path,
+    skipped: Counter[str],
+    traversal_failures: list[Path] | None = None,
+) -> list[Path]:
     if source.type == "file":
         if root.suffix.casefold() != ".md":
             return []
@@ -128,7 +151,7 @@ def _admitted_paths(source: StewardSource, root: Path, skipped: Counter[str]) ->
             skipped["unreadable_path"] += 1
             return []
         return [root]
-    return _walk_markdown(root, skipped)
+    return _walk_markdown(root, skipped, traversal_failures)
 
 
 def _relative_for(source: StewardSource, root: Path, path: Path) -> str:
@@ -255,7 +278,10 @@ def observe_source(
         }
 
     skipped: Counter[str] = Counter()
-    admitted = _admitted_paths(source, resolved_root, skipped)
+    traversal_failures: list[Path] = []
+    admitted = _admitted_paths(
+        source, resolved_root, skipped, traversal_failures
+    )
 
     changes: dict[str, dict] = {}
     new_entries: dict[str, CheckpointEntry] = {}
@@ -295,6 +321,17 @@ def observe_source(
             except RecursionError:
                 skipped["unparseable_frontmatter"] += 1
                 policy_excluded.add(relative)
+                continue
+            except OSError:
+                # The file was statted during discovery but became unreadable or
+                # was removed before frontmatter parsing could open it. Record it
+                # as changed-during-observe and keep any prior checkpoint entry,
+                # so one transient read failure cannot abort observation for
+                # every other note and source (mirrors the hashing path below).
+                changed_during_observe.append(relative)
+                prior_entry = prior_entries.get(relative)
+                if prior_entry is not None:
+                    new_entries[relative] = _entry_from_prior(prior_entry)
                 continue
             allowed, reason = source.policy.frontmatter_allowed(
                 note.frontmatter, valid=note.frontmatter_valid
@@ -353,6 +390,31 @@ def observe_source(
             changes[relative] = _change(
                 relative, "modified", prior["content_hash"], current_hash
             )
+
+    # A subtree whose traversal failed this run was not scanned, so its files
+    # are absent from new_entries through no deletion. Retain those prior entries
+    # (carry them into the new checkpoint) and exclude them from removed
+    # detection, so a transient directory I/O error cannot manufacture false
+    # deletions, dangling references, and a re-added storm on the next run.
+    if traversal_failures:
+        failed_prefixes = []
+        for failed in traversal_failures:
+            try:
+                failed_prefixes.append(
+                    failed.resolve().relative_to(resolved_root).as_posix()
+                )
+            except (OSError, ValueError):
+                continue
+
+        def _under_failed(rel: str) -> bool:
+            return any(
+                rel == prefix or rel.startswith(prefix + "/")
+                for prefix in failed_prefixes
+            )
+
+        for rel, entry in prior_entries.items():
+            if rel not in new_entries and rel not in policy_excluded and _under_failed(rel):
+                new_entries[rel] = _entry_from_prior(entry)
 
     removed_paths = sorted(set(prior_entries) - set(new_entries) - policy_excluded)
     for relative in removed_paths:
@@ -447,9 +509,16 @@ def observe_registry(registry: SourceRegistry, state_root: Path) -> dict:
         state_root, [source.root for source in registry.sources]
     )
     state_dirs = ensure_state_layout(state_root)
-    generated_at = _utc_now()
     receipts: list[dict] = []
     with StateLock(state_root):
+        # Allocate the run timestamp AFTER acquiring the lock. If two observe
+        # processes stamped the same wall-clock time before either locked, they
+        # would compute identical batch filenames; the second, running after the
+        # first advanced the checkpoint, would see an unchanged tree and
+        # atomically REPLACE the first's batch with an empty one, discarding
+        # those changes before assessment. Stamping under the lock serialises
+        # the runs onto distinct timestamps.
+        generated_at = _utc_now()
         for source in registry.sources:
             batch = observe_source(
                 source,

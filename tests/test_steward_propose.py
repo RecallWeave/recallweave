@@ -612,6 +612,56 @@ class ProposeLatestTest(StewardProposeTest):
             second["per_source"], [{"source": "vault", "reason": "already_proposed"}]
         )
 
+    def _rename_assessment(self, ts: str, removed: str, added: str) -> None:
+        removed_hash = self._index_hash(removed)
+        (self.vault / removed).rename(self.vault / added)
+        batch = _batch(
+            changes=[
+                _change(removed, "removed", previous=removed_hash),
+                _change(added, "added", current=removed_hash),
+            ],
+            rename_candidates=[
+                {"removed_path": removed, "added_paths": [added],
+                 "content_hash": removed_hash}
+            ],
+        )
+        batch_path = self.dirs["changes"] / f"{ts}-vault.json"
+        batch_path.write_text(json.dumps(batch), encoding="utf-8")
+        assessment = self._assess(batch)
+        assessment["change_batch_ref"] = batch_path.name
+        (self.dirs["assessments"] / batch_path.name).write_text(
+            json.dumps(assessment), encoding="utf-8"
+        )
+
+    def test_conflict_is_synced_onto_existing_pending_proposal(self) -> None:
+        # Two separate assessments each rewrite the same referrer (Alpha.md,
+        # which links to both Beta and Gamma). The second run must record the
+        # conflict on BOTH the new AND the already-written proposal.
+        self._rename_assessment("20260101T000000Z", "Beta.md", "BetaNew.md")
+        first = propose_latest(self.registry, self.state_root, self.database)
+        beta_fix = [
+            p for p in self.dirs["proposals"].glob("20260101T000000Z-vault-*.json")
+            if json.loads(p.read_text())["action"] == "fix_links_after_rename"
+        ]
+        self.assertEqual(len(beta_fix), 1)
+        self.assertEqual(
+            json.loads(beta_fix[0].read_text())["conflicts_with"], []
+        )
+
+        self._rename_assessment("20260102T000000Z", "Gamma.md", "GammaNew.md")
+        propose_latest(self.registry, self.state_root, self.database)
+
+        beta_doc = json.loads(beta_fix[0].read_text())
+        gamma_fix = [
+            p for p in self.dirs["proposals"].glob("20260102T000000Z-vault-*.json")
+            if json.loads(p.read_text())["action"] == "fix_links_after_rename"
+        ]
+        self.assertEqual(len(gamma_fix), 1)
+        gamma_doc = json.loads(gamma_fix[0].read_text())
+        # Both proposals now declare the conflict with each other.
+        self.assertIn(gamma_doc["proposal_id"], beta_doc["conflicts_with"])
+        self.assertIn(beta_doc["proposal_id"], gamma_doc["conflicts_with"])
+
     def test_no_assessment_is_reported_and_skipped(self) -> None:
         receipt = propose_latest(self.registry, self.state_root, self.database)
         self.assertEqual(receipt["proposals_created"], 0)

@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -582,6 +583,35 @@ class AssessLatestTest(StewardAssessTest):
         )
         with self.assertRaisesRegex(ValueError, "more than one source"):
             assess_latest(registry, self.state_root, self.database)
+
+
+class AssessmentEvidenceBoundTest(StewardAssessTest):
+    def test_assessment_document_evidence_is_bounded(self) -> None:
+        import recallweave.steward_assess as sa
+
+        changes = []
+        for i in range(5):
+            p = self._write(f"New{i}.md", f"# New{i}\n\nunique {i}.\n")
+            changes.append(_change(f"New{i}.md", "added", current=_hash(p)))
+        batch = _batch(changes=changes)
+        with patch.object(sa, "ASSESS_EVIDENCE_LIMIT", 2):
+            document = assess_change_batch(
+                batch, self.database, self.vault, now=FROZEN_NOW
+            )
+        self.assertEqual(len(document["assessments"]), 2)
+        self.assertEqual(
+            document["assessments_truncated"], {"reported": 2, "total": 5}
+        )
+        # The summary still reflects the FULL count, not the truncated array.
+        self.assertEqual(document["summary"]["NEW"], 5)
+
+    def test_untruncated_assessment_has_null_marker(self) -> None:
+        p = self._write("Solo.md", "# Solo\n\none.\n")
+        document = assess_change_batch(
+            _batch(changes=[_change("Solo.md", "added", current=_hash(p))]),
+            self.database, self.vault, now=FROZEN_NOW,
+        )
+        self.assertIsNone(document["assessments_truncated"])
 
 
 class SingleFileSourceAssessTest(unittest.TestCase):

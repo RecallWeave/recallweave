@@ -341,8 +341,11 @@ def _parser() -> argparse.ArgumentParser:
         "--write-policy",
         type=_path,
         dest="write_policy",
-        required=True,
-        help="Explicit write policy JSON. Required; there is no permissive default.",
+        help=(
+            "Explicit write policy JSON. Required to apply a proposal or class "
+            "(there is no permissive default); not needed for --recover/--revert, "
+            "which restore from the journal and verified backups only."
+        ),
     )
     apply_selector = steward_apply_parser.add_mutually_exclusive_group(required=True)
     apply_selector.add_argument(
@@ -448,6 +451,23 @@ def main(argv: list[str] | None = None) -> int:
             from .steward_apply import apply_latest
             from .steward_policy import WritePolicy
 
+            # --recover/--revert restore from the journal and verified backups
+            # and never consult the write policy, so they must remain usable
+            # even if the policy file was removed or corrupted after an
+            # interrupted apply -- exactly when recovery matters most. Only load
+            # (and require) the policy for proposal/class execution.
+            is_restore = bool(args.recover or args.revert)
+            if is_restore:
+                write_policy = None
+            else:
+                if args.write_policy is None:
+                    raise ValueError(
+                        "steward-apply requires --write-policy to apply a "
+                        "proposal or mutation class; there is no permissive "
+                        "default."
+                    )
+                write_policy = WritePolicy.from_file(args.write_policy)
+
             with load_registry(args.sources) as registry:
                 state_root = args.state_dir or steward_state_root(args.sources)
                 database = _query_database(args)
@@ -455,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
                     registry,
                     state_root,
                     database,
-                    write_policy=WritePolicy.from_file(args.write_policy),
+                    write_policy=write_policy,
                     proposal_id=args.proposal_id,
                     approve_class=args.approve_class,
                     recover=args.recover,
@@ -590,6 +610,10 @@ def main(argv: list[str] | None = None) -> int:
             envelope["failed_proposal_id"] = getattr(
                 error, "failed_proposal_id", None
             )
+            if getattr(error, "receipt_persist_failed", False):
+                # The vault + journal were mutated but the receipt/status write
+                # failed; the mutation stands and can be reverted by journal.
+                envelope["receipt_persist_failed"] = True
         print(
             json.dumps(envelope, ensure_ascii=True),
             file=sys.stderr,

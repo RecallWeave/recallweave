@@ -547,6 +547,98 @@ class ApplyUnitTest(unittest.TestCase):
         self.assertEqual(len(trashed), 1)
         self.assertEqual(trashed[0].read_bytes(), data)
 
+    @unittest.skipIf(os.name == "nt", "POSIX file modes")
+    def test_trash_revert_restores_original_mode(self) -> None:
+        target = self.vault.write("gone.md", "secret bytes")
+        os.chmod(target, 0o600)
+        data = target.read_bytes()
+        proposal = self._proposal(
+            [
+                {
+                    "mutation_class": "move_to_trash",
+                    "relative_path": "gone.md",
+                    "precondition_content_hash": _sha(data),
+                }
+            ]
+        )
+        policy = _policy({"class_levels": {"move_to_trash": "require_approval"}})
+        receipt = self._apply(proposal, policy)
+        self.assertFalse(target.exists())
+        apply_latest(
+            self.registry, self.state_root, self.database,
+            write_policy=policy, revert=receipt["journal_ref"], execute=True,
+        )
+        self.assertTrue(target.exists())
+        self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+
+    def test_revert_refuses_when_deleted_path_is_recreated(self) -> None:
+        target = self.vault.write("gone.md", "original")
+        data = target.read_bytes()
+        proposal = self._proposal(
+            [
+                {
+                    "mutation_class": "move_to_trash",
+                    "relative_path": "gone.md",
+                    "precondition_content_hash": _sha(data),
+                }
+            ]
+        )
+        policy = _policy({"class_levels": {"move_to_trash": "require_approval"}})
+        receipt = self._apply(proposal, policy)
+        # Another writer recreates the deleted path with unrelated content.
+        self.vault.write("gone.md", "a different, unrelated file")
+        with self.assertRaisesRegex(ApplyError, "Refusing to revert"):
+            apply_latest(
+                self.registry, self.state_root, self.database,
+                write_policy=policy, revert=receipt["journal_ref"], execute=True,
+            )
+        self.assertEqual(
+            (self.vault.root / "gone.md").read_text(encoding="utf-8"),
+            "a different, unrelated file",
+            "revert clobbered the unrelated recreated file",
+        )
+
+    def test_revert_of_create_removes_created_directory(self) -> None:
+        content = "# New\n\nfresh note.\n"
+        proposal = self._proposal(
+            [
+                {
+                    "mutation_class": "create_new_file",
+                    "relative_path": "inbox/new.md",
+                    "replacement_text": content,
+                    "predicted_post_hash": _sha(content.encode()),
+                }
+            ]
+        )
+        policy = _policy({"class_levels": {"create_new_file": "require_approval"}})
+        receipt = self._apply(proposal, policy)
+        self.assertTrue((self.vault.root / "inbox" / "new.md").exists())
+        apply_latest(
+            self.registry, self.state_root, self.database,
+            write_policy=policy, revert=receipt["journal_ref"], execute=True,
+        )
+        self.assertFalse((self.vault.root / "inbox" / "new.md").exists())
+        self.assertFalse(
+            (self.vault.root / "inbox").exists(),
+            "revert left the empty directory the create made",
+        )
+
+    def test_recover_and_revert_do_not_require_write_policy(self) -> None:
+        # write_policy=None must not raise the policy-required error on a
+        # restore path (recovery must work when the policy file is gone).
+        with self.assertRaisesRegex(ApplyError, "No such journal"):
+            apply_latest(
+                self.registry, self.state_root, self.database,
+                write_policy=None, revert="20260101T000000000000Z-none.json",
+                execute=True,
+            )
+        # But proposal execution without a policy is refused.
+        with self.assertRaisesRegex(ApplyError, "write policy is required"):
+            apply_latest(
+                self.registry, self.state_root, self.database,
+                write_policy=None, proposal_id="prp-whatever0000000", execute=True,
+            )
+
     def test_replace_whole_section_is_not_executable_yet(self) -> None:
         proposal = self._proposal(
             [
