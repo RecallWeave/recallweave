@@ -434,9 +434,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "steward-observe":
 
         def run_observe() -> dict[str, Any]:
-            registry = load_registry(args.sources)
-            state_root = args.state_dir or steward_state_root(args.sources)
-            return observe_registry(registry, state_root)
+            with load_registry(args.sources) as registry:
+                state_root = args.state_dir or steward_state_root(args.sources)
+                return observe_registry(registry, state_root)
 
         action = run_observe
     elif args.command == "steward-apply":
@@ -447,37 +447,69 @@ def main(argv: list[str] | None = None) -> int:
             from .steward_apply import apply_latest
             from .steward_policy import WritePolicy
 
-            registry = load_registry(args.sources)
-            state_root = args.state_dir or steward_state_root(args.sources)
-            database = _query_database(args)
-            return apply_latest(
-                registry,
-                state_root,
-                database,
-                write_policy=WritePolicy.from_file(args.write_policy),
-                proposal_id=args.proposal_id,
-                approve_class=args.approve_class,
-                recover=args.recover,
-                revert=args.revert,
-                execute=args.execute,
-                allow_sync_root=args.allow_sync_root,
-            )
+            with load_registry(args.sources) as registry:
+                state_root = args.state_dir or steward_state_root(args.sources)
+                database = _query_database(args)
+                return apply_latest(
+                    registry,
+                    state_root,
+                    database,
+                    write_policy=WritePolicy.from_file(args.write_policy),
+                    proposal_id=args.proposal_id,
+                    approve_class=args.approve_class,
+                    recover=args.recover,
+                    revert=args.revert,
+                    execute=args.execute,
+                    allow_sync_root=args.allow_sync_root,
+                )
 
         action = run_apply
     elif args.command == "steward-status":
 
         def run_status() -> dict[str, Any]:
-            registry = load_registry(args.sources)
-            state_root = args.state_dir or steward_state_root(args.sources)
-            return status_report(
-                state_root,
-                prune_older_than_days=args.prune_older_than_days,
-                source_roots=[source.root for source in registry.sources],
-            )
+            with load_registry(args.sources) as registry:
+                state_root = args.state_dir or steward_state_root(args.sources)
+                return status_report(
+                    state_root,
+                    prune_older_than_days=args.prune_older_than_days,
+                    source_roots=[source.root for source in registry.sources],
+                )
 
         action = run_status
     else:
         database = _query_database(args)
+
+        def run_assess() -> dict[str, Any]:
+            with load_registry(args.sources) as registry:
+                return assess_latest(
+                    registry,
+                    args.state_dir or steward_state_root(args.sources),
+                    database,
+                )
+
+        def run_propose() -> dict[str, Any]:
+            with load_registry(args.sources) as registry:
+                return propose_latest(
+                    registry,
+                    args.state_dir or steward_state_root(args.sources),
+                    database,
+                )
+
+        def run_sweep() -> dict[str, Any]:
+            with load_registry(args.sources) as registry:
+                return sweep_registry(
+                    registry,
+                    args.state_dir or steward_state_root(args.sources),
+                    database,
+                    report_format=args.format,
+                    apply=args.apply,
+                    write_policy=(
+                        _load_write_policy(args.write_policy)
+                        if args.apply
+                        else None
+                    ),
+                )
+
         commands: dict[str, Callable[[], dict[str, Any]]] = {
             "query": lambda: context_packet(
                 database,
@@ -527,28 +559,9 @@ def main(argv: list[str] | None = None) -> int:
                 # `vault_writes: 0` false.
                 vault=args.vault or Path.cwd(),
             ),
-            "steward-assess": lambda: assess_latest(
-                load_registry(args.sources),
-                args.state_dir or steward_state_root(args.sources),
-                database,
-            ),
-            "steward-propose": lambda: propose_latest(
-                load_registry(args.sources),
-                args.state_dir or steward_state_root(args.sources),
-                database,
-            ),
-            "steward-sweep": lambda: sweep_registry(
-                load_registry(args.sources),
-                args.state_dir or steward_state_root(args.sources),
-                database,
-                report_format=args.format,
-                apply=args.apply,
-                write_policy=(
-                    _load_write_policy(args.write_policy)
-                    if args.apply
-                    else None
-                ),
-            ),
+            "steward-assess": run_assess,
+            "steward-propose": run_propose,
+            "steward-sweep": run_sweep,
         }
         action = commands[args.command]
     try:

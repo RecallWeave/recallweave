@@ -141,7 +141,7 @@ class ObserveSourceTest(unittest.TestCase):
         self.assertEqual(candidate["removed_path"], "old.md")
         self.assertEqual(candidate["added_paths"], ["new.md"])
         self.assertEqual(candidate["content_hash"], old_hash)
-        self.assertTrue(candidate["inode_match"])
+        self.assertNotIn("inode_match", candidate)
 
     def test_copy_duplicate_hash_no_rename_candidate(self) -> None:
         self.vault.write("a.md", "same content")
@@ -170,7 +170,7 @@ class ObserveSourceTest(unittest.TestCase):
         candidate = receipt["rename_candidates"][0]
         self.assertEqual(candidate["removed_path"], "old.md")
         self.assertEqual(candidate["added_paths"], ["x.md", "y.md"])
-        self.assertFalse(candidate["inode_match"])
+        self.assertNotIn("inode_match", candidate)
 
     def test_symlink_skipped(self) -> None:
         self.vault.write("target.md", "real content")

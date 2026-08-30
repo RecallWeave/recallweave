@@ -32,6 +32,30 @@ def _reject_remotes(value: Any) -> None:
             _reject_remotes(item)
 
 
+def _validate_no_overlap(parsed: "list[StewardSource]") -> None:
+    """Reject two sources whose resolved roots overlap (containment or same
+    file), before the registry is constructed."""
+    resolved = [(item.name, item.root) for item in parsed]
+    for i in range(len(resolved)):
+        for j in range(i + 1, len(resolved)):
+            name_a, root_a = resolved[i]
+            name_b, root_b = resolved[j]
+            if root_a.is_relative_to(root_b) or root_b.is_relative_to(root_a):
+                raise ValueError(
+                    f"Source roots overlap: {name_a} ({root_a}) and "
+                    f"{name_b} ({root_b})."
+                )
+            try:
+                same = os.path.samefile(root_a, root_b)
+            except OSError:
+                same = False
+            if same:
+                raise ValueError(
+                    f"Source roots overlap: {name_a} ({root_a}) and "
+                    f"{name_b} ({root_b})."
+                )
+
+
 @dataclass(slots=True)
 class StewardSource:
     name: str
@@ -45,12 +69,45 @@ class StewardSource:
     # library/test construction.
     root_dev: int | None = None
     root_ino: int | None = None
+    # An open directory (or file) descriptor to the registered root, held for
+    # the life of the registry. Holding it pins the root's inode: its number
+    # cannot be reused while the fd is open, so a root deleted and recreated
+    # at the same path (which reuses the inode number on ext4 and similar
+    # filesystems) is reliably detected by the (st_dev, st_ino) comparison,
+    # portably across platforms. None only for direct library/test
+    # construction that bypasses the registry loader.
+    root_fd: int | None = None
 
 
 @dataclass(slots=True)
 class SourceRegistry:
     sources: list[StewardSource]
     registry_sha256: str | None
+
+    def close(self) -> None:
+        """Release every held root descriptor. Idempotent."""
+        for source in self.sources:
+            fd = source.root_fd
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                source.root_fd = None
+
+    def __enter__(self) -> "SourceRegistry":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        # Safety net so a registry that is dropped without an explicit close
+        # (e.g. in tests) does not leak descriptors.
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @classmethod
     def from_payload(
@@ -75,28 +132,20 @@ class SourceRegistry:
 
         seen: set[str] = set()
         parsed: list[StewardSource] = []
-        for source in sources_payload:
-            parsed.append(cls._parse_source(source, base_dir, seen))
-
-        resolved = [(item.name, item.root) for item in parsed]
-        for i in range(len(resolved)):
-            for j in range(i + 1, len(resolved)):
-                name_a, root_a = resolved[i]
-                name_b, root_b = resolved[j]
-                if root_a.is_relative_to(root_b) or root_b.is_relative_to(root_a):
-                    raise ValueError(
-                        f"Source roots overlap: {name_a} ({root_a}) and "
-                        f"{name_b} ({root_b})."
-                    )
-                try:
-                    same = os.path.samefile(root_a, root_b)
-                except OSError:
-                    same = False
-                if same:
-                    raise ValueError(
-                        f"Source roots overlap: {name_a} ({root_a}) and "
-                        f"{name_b} ({root_b})."
-                    )
+        try:
+            for source in sources_payload:
+                parsed.append(cls._parse_source(source, base_dir, seen))
+            _validate_no_overlap(parsed)
+        except BaseException:
+            # Close any descriptors opened before the failure so a rejected
+            # registry never leaks held roots.
+            for item in parsed:
+                if item.root_fd is not None:
+                    try:
+                        os.close(item.root_fd)
+                    except OSError:
+                        pass
+            raise
         return cls(sources=parsed, registry_sha256=None)
 
     @classmethod
@@ -166,7 +215,18 @@ class SourceRegistry:
                 "An appliable source must declare a non-empty include_paths "
                 "allowlist."
             )
-        root_dev, root_ino = path_identity(resolved)
+        open_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        if type_ != "file":
+            open_flags |= getattr(os, "O_DIRECTORY", 0)
+        try:
+            root_fd = os.open(resolved, open_flags)
+            info = os.fstat(root_fd)
+            root_dev, root_ino = info.st_dev, info.st_ino
+        except OSError:
+            # Fall back to a stat-based pin where a held descriptor is not
+            # available; identity is then best-effort on that platform.
+            root_fd = None
+            root_dev, root_ino = path_identity(resolved)
         return StewardSource(
             name=name,
             type=type_,
@@ -175,6 +235,7 @@ class SourceRegistry:
             policy=policy,
             root_dev=root_dev,
             root_ino=root_ino,
+            root_fd=root_fd,
         )
 
     @classmethod

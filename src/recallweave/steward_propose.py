@@ -16,7 +16,7 @@ assessment-derived situations, all structurally decidable from the index and
 the change batch alone:
 
 1. A ``DELETED`` note that is part of a clean rename (the change batch's
-   ``rename_candidates`` records an ``inode_match`` with exactly one
+   ``rename_candidates`` has a unique content-hash pairing -- one
    ``added_path``): a compiled ``fix_unresolved_link`` edit is produced for
    every referrer whose authored wikilink/markdown link can be rewritten
    unambiguously, hash-pinned to the referrer's current on-disk bytes.
@@ -576,7 +576,11 @@ def propose_from_assessment(
     if batch is not None:
         for candidate in batch.get("rename_candidates") or []:
             added_paths = candidate.get("added_paths") or []
-            if candidate.get("inode_match") and len(added_paths) == 1:
+            # Content-hash uniqueness gates a compiled rename edit: exactly
+            # one added file shares the removed file's bytes. Inode identity is
+            # not consulted (not portable across inode-reusing filesystems);
+            # the edit is hash-pinned and operator-reviewed regardless.
+            if len(added_paths) == 1:
                 rename_map[candidate["removed_path"]] = added_paths[0]
 
     by_relation: dict[str, list[dict[str, Any]]] = {}

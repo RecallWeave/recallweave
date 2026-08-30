@@ -249,7 +249,6 @@ def observe_source(
     changes: dict[str, dict] = {}
     new_entries: dict[str, CheckpointEntry] = {}
     changed_during_observe: list[str] = []
-    entry_stats: dict[str, tuple[int, int]] = {}
     policy_excluded: set[str] = set()
 
     for path in admitted:
@@ -318,7 +317,6 @@ def observe_source(
                 new_entries[relative] = _entry_from_prior(prior)
             continue
 
-        entry_stats[relative] = (dev, ino)
         new_entries[relative] = CheckpointEntry(
             relative_path=relative,
             content_hash=current_hash,
@@ -353,20 +351,18 @@ def observe_source(
         if previous is None or previous not in added_by_hash:
             continue
         matches = added_by_hash[previous]
-        removed_dev, removed_ino = (
-            int(prior_entries[record["relative_path"]]["file_dev"]),
-            int(prior_entries[record["relative_path"]]["file_ino"]),
-        )
-        inode_match = any(
-            entry_stats[match["relative_path"]] == (removed_dev, removed_ino)
-            for match in matches
-        )
+        # Rename candidacy is content-hash based only. Inode identity is NOT
+        # used: on filesystems that reuse inode numbers (e.g. ext4), a removed
+        # file's number is promptly reused by an unrelated new file, which
+        # would produce a spurious "same inode" signal. Content-hash equality
+        # is the portable, honest basis; a unique pairing (one removed, one
+        # added with equal bytes) is what a compiled rename edit keys on, and
+        # every such edit is independently hash-pinned and operator-reviewed.
         rename_candidates.append(
             {
                 "removed_path": record["relative_path"],
                 "added_paths": sorted(match["relative_path"] for match in matches),
                 "content_hash": previous,
-                "inode_match": inode_match,
             }
         )
 
