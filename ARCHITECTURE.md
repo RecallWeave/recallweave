@@ -171,6 +171,38 @@ vault. See [docs/json-output.md](docs/json-output.md) for the versioned API.
 Every bounded connection list reports its total, returned count, and truncation
 state.
 
+## Steward
+
+Steward is the local stewardship pipeline over registered sources:
+checkpointed change detection (`steward-observe`), deterministic assessment
+against the indexed snapshot (`steward-assess`), reviewable read-only
+proposals (`steward-propose`), and a one-shot sweep with a stewardship report
+(`steward-sweep`). See [docs/steward.md](docs/steward.md).
+
+Three structural rules keep Steward inside the trust model above:
+
+1. **Admission is IndexPolicy, only.** Every registered source is admitted
+   through a per-source index policy; the registry adds no admission language,
+   cannot name a remote, and rejects overlapping roots.
+2. **Relations are not evidence classes.** Assessment records label a
+   *relation between states* (`NEW`, `DELETED`, `MODIFIED`,
+   `DUPLICATES_EXACT_BYTES`, `AUTHORED_REFERENCE_TOUCHED`,
+   `CITATION_BROKEN`), carry a pinned asserter and a standing caveat, and are
+   never written into the index or the evidence-class enum. The interpretive
+   relations (`CONFIRMS`, `EXTENDS`, `SUPERSEDES`, `CONTRADICTS`,
+   `UNCERTAIN`) are schema-reserved for a future opt-in
+   InterpretationProvider and cannot be emitted by shipped code; the prior
+   rulings that candidates cannot settle a contradiction or change canonical
+   notes remain binding, and any future change to that posture must be
+   recorded here explicitly.
+3. **Determinism never implies authorization.** Proposals are read-only
+   documents (`policy_level: "propose_only"` throughout v1); the write policy
+   assigns every mutation class an explicit level with non-auto defaults, and
+   only append-only classes are structurally eligible for `auto_apply`.
+
+Steward stages are read-only over sources and index alike; every receipt
+reports `network_calls: 0` and `vault_writes: 0`.
+
 ## Extension points
 
 Planned optional providers may add local embeddings, a client for a hosted
@@ -186,7 +218,11 @@ user's behalf. Every provider must preserve:
 3. no note mutation;
 4. inspectable provider and privacy configuration, with any external credentials
    supplied and held by the operator alone;
-5. versioned JSON output.
+5. versioned JSON output;
+6. an offline fallback that is the **absence** of the provider's claim, never a
+   weaker imitation of the same claim — the honest fallback for a semantic
+   relation such as `CONTRADICTS` is not emitting it, not a lexical heuristic
+   wearing the same label.
 
 Task contracts are a projection over the same evidence classes, so any provider
 that keeps the versioned JSON output stable remains compatible with the

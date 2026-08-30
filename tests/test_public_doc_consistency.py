@@ -83,5 +83,48 @@ class PublicDocConsistencyTest(unittest.TestCase):
             )
 
 
+class StewardDocConsistencyTest(unittest.TestCase):
+    """Steward doctrine tripwires from the approved architecture.
+
+    1. The steward doc must state the load-bearing rulings: interpretive
+       relations are reserved for an opt-in provider (whose fallback is the
+       absence of the claim), and technical determinism never implies
+       authorization.
+    2. No tracked public doc may present an interpretive relation as shipped
+       behavior: any doc that names CONTRADICTS must also carry the
+       reservation language.
+    """
+
+    def test_steward_doc_states_the_rulings(self):
+        doc = (ROOT / "docs" / "steward.md").read_text(encoding="utf-8")
+        self.assertIn("InterpretationProvider", doc)
+        self.assertIn("absence", doc)
+        self.assertIn("propose_only", doc)
+        self.assertIn("determinism never implies", doc)
+        for fragment in ("no_change", "findings", "approval_required"):
+            self.assertIn(fragment, doc)
+
+    def test_extension_points_require_absent_not_stub_fallback(self):
+        arch = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
+        self.assertIn("absence", arch)
+
+    def test_no_doc_presents_interpretive_relations_as_shipped(self):
+        files = _tracked_text_files()
+        if files is None:
+            self.skipTest("not a git checkout")
+        offenders = []
+        for rel in files:
+            if not rel.endswith(".md") or rel.startswith("tests/"):
+                continue
+            text = (ROOT / rel).read_text(encoding="utf-8", errors="replace")
+            if "CONTRADICTS" in text and "reserved" not in text:
+                offenders.append(rel)
+        self.assertEqual(
+            offenders, [],
+            "docs naming CONTRADICTS must carry the reservation language: "
+            f"{offenders}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

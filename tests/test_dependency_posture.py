@@ -43,5 +43,71 @@ class DependencyPostureTest(unittest.TestCase):
         self.assertIn("mistletoe", text)
 
 
+class StewardModulePostureTest(unittest.TestCase):
+    """Steward stays local and one-shot: no networking, no scheduler machinery.
+
+    These are boundary tripwires, not style rules — a steward module that
+    imports a networking or server module is crossing the product boundary,
+    however it is used."""
+
+    _FORBIDDEN_IMPORTS = (
+        "urllib.request",
+        "http.client",
+        "http.server",
+        "socket",
+        "socketserver",
+        "ssl",
+        "sched",
+        "asyncio",
+        "requests",
+        "httpx",
+    )
+
+    def _steward_modules(self) -> list[Path]:
+        return sorted((ROOT / "src" / "recallweave").glob("steward_*.py"))
+
+    def test_steward_modules_exist(self) -> None:
+        self.assertTrue(self._steward_modules())
+
+    def test_steward_modules_import_no_network_or_scheduler(self) -> None:
+        offenders = []
+        for module in self._steward_modules():
+            text = module.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not (
+                    stripped.startswith("import ") or stripped.startswith("from ")
+                ):
+                    continue
+                for name in self._FORBIDDEN_IMPORTS:
+                    bare = name.split(".")[0]
+                    if (
+                        stripped.startswith(f"import {name}")
+                        or stripped.startswith(f"from {name} ")
+                        or stripped.startswith(f"import {bare}\n")
+                        or stripped == f"import {bare}"
+                        or stripped.startswith(f"from {bare} import")
+                    ):
+                        offenders.append(f"{module.name}: {stripped}")
+        self.assertEqual(
+            offenders, [],
+            f"steward modules must not import networking/scheduler modules: {offenders}",
+        )
+
+    def test_steward_modules_do_not_shell_out_except_git_wrapper(self) -> None:
+        # subprocess is reserved for the (future) git wrapper module only.
+        offenders = []
+        for module in self._steward_modules():
+            if module.name == "steward_git.py":
+                continue
+            text = module.read_text(encoding="utf-8")
+            if "subprocess" in text:
+                offenders.append(module.name)
+        self.assertEqual(
+            offenders, [],
+            f"only the git wrapper may use subprocess: {offenders}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

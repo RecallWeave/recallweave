@@ -159,10 +159,22 @@ links through `doctor`.
 | `stats` | Report index counts, discovery diagnostics, and freshness |
 | `export-viewer` | Create a local JSON file for the optional Atlas viewer |
 | `contract` | Export a minimal, cited work packet for another agent |
+| `steward-observe` | Detect changes in registered sources since the checkpoint |
+| `steward-assess` | Classify changes against the index, deterministically only |
+| `steward-propose` | Compile reviewable, hash-pinned read-only proposals |
+| `steward-sweep` | One-shot observe/assess/propose run with an integrity report |
+| `steward-status` | Summarize steward state; optional explicit pruning |
 
 Candidate edges are excluded from `query` and `path` unless explicitly
 requested. `connections` includes candidates by default so a person can inspect
 new possibilities.
+
+The `steward-*` commands are the read-only stewardship pipeline: they detect
+what changed in the local sources you register, re-verify the citations and
+authored links the index relies on, and produce reviewable reports and
+proposals. They never edit a note and never make a network call; semantic
+judgments (does this confirm or contradict that?) are deliberately out of
+scope. See [docs/steward.md](docs/steward.md).
 
 ## Atlas visual explorer
 
