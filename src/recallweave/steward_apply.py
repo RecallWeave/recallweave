@@ -2267,6 +2267,11 @@ def recover_journal(
         live: str | None = None
         if target.is_file():
             live = _sha256_bytes(target.read_bytes())
+        # Whether ANY node occupies the target path (regular file, directory,
+        # symlink, or special file). `live` is None for both an absent target AND
+        # a present-but-non-regular one; this distinguishes them so a create whose
+        # installed file was replaced by a directory is not mistaken for absent.
+        target_present = os.path.lexists(target)
 
         # A had-a-file operation that no longer holds its pre-apply bytes but
         # whose backup is missing is unrecoverable: a restore is needed yet
@@ -2333,6 +2338,14 @@ def recover_journal(
                     drifted.append(
                         f"{item['relative_path']} (created then edited; left in place)"
                     )
+                elif target_present:
+                    # Present but not a regular file (e.g. replaced by a
+                    # directory): cannot verify or safely remove it, so drift and
+                    # fail closed rather than silently skipping it.
+                    drifted.append(
+                        f"{item['relative_path']} (created target is not a regular "
+                        f"file; left in place)"
+                    )
         elif state == "in_progress" and item["content_hash_before"] is None:
             # An in_progress create whose install landed but crashed before the
             # op advanced to `done`. Mirror the `done`-create branch exactly: undo
@@ -2348,6 +2361,14 @@ def recover_journal(
                     drifted.append(
                         f"{item['relative_path']} (created then edited; left in place)"
                     )
+            elif target_present:
+                # Present but not a regular file (replaced by a directory or
+                # other node): drift and fail closed instead of treating it as
+                # absent.
+                drifted.append(
+                    f"{item['relative_path']} (created target is not a regular "
+                    f"file; left in place)"
+                )
     if drifted:
         raise ApplyError(
             "Refusing to recover: these files changed after the interrupted "

@@ -137,6 +137,37 @@ class StewardCliErrorBoundaryTest(unittest.TestCase):
                 )
                 self._assert_clean_envelope(code, out, err)
 
+    def test_approve_class_partial_progress_surfaced_for_non_apply_error(self) -> None:
+        # A later proposal raising a NON-ApplyError during --approve-class carries
+        # partial-progress annotations; the CLI's generic exception envelope must
+        # surface them (not only the OSError/ValueError branch), so the operator
+        # learns earlier proposals already mutated the vault.
+        def boom(*_args, **_kwargs):
+            error = TypeError("malformed artifact tripped a non-ApplyError")
+            error.partial_applied = [
+                {
+                    "proposal_id": "prp-appliedearlier",
+                    "journal_ref": "j1.json",
+                    "steward_vault_mutations": 1,
+                }
+            ]
+            error.failed_proposal_id = "prp-laterfailed000"
+            raise error
+
+        with patch("recallweave.steward_apply.apply_latest", side_effect=boom):
+            code, out, err = self._run_apply(
+                "--approve-class", "append_at_eof", "--execute"
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        payload = json.loads(err)
+        self.assertEqual(payload["error"], "TypeError")
+        self.assertIn("partial_applied", payload)
+        self.assertEqual(
+            payload["partial_applied"][0]["proposal_id"], "prp-appliedearlier"
+        )
+        self.assertEqual(payload["failed_proposal_id"], "prp-laterfailed000")
+
     # --- structural CLI catch-all for an unexpected internal exception ---
 
     def test_unexpected_exception_is_redacted_by_cli_catch_all(self) -> None:

@@ -630,16 +630,28 @@ def main(argv: list[str] | None = None) -> int:
         # keep their original behavior: the exception propagates unchanged.
         if not args.command.startswith("steward-"):
             raise
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "error": type(error).__name__,
+            "message": _redact_local_paths(str(error)),
+            "operation": args.command,
+        }
+        # A multi-proposal apply that already mutated the vault can fail on a
+        # LATER proposal with a non-ApplyError (e.g. a TypeError from a malformed
+        # artifact); apply_latest annotates the exception with the partial
+        # progress, and this generic branch must surface it too -- otherwise the
+        # operator would see no indication that earlier proposals already changed
+        # the vault (same fields as the OSError/ValueError branch above).
+        partial = getattr(error, "partial_applied", None)
+        if partial:
+            envelope["partial_applied"] = partial
+            envelope["failed_proposal_id"] = getattr(
+                error, "failed_proposal_id", None
+            )
+            if getattr(error, "receipt_persist_failed", False):
+                envelope["receipt_persist_failed"] = True
         print(
-            json.dumps(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "error": type(error).__name__,
-                    "message": _redact_local_paths(str(error)),
-                    "operation": args.command,
-                },
-                ensure_ascii=True,
-            ),
+            json.dumps(envelope, ensure_ascii=True),
             file=sys.stderr,
         )
         return 2

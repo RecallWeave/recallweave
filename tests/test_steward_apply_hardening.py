@@ -204,6 +204,26 @@ class ForgedJournalTest(unittest.TestCase):
         self.assertEqual(target.read_bytes(), before)
 
 
+    def test_recover_refuses_in_progress_create_replaced_by_directory(self) -> None:
+        # An in_progress create whose installed file was replaced by a directory
+        # (a non-regular node) before recovery must drift and fail closed, not be
+        # treated as absent -- otherwise _rollback marks the journal rolled_back
+        # while the directory stays in the vault.
+        (self.vault.root / "created.md").mkdir()
+        name = self._write_journal(
+            "intent",
+            [
+                self._forged_op(
+                    relative_path="created.md",
+                    state="in_progress",
+                    content_hash_after="a" * 64,
+                )
+            ],
+        )
+        with self.assertRaisesRegex(ApplyError, "not a regular file"):
+            recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        self.assertTrue((self.vault.root / "created.md").is_dir())
+
     def test_recover_refuses_modification_whose_backup_is_missing(self) -> None:
         # A modification whose replacement landed (live == content_hash_after)
         # but crashed while still in_progress, with its backup now missing, is
