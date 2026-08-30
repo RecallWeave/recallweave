@@ -19,6 +19,7 @@ from .steward_observe import observe_registry
 from .steward_propose import propose_latest
 from .steward_sources import load_registry
 from .steward_state import steward_state_root
+from .steward_sweep import SWEEP_EXIT_CODES, status_report, sweep_registry
 from .viewer import export_viewer_graph
 
 
@@ -230,6 +231,49 @@ def _parser() -> argparse.ArgumentParser:
         dest="state_dir",
         help="Override the default steward state directory.",
     )
+
+    steward_sweep_parser = subparsers.add_parser(
+        "steward-sweep",
+        help=(
+            "One-shot local sweep: observe, assess, and propose in sequence, "
+            "then write a stewardship report (no vault or index writes)."
+        ),
+    )
+    steward_sweep_parser.add_argument("sources", type=_path)
+    _add_database_locator(steward_sweep_parser)
+    steward_sweep_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
+    steward_sweep_parser.add_argument(
+        "--format",
+        choices=["json", "markdown"],
+        default="json",
+        help="Stewardship report format. Defaults to json.",
+    )
+
+    steward_status_parser = subparsers.add_parser(
+        "steward-status",
+        help="Report steward state directory counts, lock state, and optionally prune.",
+    )
+    steward_status_parser.add_argument("sources", type=_path)
+    steward_status_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
+    steward_status_parser.add_argument(
+        "--prune-older-than-days",
+        type=int,
+        dest="prune_older_than_days",
+        help=(
+            "Delete files older than this many days from changes/, "
+            "assessments/, and reports/ only."
+        ),
+    )
     return parser
 
 
@@ -293,6 +337,16 @@ def main(argv: list[str] | None = None) -> int:
             return observe_registry(registry, state_root)
 
         action = run_observe
+    elif args.command == "steward-status":
+
+        def run_status() -> dict[str, Any]:
+            load_registry(args.sources)
+            state_root = args.state_dir or steward_state_root(args.sources)
+            return status_report(
+                state_root, prune_older_than_days=args.prune_older_than_days
+            )
+
+        action = run_status
     else:
         database = _query_database(args)
         commands: dict[str, Callable[[], dict[str, Any]]] = {
@@ -354,10 +408,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.state_dir or steward_state_root(args.sources),
                 database,
             ),
+            "steward-sweep": lambda: sweep_registry(
+                load_registry(args.sources),
+                args.state_dir or steward_state_root(args.sources),
+                database,
+                report_format=args.format,
+            ),
         }
         action = commands[args.command]
     try:
-        _emit(action())
+        payload = action()
+        _emit(payload)
+        if args.command == "steward-sweep":
+            return SWEEP_EXIT_CODES[payload["result"]]
         return 0
     except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as error:
         print(

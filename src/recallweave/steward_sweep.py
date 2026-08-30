@@ -1,0 +1,632 @@
+from __future__ import annotations
+
+"""Steward stage S5: one-shot read-only sweep driver + stewardship report + status.
+
+``sweep_registry`` is a DRIVER, not a new stage: it contains no behavior that
+is unreachable by running ``steward-observe``, ``steward-assess`` and
+``steward-propose`` by hand, in that order, against the same state directory.
+It is a literal composition of ``observe_registry``, ``assess_latest`` and
+``propose_latest`` -- each of those stage functions manages its own
+``StateLock`` exactly as it does when invoked directly; this module does not
+wrap them in an outer lock or otherwise restructure their locking. All this
+module adds is: running the three in sequence, then reading back the on-disk
+artifacts they left in ``state_root`` (the latest change batch, assessment,
+and every proposal file) to assemble one deterministic, machine-readable
+``stewardship_report`` document, and writing that document under
+``reports/``.
+
+This is a strictly ONE-SHOT local command: there is no daemon, no polling
+loop, and no long-running process. Nothing in this module or in
+``cli.py``'s ``steward-sweep``/``steward-status`` subparsers may accept a
+``--daemon``/``--serve``/``--watch``/``--interval`` flag.
+
+Machine-readable result semantics (frozen for v1; see ``SWEEP_RESULTS`` and
+``SWEEP_EXIT_CODES``):
+
+- ``approval_required`` -- this sweep created at least one proposal, OR
+  proposals from an earlier run are still pending in ``proposals/`` (v1 has
+  no apply step, so every proposal that ever gets written stays "pending"
+  until an operator deletes it or a future milestone adds apply).
+- ``findings`` -- no proposals (created this run or pending from before), but
+  at least one deterministic assessment relation was recorded across every
+  source's latest assessment.
+- ``no_change`` -- neither of the above.
+
+``applied`` and ``validation_failed_rolled_back`` are reserved for a future
+milestone (G2, real apply) and are structurally unreachable from this
+module's v1 code paths: nothing in ``sweep_registry`` can construct or return
+those two values. ``error`` is not returned by this module at all -- an
+exception here propagates to the caller (the CLI's existing exception
+handling turns any escaping ``OSError``/``ValueError`` into exit code 2), and
+``SWEEP_EXIT_CODES["error"]`` documents the intended CLI exit code for that
+already-existing path.
+
+``status_report`` is a read-mostly companion command: it counts what is
+currently on disk under ``state_root`` (change batches, assessments,
+proposals, receipts, reports), reports the newest sweep report's result, the
+steward lock's state, and how many bytes ``backups/`` holds. When
+``prune_older_than_days`` is given it also deletes files older than that many
+days from ``changes/``, ``assessments/`` and ``reports/`` -- and *only* those
+three subdirectories; ``proposals/``, ``receipts/`` and ``backups/`` are never
+pruned, since a pending proposal or a backup is never safe to discard by age
+alone. Per the machine-local doctrine that runs through every steward
+document, neither function ever emits ``state_root`` (or any other absolute
+path) in its output; ``status_report`` reports only which subdirectories
+exist and how many files they hold.
+"""
+
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .index import connect
+from .safe_write import is_link_like
+from .steward_assess import DETERMINISTIC_RELATIONS, assess_latest
+from .steward_observe import observe_registry
+from .steward_propose import propose_latest
+from .steward_sources import SourceRegistry
+from .steward_state import (
+    STEWARD_SCHEMA_VERSION,
+    STEWARD_SUBDIRS,
+    atomic_write_json,
+    ensure_state_layout,
+)
+
+REPORT_KIND = "stewardship_report"
+STATUS_KIND = "steward_status"
+
+# Frozen for v1. Do not add, remove, or reorder without a corresponding audit
+# of every caller that indexes SWEEP_EXIT_CODES by these exact strings.
+SWEEP_RESULTS = (
+    "no_change",
+    "findings",
+    "approval_required",
+    "applied",
+    "validation_failed_rolled_back",
+    "error",
+)
+SWEEP_EXIT_CODES = {
+    "no_change": 0,
+    "findings": 3,
+    "approval_required": 4,
+    "applied": 5,
+    "validation_failed_rolled_back": 6,
+    "error": 2,
+}
+
+# The only three values sweep_registry's v1 code paths can ever produce.
+# "applied" and "validation_failed_rolled_back" are reserved for G2 and are
+# unreachable from this module; "error" surfaces via the exception path.
+_V1_RESULTS = ("no_change", "findings", "approval_required")
+
+# Pruning never touches proposals/, receipts/, or backups/: a pending
+# proposal or a backup is never safe to discard by age alone.
+_PRUNABLE_SUBDIRS = ("changes", "assessments", "reports")
+
+_REPORT_FORMATS = ("json", "markdown")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _file_timestamp(iso: str) -> str:
+    value = datetime.fromisoformat(iso)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text atomically, mirroring steward_state.atomic_write_json."""
+    if is_link_like(path):
+        raise ValueError(f"Refusing to replace a symlink or junction: {path}")
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    data = text.encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _load_json(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError(f"{path} is not valid JSON: {error}") from error
+
+
+def _latest_file(directory: Path, source_name: str) -> Path | None:
+    matches = sorted(directory.glob(f"*-{source_name}.json"))
+    return matches[-1] if matches else None
+
+
+# --- Report assembly: reads only what is on disk in state_root (plus the
+# in-memory observe_receipt for the one transient fact -- "was a source
+# missing on this run" -- that is never written to any file) so that a
+# hand-run observe/assess/propose sequence and a sweep_registry call over the
+# same fixture produce byte-comparable report sections.
+
+
+def _aggregate_from_batches(
+    dirs: dict[str, Path], registry: SourceRegistry
+) -> dict[str, Any]:
+    changes: dict[str, dict[str, int]] = {}
+    skipped_total: dict[str, int] = {}
+    changed_during_observe_total = 0
+    rename_candidates_pending = 0
+    checkpoint_invalid: list[str] = []
+
+    for source in registry.sources:
+        latest = _latest_file(dirs["changes"], source.name)
+        if latest is None:
+            changes[source.name] = {"added": 0, "modified": 0, "removed": 0}
+            continue
+        batch = _load_json(latest)
+        summary = batch.get("change_summary") or {}
+        changes[source.name] = {
+            "added": int(summary.get("added", 0)),
+            "modified": int(summary.get("modified", 0)),
+            "removed": int(summary.get("removed", 0)),
+        }
+        for reason, count in (batch.get("skipped") or {}).items():
+            skipped_total[reason] = skipped_total.get(reason, 0) + int(count)
+        changed_during_observe_total += len(batch.get("changed_during_observe") or [])
+        rename_candidates_pending += len(batch.get("rename_candidates") or [])
+        if batch.get("checkpoint_invalid"):
+            checkpoint_invalid.append(source.name)
+
+    return {
+        "changes": changes,
+        "skipped_total": dict(sorted(skipped_total.items())),
+        "changed_during_observe": changed_during_observe_total,
+        "rename_candidates_pending": rename_candidates_pending,
+        "checkpoint_invalid": sorted(checkpoint_invalid),
+    }
+
+
+def _aggregate_assessments(
+    dirs: dict[str, Path], registry: SourceRegistry
+) -> tuple[dict[str, int], list[str], list[str]]:
+    summary: dict[str, int] = {
+        "index_current": 0,
+        "never_indexed": 0,
+        "skipped_changed_during_observe": 0,
+    }
+    for relation in DETERMINISTIC_RELATIONS:
+        summary[relation] = 0
+
+    broken_citations: list[str] = []
+    duplicates: list[str] = []
+
+    for source in registry.sources:
+        latest = _latest_file(dirs["assessments"], source.name)
+        if latest is None:
+            continue
+        assessment = _load_json(latest)
+        for key, value in (assessment.get("summary") or {}).items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                summary[key] = summary.get(key, 0) + value
+        for item in assessment.get("assessments") or []:
+            relation = item.get("relation")
+            path = item.get("relative_path")
+            if relation == "CITATION_BROKEN":
+                for citation in (item.get("inputs") or {}).get("broken_citations") or []:
+                    text = citation.get("citation") if isinstance(citation, dict) else None
+                    if isinstance(text, str):
+                        broken_citations.append(text)
+            elif relation == "DUPLICATES_EXACT_BYTES" and isinstance(path, str):
+                duplicates.append(path)
+
+    return summary, sorted(set(broken_citations)), sorted(set(duplicates))
+
+
+def _aggregate_proposals(dirs: dict[str, Path]) -> tuple[int, dict[str, int], list[str]]:
+    """Scan every file currently in proposals/ (v1: pending = all of them)."""
+    by_action: dict[str, int] = {}
+    dangling: set[str] = set()
+    total = 0
+    for path in sorted(dirs["proposals"].glob("*.json")):
+        proposal = _load_json(path)
+        total += 1
+        action = proposal.get("action")
+        if isinstance(action, str):
+            by_action[action] = by_action.get(action, 0) + 1
+            if action == "review_dangling_references":
+                deleted_path = (proposal.get("evidence") or {}).get("deleted_path")
+                if isinstance(deleted_path, str):
+                    dangling.add(deleted_path)
+    return total, dict(sorted(by_action.items())), sorted(dangling)
+
+
+def _index_info(database: Path) -> dict[str, Any]:
+    connection = connect(database, readonly=True)
+    try:
+        meta = {
+            str(row["key"]): str(row["value"])
+            for row in connection.execute("SELECT key, value FROM meta")
+        }
+    finally:
+        connection.close()
+    return {
+        "indexed_at": meta.get("indexed_at"),
+        "schema_version": meta.get("schema_version"),
+    }
+
+
+def _classify_result(*, pending_total: int, total_relations: int) -> str:
+    if pending_total >= 1:
+        result = "approval_required"
+    elif total_relations >= 1:
+        result = "findings"
+    else:
+        result = "no_change"
+    assert result in _V1_RESULTS
+    return result
+
+
+def _assemble_report(
+    registry: SourceRegistry,
+    dirs: dict[str, Path],
+    database: Path,
+    *,
+    generated_at: str,
+    observe_receipt: dict[str, Any],
+    proposals_created_this_sweep: int,
+) -> dict[str, Any]:
+    batch_agg = _aggregate_from_batches(dirs, registry)
+    relation_summary, broken_citations, duplicates = _aggregate_assessments(dirs, registry)
+    proposals_pending_total, proposals_by_action, dangling_references = _aggregate_proposals(dirs)
+
+    sources_missing = sorted(
+        item["source"]
+        for item in observe_receipt.get("sources", [])
+        if isinstance(item, dict) and item.get("error") == "source_missing"
+    )
+
+    total_relations = sum(
+        relation_summary.get(relation, 0) for relation in DETERMINISTIC_RELATIONS
+    )
+    result = _classify_result(
+        pending_total=proposals_pending_total, total_relations=total_relations
+    )
+
+    return {
+        "schema_version": STEWARD_SCHEMA_VERSION,
+        "kind": REPORT_KIND,
+        "operation": "steward_sweep",
+        "generated_at": generated_at,
+        "result": result,
+        "registry_sha256": registry.registry_sha256,
+        "integrity": {
+            "broken_citations": broken_citations,
+            "dangling_references": dangling_references,
+            "duplicates": duplicates,
+            "rename_candidates_pending": batch_agg["rename_candidates_pending"],
+            "sources_missing": sources_missing,
+            "checkpoint_invalid": batch_agg["checkpoint_invalid"],
+        },
+        "changes": batch_agg["changes"],
+        "assessments": relation_summary,
+        "proposals": {
+            "created_this_sweep": proposals_created_this_sweep,
+            "pending_total": proposals_pending_total,
+            "by_action": proposals_by_action,
+        },
+        "observe": {
+            "skipped_total": batch_agg["skipped_total"],
+            "changed_during_observe": batch_agg["changed_during_observe"],
+        },
+        "index": {
+            "indexed_at": _index_info(database)["indexed_at"],
+            "schema_version": _index_info(database)["schema_version"],
+        },
+        "network_calls": 0,
+        "vault_writes": 0,
+    }
+
+
+# --- Markdown projection: leads with the integrity section. Every string
+# sourced from vault content (citations, relative paths) or from the
+# operator-authored sources registry (source names) is rendered inside its
+# own fenced code block, never interpolated inline, so it cannot be read as
+# Markdown structure.
+
+_FENCE_LANGUAGE = "text"
+
+
+def _fenced(value: str) -> str:
+    body = str(value)
+    fence = "```"
+    while fence in body:
+        fence += "`"
+    return f"{fence}{_FENCE_LANGUAGE}\n{body}\n{fence}"
+
+
+def _fenced_list_section(title: str, items: list[str]) -> list[str]:
+    lines = [f"### {title}", ""]
+    if not items:
+        lines.append("None recorded.")
+        lines.append("")
+        return lines
+    for item in items:
+        lines.append(_fenced(item))
+    lines.append("")
+    return lines
+
+
+def render_sweep_markdown(report: dict[str, Any]) -> str:
+    integrity = report.get("integrity") or {}
+    lines: list[str] = [
+        "# Stewardship report",
+        "",
+        f"- Result: `{report.get('result')}`",
+        f"- Generated at: `{report.get('generated_at')}`",
+        "",
+        "## Integrity",
+        "",
+    ]
+    lines.extend(
+        _fenced_list_section("Broken citations", integrity.get("broken_citations") or [])
+    )
+    lines.extend(
+        _fenced_list_section(
+            "Dangling references", integrity.get("dangling_references") or []
+        )
+    )
+    lines.extend(_fenced_list_section("Duplicates", integrity.get("duplicates") or []))
+    lines.append(
+        f"Rename candidates pending: {integrity.get('rename_candidates_pending', 0)}"
+    )
+    lines.append("")
+    lines.extend(
+        _fenced_list_section("Sources missing", integrity.get("sources_missing") or [])
+    )
+    lines.extend(
+        _fenced_list_section(
+            "Checkpoint invalid", integrity.get("checkpoint_invalid") or []
+        )
+    )
+
+    lines.append("## Changes")
+    lines.append("")
+    changes = report.get("changes") or {}
+    if not changes:
+        lines.append("None recorded.")
+        lines.append("")
+    for source_name in sorted(changes):
+        totals = changes[source_name]
+        lines.append("Source:")
+        lines.append(_fenced(source_name))
+        lines.append(
+            f"- added: {totals.get('added', 0)}, "
+            f"modified: {totals.get('modified', 0)}, "
+            f"removed: {totals.get('removed', 0)}"
+        )
+        lines.append("")
+
+    lines.append("## Assessments")
+    lines.append("")
+    assessments = report.get("assessments") or {}
+    if not assessments:
+        lines.append("None recorded.")
+    for key in sorted(assessments):
+        lines.append(f"- {key}: {assessments[key]}")
+    lines.append("")
+
+    lines.append("## Proposals")
+    lines.append("")
+    proposals = report.get("proposals") or {}
+    lines.append(f"- created this sweep: {proposals.get('created_this_sweep', 0)}")
+    lines.append(f"- pending total: {proposals.get('pending_total', 0)}")
+    by_action = proposals.get("by_action") or {}
+    for action in sorted(by_action):
+        lines.append(f"- {action}: {by_action[action]}")
+    lines.append("")
+
+    lines.append("## Observe")
+    lines.append("")
+    observe = report.get("observe") or {}
+    lines.append(f"- changed during observe: {observe.get('changed_during_observe', 0)}")
+    skipped_total = observe.get("skipped_total") or {}
+    for reason in sorted(skipped_total):
+        lines.append(f"- skipped.{reason}: {skipped_total[reason]}")
+    lines.append("")
+
+    lines.append("## Index")
+    lines.append("")
+    index_info = report.get("index") or {}
+    lines.append("Indexed at:")
+    lines.append(_fenced(str(index_info.get("indexed_at"))))
+    lines.append("Index schema version:")
+    lines.append(_fenced(str(index_info.get("schema_version"))))
+    lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def sweep_registry(
+    registry: SourceRegistry,
+    state_root: Path,
+    database: Path,
+    *,
+    report_format: str = "json",
+) -> dict[str, Any]:
+    """Run observe -> assess -> propose over every source, then report.
+
+    A literal composition: each stage function is called exactly as an
+    operator would call it by hand (``steward-observe``, then
+    ``steward-assess``, then ``steward-propose``, each against the same
+    ``state_root``), and each manages its own ``StateLock``. The only thing
+    this function adds is reading back what those three calls left on disk
+    (plus the transient "source missing this run" fact from the observe
+    receipt) to assemble and write one ``stewardship_report`` document under
+    ``reports/``.
+    """
+    if report_format not in _REPORT_FORMATS:
+        raise ValueError(
+            f"Unsupported report_format {report_format!r}; "
+            f"expected one of {_REPORT_FORMATS}."
+        )
+    state_root = Path(state_root)
+    database = Path(database)
+    generated_at = _utc_now()
+
+    observe_receipt = observe_registry(registry, state_root)
+    assess_latest(registry, state_root, database)
+    propose_receipt = propose_latest(registry, state_root, database)
+
+    dirs = ensure_state_layout(state_root)
+    report = _assemble_report(
+        registry,
+        dirs,
+        database,
+        generated_at=generated_at,
+        observe_receipt=observe_receipt,
+        proposals_created_this_sweep=propose_receipt["proposals_created"],
+    )
+
+    timestamp = _file_timestamp(generated_at)
+    atomic_write_json(dirs["reports"] / f"{timestamp}-sweep.json", report)
+    if report_format == "markdown":
+        _atomic_write_text(
+            dirs["reports"] / f"{timestamp}-sweep.md", render_sweep_markdown(report)
+        )
+    return report
+
+
+# --- steward-status ---------------------------------------------------
+
+
+def _dir_file_count(directory: Path) -> int:
+    return sum(1 for entry in directory.iterdir() if entry.is_file())
+
+
+def _dir_total_bytes(directory: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(directory):
+        for name in files:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _prune_dir(directory: Path, cutoff_epoch: float) -> int:
+    deleted = 0
+    for entry in directory.iterdir():
+        if not entry.is_file():
+            continue
+        try:
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff_epoch:
+            try:
+                entry.unlink()
+                deleted += 1
+            except OSError:
+                pass
+    return deleted
+
+
+def _lock_state(state_root: Path) -> dict[str, Any]:
+    lock_path = state_root / "steward.lock"
+    if not lock_path.exists():
+        return {"present": False, "pid": None, "acquired_at": None}
+    pid: Any = None
+    acquired_at: Any = None
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        pid = data.get("pid")
+        acquired_at = data.get("acquired_at")
+    except (OSError, ValueError):
+        pass
+    return {"present": True, "pid": pid, "acquired_at": acquired_at}
+
+
+def _newest_report(reports_dir: Path) -> dict[str, Any] | None:
+    files = sorted(reports_dir.glob("*-sweep.json"))
+    if not files:
+        return None
+    try:
+        document = _load_json(files[-1])
+    except ValueError:
+        return None
+    return {
+        "generated_at": document.get("generated_at"),
+        "result": document.get("result"),
+    }
+
+
+def status_report(
+    state_root: Path, *, prune_older_than_days: int | None = None
+) -> dict[str, Any]:
+    """Report counts and lock state for ``state_root``; optionally prune.
+
+    Pruning (only when ``prune_older_than_days`` is given) deletes files
+    older than that many days, by mtime, from ``changes/``, ``assessments/``
+    and ``reports/`` only -- never ``proposals/``, ``receipts/`` or
+    ``backups/``. Counts reflect the state after any pruning.
+    """
+    state_root = Path(state_root)
+    generated_at = _utc_now()
+    dirs = ensure_state_layout(state_root)
+
+    pruned: dict[str, int] | None = None
+    if prune_older_than_days is not None:
+        if (
+            not isinstance(prune_older_than_days, int)
+            or isinstance(prune_older_than_days, bool)
+            or prune_older_than_days < 0
+        ):
+            raise ValueError(
+                "prune_older_than_days must be a non-negative integer; got "
+                f"{prune_older_than_days!r}."
+            )
+        cutoff_epoch = datetime.now(timezone.utc).timestamp() - (
+            prune_older_than_days * 86400
+        )
+        pruned = {}
+        for name in _PRUNABLE_SUBDIRS:
+            pruned[name] = _prune_dir(dirs[name], cutoff_epoch)
+        pruned["total"] = sum(pruned.values())
+
+    counts = {
+        "change_batches": _dir_file_count(dirs["changes"]),
+        "assessments": _dir_file_count(dirs["assessments"]),
+        "proposals_pending": _dir_file_count(dirs["proposals"]),
+        "receipts": _dir_file_count(dirs["receipts"]),
+        "reports": _dir_file_count(dirs["reports"]),
+    }
+
+    return {
+        "schema_version": STEWARD_SCHEMA_VERSION,
+        "kind": STATUS_KIND,
+        "operation": "steward_status",
+        "generated_at": generated_at,
+        "subdirs": {name: dirs[name].is_dir() for name in STEWARD_SUBDIRS},
+        "counts": counts,
+        "newest_report": _newest_report(dirs["reports"]),
+        "lock": _lock_state(state_root),
+        "backups_total_bytes": _dir_total_bytes(dirs["backups"]),
+        "pruned": pruned,
+        "network_calls": 0,
+        "vault_writes": 0,
+    }
