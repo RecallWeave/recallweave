@@ -25,6 +25,7 @@ via ``atomic_write_json``.
 
 import hashlib
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -152,6 +153,58 @@ def _record(relation: str, relative_path: str, inputs: dict[str, Any]) -> dict[s
         "inputs": inputs,
         "standing_caveat": STANDING_CAVEAT,
     }
+
+
+def _verified_covered_paths(
+    assessed_paths: set[str],
+    assessments: list[dict[str, Any]],
+    batch: dict,
+    path_base: Path,
+) -> list[str]:
+    """Relationless assessed paths whose observed terminal state still holds.
+
+    A path that produced a deterministic relation is authoritative on its own
+    (it is in ``assessments``) and is excluded here. For a relationless path we
+    RE-VERIFY the filesystem at assessment time before declaring it "covered"
+    (safe to clear a prior finding with): a removed path must still be absent,
+    and a present (added/modified) path must still hash to what observation
+    recorded. A drifted or unverifiable path is omitted, so it can neither erase
+    an unresolved finding nor manufacture a false no_change."""
+
+    related = {
+        item.get("relative_path")
+        for item in assessments
+        if isinstance(item.get("relative_path"), str)
+    }
+    changes_by_path: dict[str, dict] = {}
+    for change in batch.get("changes") or []:
+        path = change.get("relative_path")
+        if isinstance(path, str):
+            changes_by_path[path] = change
+
+    covered: list[str] = []
+    for path in sorted(assessed_paths):
+        if path in related:
+            continue
+        change = changes_by_path.get(path)
+        if change is None:
+            continue
+        full = path_base / path
+        try:
+            if os.path.islink(full):
+                continue  # a symlink at the path: do not treat as resolved
+            if change.get("change_type") == "removed":
+                if not os.path.exists(full):
+                    covered.append(path)  # verified still absent
+            else:  # added / modified -- must still hold observation's bytes
+                if os.path.isfile(full):
+                    with open(full, "rb") as handle:
+                        live = hashlib.sha256(handle.read()).hexdigest()
+                    if live == change.get("current_content_hash"):
+                        covered.append(path)  # verified unchanged since observe
+        except OSError:
+            continue  # cannot verify -> do not clear
+    return covered
 
 
 def assess_change_batch(
@@ -667,14 +720,17 @@ def assess_change_batch(
                 "database": database.name,
             },
             "assessments": assessments,
-            # Every path this batch actually ASSESSED, INCLUDING ones that
-            # produced no deterministic relation (e.g. a modified note restored
-            # byte-for-byte to the index -> index_current, or a never-indexed NEW
-            # note later removed). The report uses this to CLEAR a path's prior
-            # finding when a later batch reassessed it to nothing. Paths skipped
-            # as changed_during_observe are excluded -- they were NOT assessed,
-            # so they must not erase an unresolved finding.
-            "covered_paths": sorted(assessed_paths),
+            # Paths this batch reassessed to NO relation whose observed terminal
+            # state is RE-VERIFIED on disk at assessment time. The report uses
+            # this to clear a path's prior finding only when it is genuinely
+            # resolved now: a relationless-but-drifted path (a removed note that
+            # reappeared, or an index_current note that changed again since
+            # observation) is excluded so it cannot erase an unresolved finding
+            # or produce a false no_change. Paths that produced a relation are
+            # carried by the assessments array itself and need not appear here.
+            "covered_paths": _verified_covered_paths(
+                assessed_paths, assessments, batch, path_base
+            ),
             "summary": summary,
             "content_drifted": sorted(set(content_drifted)),
             "baseline_divergence": sorted(set(baseline_divergence)),

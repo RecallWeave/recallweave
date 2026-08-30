@@ -187,17 +187,41 @@ class NewModifiedDeletedTest(StewardAssessTest):
         # so the report never treats it as a resolution of a prior finding.
         self.assertEqual(document["covered_paths"], [])
 
-    def test_covered_paths_lists_only_assessed_paths(self) -> None:
-        newp = self._write("Fresh.md", "# Fresh\n\nnew.\n")
+    def test_covered_paths_excludes_reappeared_removed_path(self) -> None:
+        # A removed change whose file has reappeared on disk before assessment
+        # must NOT be treated as covered (it is not genuinely resolved).
+        self._write("Back.md", "# Back\n\nreappeared.\n")  # exists again on disk
+        batch = _batch(changes=[_change("Back.md", "removed", previous="deadbeef")])
+        document = assess_change_batch(batch, self.database, self.vault, now=FROZEN_NOW)
+        self.assertEqual(document["covered_paths"], [])
+
+    def test_covered_paths_excludes_drifted_present_path(self) -> None:
+        # A modified change whose file no longer matches the observed hash
+        # (changed again before assessment) must NOT be covered.
+        self._write("Drift.md", "# Drift\n\nNEWER content than observed.\n")
+        batch = _batch(
+            changes=[_change("Drift.md", "modified",
+                             previous=self._index_hash("Gamma.md"),
+                             current="0" * 64)]  # observed hash != live hash
+        )
+        document = assess_change_batch(batch, self.database, self.vault, now=FROZEN_NOW)
+        self.assertEqual(document["covered_paths"], [])
+
+    def test_covered_paths_lists_only_verified_relationless_paths(self) -> None:
+        # Gamma.md modified back to its indexed bytes -> index_current, no
+        # relation, and the live file matches -> covered (verified). Skipped.md
+        # is changed_during_observe -> not assessed -> excluded.
+        gamma_hash = self._index_hash("Gamma.md")  # file on disk still matches
         batch = _batch(
             changes=[
-                _change("Fresh.md", "added", current=_hash(newp)),
+                _change("Gamma.md", "modified", previous=gamma_hash, current=gamma_hash),
                 _change("Skipped.md", "added", current="deadbeef"),
             ],
             changed_during_observe=["Skipped.md"],
         )
         document = assess_change_batch(batch, self.database, self.vault, now=FROZEN_NOW)
-        self.assertEqual(document["covered_paths"], ["Fresh.md"])
+        self.assertEqual(document["assessments"], [])  # index_current, no relation
+        self.assertEqual(document["covered_paths"], ["Gamma.md"])
 
 
 class DuplicatesTest(StewardAssessTest):
