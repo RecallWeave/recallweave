@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from recallweave.policy import IndexPolicy
 from recallweave.steward_sources import (
@@ -75,6 +76,37 @@ class StewardSourcesTest(unittest.TestCase):
         registry = SourceRegistry.from_payload(payload, base_dir=self.root)
         self.assertEqual(registry.sources[0].type, "file")
         self.assertEqual(registry.sources[0].root, note.resolve())
+
+    def test_file_source_descriptor_opened_binary(self) -> None:
+        # A file source's pinned descriptor becomes the note fd observe dups,
+        # so it must carry O_BINARY: on Windows a text-mode descriptor would
+        # translate CRLF on read and desync the bytes from st_size / the hash.
+        # O_BINARY is 0 on POSIX, so pin a nonzero sentinel to make the flag
+        # observable cross-platform.
+        note = self.root / "note.md"
+        note.write_text("content", encoding="utf-8")
+        payload = _registry(
+            _source("note", str(note), type_="file", mode="read_only")
+        )
+        import recallweave.steward_sources as _src
+
+        sentinel = 0x8000
+        real_open = os.open
+        captured: list[int] = []
+
+        def recording_open(path, flags, *args, **kwargs):
+            captured.append(flags)
+            return real_open(path, flags & ~sentinel, *args, **kwargs)
+
+        with patch.object(_src.os, "O_BINARY", sentinel, create=True), patch.object(
+            _src.os, "open", side_effect=recording_open
+        ):
+            SourceRegistry.from_payload(payload, base_dir=self.root)
+        self.assertTrue(captured, "expected the file source root to be opened")
+        self.assertTrue(
+            all(flags & sentinel for flags in captured),
+            f"file source descriptor opened without O_BINARY: {captured!r}",
+        )
 
     def test_policy_parsed_and_defaults_applied(self) -> None:
         payload = _registry(

@@ -190,6 +190,47 @@ class ObserveSourceTest(unittest.TestCase):
         self.assertEqual(receipt["skipped"]["hardlink"], 2)
         self.assertEqual(receipt["changes"], [])
 
+    def test_hardlink_planted_after_discovery_rejected_on_pathname_fallback(
+        self,
+    ) -> None:
+        # A note admitted as a single-link regular file at discovery, then
+        # turned into a hardlink just before it is opened, must be rejected by
+        # the post-open st_nlink guard even on the pathname fallback (Windows).
+        # The extra link is placed OUTSIDE the vault so discovery still admits
+        # exactly one note; only the descriptor-level guard can catch the swap.
+        # Reverting the fix (re-gating the guard to the dir_fd path) makes this
+        # fail, so it genuinely covers the repaired race.
+        self.vault.write("note.md", "single link at discovery")
+        outside = Path(self.temporary.name) / "planted-link"
+        import recallweave.steward_observe as _obs
+
+        real_open_note_fd = _obs._open_note_fd
+
+        def swap_then_open(source, resolved_root, base, relative):
+            if not outside.exists():
+                try:
+                    os.link(self.vault.root / "note.md", outside)
+                except OSError as error:  # pragma: no cover - platform guard
+                    raise unittest.SkipTest(
+                        f"hardlink creation unavailable: {error}"
+                    )
+            return real_open_note_fd(source, resolved_root, base, relative)
+
+        try:
+            with patch("recallweave.steward_observe._DIR_FD_OBSERVE", False), patch(
+                "recallweave.steward_observe._open_note_fd",
+                side_effect=swap_then_open,
+            ):
+                receipt = self.observe()
+        except unittest.SkipTest as skip:
+            self.skipTest(str(skip))
+        self.assertEqual(receipt["skipped"]["hardlink"], 1)
+        self.assertEqual(receipt["changes"], [])
+        checkpoint = self.checkpoint()
+        if checkpoint is not None:
+            entry_paths = [e["relative_path"] for e in checkpoint["entries"]]
+            self.assertNotIn("note.md", entry_paths)
+
     def test_policy_excluded_not_hashed_not_in_checkpoint(self) -> None:
         self.source = _source(
             "src",

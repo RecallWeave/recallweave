@@ -461,11 +461,12 @@ def observe_source(
                 skipped["unreadable_path"] += 1
                 continue
             # A hardlinked leaf (possibly planted after discovery) is not a vault
-            # note. Enforce this on the descriptor only where st_nlink from an
-            # fstat is reliable (the POSIX dir_fd path); on the pathname fallback
-            # (e.g. Windows, where os.fstat's st_nlink is not dependable) the
-            # discovery-time hardlink check in _walk_markdown already applies.
-            if _DIR_FD_OBSERVE and int(info.st_nlink) > 1:
+            # note. Enforce this on the opened descriptor on every platform:
+            # fstat's st_nlink is reliable off the fd everywhere (NTFS reports
+            # nNumberOfLinks; filesystems without hardlink support report 1), so
+            # this stays fail-closed against a note swapped for a hardlink between
+            # discovery and open even on the pathname fallback.
+            if int(info.st_nlink) > 1:
                 skipped["hardlink"] += 1
                 continue
             size = int(info.st_size)

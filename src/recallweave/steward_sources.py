@@ -237,6 +237,12 @@ class SourceRegistry:
         open_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         if type_ != "file":
             open_flags |= getattr(os, "O_DIRECTORY", 0)
+        else:
+            # A file source's note IS this pinned descriptor (observe dups it),
+            # so it must be binary: on Windows a text-mode descriptor translates
+            # CRLF on read, so the bytes would no longer match st_size / the true
+            # content hash. O_BINARY is 0 elsewhere.
+            open_flags |= getattr(os, "O_BINARY", 0)
         try:
             root_fd = os.open(resolved, open_flags)
             info = os.fstat(root_fd)
