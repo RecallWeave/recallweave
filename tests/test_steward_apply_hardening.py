@@ -423,5 +423,231 @@ class RevertDriftTest(unittest.TestCase):
         self.assertEqual(base.read_bytes(), newer)
 
 
+
+
+class RootIdentityAtApplyTest(unittest.TestCase):
+    def test_apply_refuses_swapped_source_root(self) -> None:
+        import shutil
+
+        from recallweave.steward_apply import apply_proposal
+        from recallweave.steward_policy import WritePolicy
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            root = base / "vault"
+            root.mkdir()
+            (root / "a.md").write_text("hello", encoding="utf-8")
+            database = base / "index.sqlite"
+            build_index(root, database, policy=IndexPolicy())
+            registry_path = base / "sources.json"
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "spec_version": SOURCES_SPEC_VERSION,
+                        "sources": [
+                            {
+                                "name": "src",
+                                "type": "folder",
+                                "root": str(root),
+                                "mode": "appliable",
+                                "policy": {"include_paths": ["a.md", "new.md"]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = load_registry(registry_path)
+            state_root = base / "state"
+            dirs = ensure_state_layout(state_root)
+
+            # Swap the admitted root for a different directory tree.
+            shutil.rmtree(root)
+            root.mkdir()
+            (root / "planted.md").write_text("planted", encoding="utf-8")
+
+            policy = WritePolicy.from_bytes(
+                json.dumps(
+                    {
+                        "spec_version": "recallweave.steward.policy.v1",
+                        "class_levels": {"create_new_file": "auto_apply"},
+                    }
+                ).encode()
+            )
+            proposal = {
+                "schema_version": STEWARD_SCHEMA_VERSION,
+                "kind": "proposal",
+                "proposal_id": "prp-rootswaprootswa",
+                "source": "src",
+                "action": "test",
+                "policy_level": "propose_only",
+                "edits": [
+                    {
+                        "mutation_class": "create_new_file",
+                        "relative_path": "new.md",
+                        "replacement_text": "x",
+                        "predicted_post_hash": _sha(b"x"),
+                    }
+                ],
+                "conflicts_with": [],
+                "registry_sha256": registry.registry_sha256,
+            }
+            with self.assertRaisesRegex(ApplyError, "identity changed"):
+                apply_proposal(
+                    proposal,
+                    registry=registry,
+                    state_dirs=dirs,
+                    database=database,
+                    policy=policy,
+                    mode="per_item",
+                    execute=True,
+                )
+            self.assertFalse((root / "new.md").exists())
+
+    def test_recover_and_revert_refuse_swapped_root(self) -> None:
+        import shutil
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            root = base / "vault"
+            root.mkdir()
+            (root / "a.md").write_text("hello", encoding="utf-8")
+            database = base / "index.sqlite"
+            build_index(root, database, policy=IndexPolicy())
+            registry_path = base / "sources.json"
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "spec_version": SOURCES_SPEC_VERSION,
+                        "sources": [
+                            {
+                                "name": "src",
+                                "type": "folder",
+                                "root": str(root),
+                                "mode": "appliable",
+                                "policy": {"include_paths": ["a.md"]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = load_registry(registry_path)
+            state_root = base / "state"
+            dirs = ensure_state_layout(state_root)
+            journal = {
+                "schema_version": STEWARD_SCHEMA_VERSION,
+                "kind": "apply_journal",
+                "proposal_id": "prp-swappedswapped",
+                "source": "src",
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "status": "intent",
+                "backup_dir": "b",
+                "operations": [],
+                "rollback_failures": [],
+            }
+            journal_name = "20260101T000000000000Z-s.json"
+            atomic_write_json(
+                dirs["journal"] / journal_name, journal, within=dirs["journal"]
+            )
+            shutil.rmtree(root)
+            root.mkdir()
+            with self.assertRaisesRegex(ApplyError, "identity changed"):
+                recover_journal(
+                    journal_name, registry=registry, state_dirs=dirs
+                )
+            journal["status"] = "applied"
+            atomic_write_json(
+                dirs["journal"] / journal_name, journal, within=dirs["journal"]
+            )
+            with self.assertRaisesRegex(ApplyError, "identity changed"):
+                revert_journal(
+                    journal_name, registry=registry, state_dirs=dirs
+                )
+
+
+class TwoPassRecoveryTest(unittest.TestCase):
+    def test_no_mutation_happens_when_any_candidate_drifted(self) -> None:
+        from recallweave.steward_apply import recover_journal as _recover
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            root = base / "vault"
+            root.mkdir()
+            clean_create = root / "clean.md"
+            clean_create.write_text("planned bytes", encoding="utf-8")
+            edited = root / "edited.md"
+            edited.write_text("newer operator work", encoding="utf-8")
+            database = base / "index.sqlite"
+            build_index(root, database, policy=IndexPolicy())
+            registry_path = base / "sources.json"
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "spec_version": SOURCES_SPEC_VERSION,
+                        "sources": [
+                            {
+                                "name": "src",
+                                "type": "folder",
+                                "root": str(root),
+                                "mode": "appliable",
+                                "policy": {
+                                    "include_paths": ["clean.md", "edited.md"]
+                                },
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = load_registry(registry_path)
+            state_root = base / "state"
+            dirs = ensure_state_layout(state_root)
+            backup_dir = dirs["backups"] / "b"
+            backup_dir.mkdir()
+            (backup_dir / "1-edited.md").write_bytes(b"pre-apply")
+            journal = {
+                "schema_version": STEWARD_SCHEMA_VERSION,
+                "kind": "apply_journal",
+                "proposal_id": "prp-twopasstwopass",
+                "source": "src",
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "status": "intent",
+                "backup_dir": "b",
+                "operations": [
+                    {
+                        "relative_path": "clean.md",
+                        "mutation_class": "create_new_file",
+                        "content_hash_before": None,
+                        "content_hash_after": _sha(b"planned bytes"),
+                        "backup_name": "0-clean.md",
+                        "state": "done",
+                    },
+                    {
+                        "relative_path": "edited.md",
+                        "mutation_class": "append_at_eof",
+                        "content_hash_before": _sha(b"pre-apply"),
+                        "content_hash_after": _sha(b"post-apply"),
+                        "backup_name": "1-edited.md",
+                        "state": "done",
+                    },
+                ],
+                "rollback_failures": [],
+            }
+            journal_name = "20260101T000000000000Z-t.json"
+            atomic_write_json(
+                dirs["journal"] / journal_name, journal, within=dirs["journal"]
+            )
+            with self.assertRaisesRegex(ApplyError, "newer work"):
+                _recover(journal_name, registry=registry, state_dirs=dirs)
+            self.assertTrue(
+                clean_create.exists(),
+                "recovery deleted a create before finishing its drift screen",
+            )
+            self.assertEqual(
+                edited.read_text(encoding="utf-8"), "newer operator work"
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -142,6 +142,85 @@ def _require_clean_relative_path(path: str) -> None:
         raise ApplyError(f"Invalid relative path in edit: {path!r}")
 
 
+def _require_root_identity(source: Any) -> Path:
+    """Re-verify the registered root at mutation time, exactly as observation
+    does: link-likeness and pinned (dev, ino) identity. A root swapped after
+    registry admission must never rebind the mutation boundary."""
+
+    from .safe_write import path_identity
+
+    if is_link_like(source.root):
+        raise ApplyError(
+            f"Source root {source.name!r} is now a symlink; refusing to write."
+        )
+    try:
+        resolved = source.root.resolve(strict=True)
+    except OSError as error:
+        raise ApplyError(
+            f"Source root for {source.name!r} is unavailable "
+            f"({type(error).__name__}); refusing to write."
+        ) from error
+    if source.root_dev is not None and source.root_ino is not None:
+        try:
+            identity = path_identity(resolved)
+        except OSError as error:
+            raise ApplyError(
+                f"Source root identity for {source.name!r} cannot be "
+                f"verified ({type(error).__name__}); refusing to write."
+            ) from error
+        if identity != (source.root_dev, source.root_ino):
+            raise ApplyError(
+                f"Source root for {source.name!r} is no longer the directory "
+                "the registry admitted (identity changed); refusing to write. "
+                "Reload the registry deliberately if the move was yours."
+            )
+    return resolved
+
+
+def _guarded_unlink(target: Path, boundary: Path) -> None:
+    """Remove ``target`` with the same rigor as guarded writes.
+
+    Where the platform supports dir_fd operations, the parent directory is
+    reached by an O_NOFOLLOW openat chain from the boundary root, so a
+    directory swapped for a symlink at ANY point between validation and the
+    unlink syscall cannot redirect the deletion. Elsewhere, the parent chain
+    is rechecked immediately before a pathname unlink (best available)."""
+
+    _recheck_parent_chain(target, boundary)
+    if is_link_like(target):
+        raise ApplyError(f"Refusing to unlink a symlink or junction: {target}")
+    relative = target.absolute().relative_to(boundary.absolute())
+    parts = relative.parts
+    use_dir_fd = (
+        os.unlink in os.supports_dir_fd
+        and os.open in os.supports_dir_fd
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+    if not use_dir_fd:
+        target.unlink()
+        return
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fds: list[int] = []
+    try:
+        fd = os.open(boundary, os.O_RDONLY | os.O_DIRECTORY)
+        fds.append(fd)
+        for part in parts[:-1]:
+            fd = os.open(part, flags, dir_fd=fd)
+            fds.append(fd)
+        os.unlink(parts[-1], dir_fd=fds[-1])
+    except OSError as error:
+        raise ApplyError(
+            f"Guarded unlink failed for {target} ({type(error).__name__})."
+        ) from error
+    finally:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def _validate_proposal(proposal: Any) -> None:
     if not isinstance(proposal, dict):
         raise ApplyError("Proposal must be a JSON object.")
@@ -526,6 +605,7 @@ def apply_proposal(
             "appliable source accepts writes. Update the registry deliberately "
             "to change that."
         )
+    _require_root_identity(source)
     recorded_sha = proposal.get("registry_sha256")
     if registry.registry_sha256 is not None and recorded_sha is not None and (
         recorded_sha != registry.registry_sha256
@@ -741,7 +821,7 @@ def apply_proposal(
                 trash_path = _write_backup(
                     trash_dir, op["backup_name"], plan["current"], within=trash_root
                 )
-                target.unlink()
+                _guarded_unlink(target, source.root)
                 op["trash_path"] = str(trash_path.relative_to(trash_root))
             else:
                 if not target.parent.exists():
@@ -1093,6 +1173,7 @@ def recover_journal(
             f"Journal {journal_name} names an unknown source "
             f"{journal.get('source')!r}."
         )
+    _require_root_identity(source)
     candidates = _validated_journal_ops(
         journal,
         journal_name,
@@ -1100,7 +1181,11 @@ def recover_journal(
         state_dirs=state_dirs,
         states=("done", "in_progress"),
     )
+    # Two passes: classify EVERY operation first (no mutation), so a drift
+    # anywhere refuses the whole recovery before anything is touched; only a
+    # fully clean journal proceeds to restores and deletions.
     completed = []
+    creates_to_remove: list[Path] = []
     creates_removed = 0
     drifted: list[str] = []
     for item in candidates:
@@ -1134,8 +1219,7 @@ def recover_journal(
             else:
                 # A completed create: delete only the exact planned bytes.
                 if live is not None and live == content_hash_after:
-                    target.unlink()
-                    creates_removed += 1
+                    creates_to_remove.append(target)
                 elif live is not None:
                     drifted.append(
                         f"{item['relative_path']} (created then edited; left in place)"
@@ -1143,8 +1227,7 @@ def recover_journal(
         elif state == "in_progress" and item["content_hash_before"] is None:
             if live is not None and content_hash_after is not None:
                 if live == content_hash_after:
-                    target.unlink()
-                    creates_removed += 1
+                    creates_to_remove.append(target)
     if drifted:
         raise ApplyError(
             "Refusing to recover: these files changed after the interrupted "
@@ -1152,6 +1235,9 @@ def recover_journal(
             f"{sorted(drifted)}. Inspect the named backups and resolve by "
             "hand, then remove or edit the journal."
         )
+    for target in creates_to_remove:
+        _guarded_unlink(target, source.root)
+        creates_removed += 1
     _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
@@ -1200,6 +1286,7 @@ def revert_journal(
             f"Journal {journal_name} names an unknown source "
             f"{journal.get('source')!r}."
         )
+    _require_root_identity(source)
     candidates = _validated_journal_ops(
         journal,
         journal_name,
