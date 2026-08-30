@@ -780,13 +780,22 @@ _PROPOSAL_ELIGIBLE_RELATIONS = (
 )
 
 
-def _fully_processed_artifact_names(dirs: dict[str, Path]) -> set[str]:
+def _fully_processed_artifact_names(
+    dirs: dict[str, Path], registry_sha256: str | None = None
+) -> set[str]:
     """Names of change-batch/assessment artifacts safe to prune.
 
     An artifact ``<ts>-<source>.json`` (the batch and its same-named assessment)
-    is safe to prune only once propose has consumed it: either a proposal cites
-    it, or its assessment produced no proposal-eligible relations at all. An
-    unassessed batch is never in this set."""
+    is safe to prune only once propose has consumed it: either a VALID proposal
+    of this registry cites it, or its assessment produced no proposal-eligible
+    relations at all. An unassessed batch is never in this set.
+
+    Pruning is destructive after the checkpoint has advanced, so a proposal only
+    authorizes pruning when it is a genuine, current-registry proposal: it must
+    be a proposal object, bound to the active ``registry_sha256``, and its source
+    must match the referenced assessment's source (parsed from the filename). A
+    stale, foreign-registry, forged, or cross-source proposal cannot make an
+    unprocessed artifact prunable."""
 
     proposed: set[str] = set()
     for path in dirs["proposals"].glob("*.json"):
@@ -796,9 +805,26 @@ def _fully_processed_artifact_names(dirs: dict[str, Path]) -> set[str]:
             continue
         if not isinstance(document, dict):
             continue
+        if document.get("kind") != "proposal":
+            continue
+        # Bind to the active registry: a foreign-registry (or digest-less when
+        # one is active) proposal is not this registry's processing evidence.
+        if registry_sha256 is not None and (
+            document.get("registry_sha256") != registry_sha256
+        ):
+            continue
+        proposal_source = document.get("source")
         for ref in document.get("assessment_refs") or []:
-            if isinstance(ref, dict) and isinstance(ref.get("assessment_file"), str):
-                proposed.add(ref["assessment_file"])
+            if not isinstance(ref, dict):
+                continue
+            name = ref.get("assessment_file")
+            if not isinstance(name, str):
+                continue
+            # The proposal's source must own the assessment it claims to have
+            # processed (the source is encoded in the artifact filename).
+            if _source_name_from_artifact(name) != proposal_source:
+                continue
+            proposed.add(name)
 
     complete: set[str] = set()
     for path in dirs["assessments"].glob("*.json"):
@@ -807,6 +833,11 @@ def _fully_processed_artifact_names(dirs: dict[str, Path]) -> set[str]:
         except ValueError:
             continue
         if not isinstance(document, dict):
+            continue
+        # Only reason about assessments of the active registry.
+        if registry_sha256 is not None and (
+            document.get("registry_sha256") != registry_sha256
+        ):
             continue
         summary = document.get("summary") or {}
         eligible = any(
@@ -889,7 +920,7 @@ def status_report(
             # and assessments are pipeline inputs: prune only those whose
             # downstream stage is durably complete, so an unprocessed backlog is
             # never deleted after the checkpoint has advanced past it.
-            complete = _fully_processed_artifact_names(dirs)
+            complete = _fully_processed_artifact_names(dirs, registry_sha256)
             pruned["reports"] = _prune_dir(dirs["reports"], cutoff_epoch)
             pruned["changes"] = _prune_dir(
                 dirs["changes"], cutoff_epoch, prunable_names=complete

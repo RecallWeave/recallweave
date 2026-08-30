@@ -671,6 +671,52 @@ class PruneTest(StewardSweepTest):
             + status["pruned"]["reports"],
         )
 
+    def test_pruning_ignores_foreign_and_cross_source_proposals(self) -> None:
+        from recallweave.steward_sweep import _fully_processed_artifact_names
+
+        dirs = self._dirs()
+        # An eligible (has a DELETED) assessment for source "vault".
+        (dirs["assessments"] / "20260101T000000Z-vault.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "assessment_batch",
+                    "source": "vault",
+                    "registry_sha256": "active",
+                    "summary": {"DELETED": 1},
+                    "assessments": [{"relation": "DELETED", "relative_path": "Gone.md"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def _proposal(name: str, **over) -> None:
+            doc = {
+                "schema_version": STEWARD_SCHEMA_VERSION,
+                "kind": "proposal",
+                "proposal_id": "prp-x",
+                "source": "vault",
+                "registry_sha256": "active",
+                "assessment_refs": [{"assessment_file": "20260101T000000Z-vault.json"}],
+                "edits": [],
+            }
+            doc.update(over)
+            (dirs["proposals"] / name).write_text(json.dumps(doc), encoding="utf-8")
+
+        # Foreign registry, wrong source, and non-proposal kind: none authorize.
+        _proposal("p-foreign.json", registry_sha256="stale")
+        _proposal("p-crosssrc.json", source="other")
+        _proposal("p-notproposal.json", kind="assessment_batch")
+        complete = _fully_processed_artifact_names(dirs, "active")
+        self.assertNotIn(
+            "20260101T000000Z-vault.json", complete,
+            "an eligible assessment was made prunable by an invalid proposal",
+        )
+        # A valid current-registry proposal DOES authorize it.
+        _proposal("p-valid.json")
+        complete = _fully_processed_artifact_names(dirs, "active")
+        self.assertIn("20260101T000000Z-vault.json", complete)
+
     def test_prune_preserves_unassessed_change_batch(self) -> None:
         # observe advances the checkpoint; an unassessed batch holds the only
         # record of those changes and must never be pruned by age.
