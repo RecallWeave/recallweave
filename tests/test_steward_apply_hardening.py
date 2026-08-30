@@ -797,19 +797,190 @@ class Round2G3RegressionTest(unittest.TestCase):
         self.assertGreaterEqual(receipt["vault_writes"], 1)
 
     def test_every_destructive_unlink_routes_through_the_guarded_primitive(self) -> None:
+        import ast
+
         source = (ROOT / "src" / "recallweave" / "steward_apply.py").read_text(
             encoding="utf-8"
         )
-        # The single permitted pathname unlink is _guarded_unlink's own
-        # documented fallback for platforms without dir_fd support.
-        occurrences = source.count("target.unlink(")
-        self.assertEqual(occurrences, 1, "new pathname unlinks appeared")
-        guarded_start = source.index("def _guarded_unlink")
-        guarded_end = source.index("\ndef ", guarded_start + 1)
-        self.assertIn(
-            "target.unlink(", source[guarded_start:guarded_end],
-            "the one pathname unlink must live inside _guarded_unlink",
+        tree = ast.parse(source)
+        # Every .unlink() call anywhere in the module must live inside either
+        # _guarded_unlink (the dir_fd primitive + its documented fallback) or
+        # _guarded_replace (temp-file cleanup on its own O_EXCL-created temp,
+        # never a target). Any other unlink is an unguarded destructive path.
+        allowed = {"_guarded_unlink", "_guarded_replace"}
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name in allowed:
+                continue
+            for inner in ast.walk(node):
+                if (
+                    isinstance(inner, ast.Call)
+                    and isinstance(inner.func, ast.Attribute)
+                    and inner.func.attr == "unlink"
+                ):
+                    offenders.append(f"{node.name}:{inner.lineno}")
+        self.assertEqual(
+            offenders, [],
+            f"unguarded unlink() calls outside the guarded primitives: {offenders}",
         )
+
+
+
+
+class Round3G3RegressionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.vault = TempVault(dir=self.base)
+        self.vault.write("kept.md", "kept")
+        self.database = self.base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.registry_path = self.base / "sources.json"
+        self.registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(self.vault.root),
+                            "mode": "appliable",
+                            "policy": {
+                                "include_paths": ["kept.md", "nested/deep/new.md"]
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.registry = load_registry(self.registry_path)
+        self.state_root = self.base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def _apply(self, proposal, class_levels):
+        from recallweave.steward_apply import apply_proposal
+        from recallweave.steward_policy import WritePolicy
+
+        policy = WritePolicy.from_bytes(
+            json.dumps(
+                {
+                    "spec_version": "recallweave.steward.policy.v1",
+                    "class_levels": class_levels,
+                }
+            ).encode()
+        )
+        return apply_proposal(
+            proposal,
+            registry=self.registry,
+            state_dirs=self.dirs,
+            database=self.database,
+            policy=policy,
+            mode="per_item",
+            execute=True,
+        )
+
+    def _proposal(self, proposal_id, edits):
+        return {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "proposal",
+            "proposal_id": proposal_id,
+            "source": "src",
+            "action": "test",
+            "policy_level": "propose_only",
+            "edits": edits,
+            "conflicts_with": [],
+            "registry_sha256": self.registry.registry_sha256,
+        }
+
+    def test_traversal_proposal_id_is_refused_before_any_write(self) -> None:
+        kept = self.vault.root / "kept.md"
+        proposal = self._proposal(
+            "../../../../" + self.vault.root.name + "/pwned",
+            [
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "kept.md",
+                    "precondition_content_hash": _sha(kept.read_bytes()),
+                    "replacement_text": "\nx\n",
+                    "predicted_post_hash": _sha(kept.read_bytes() + b"\nx\n"),
+                }
+            ],
+        )
+        with self.assertRaisesRegex(ApplyError, "valid identifier"):
+            self._apply(proposal, {"append_at_eof": "auto_apply"})
+        self.assertFalse((self.vault.root / "pwned.json").exists())
+
+    def test_guard_within_rejects_traversal_to_missing_parent(self) -> None:
+        from recallweave.steward_state import guard_within
+
+        with self.assertRaisesRegex(ValueError, "traversal|outside"):
+            guard_within(
+                self.state_root / "journal" / ".." / ".." / "escape.json",
+                self.dirs["journal"],
+            )
+
+    def test_preexisting_temp_file_is_not_destroyed(self) -> None:
+        kept = self.vault.root / "kept.md"
+        temp = self.vault.root / ".kept.md.steward-apply.tmp"
+        temp.write_text("someone else's data", encoding="utf-8")
+        proposal = self._proposal(
+            "prp-tempcollision0",
+            [
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "kept.md",
+                    "precondition_content_hash": _sha(kept.read_bytes()),
+                    "replacement_text": "\nx\n",
+                    "predicted_post_hash": _sha(kept.read_bytes() + b"\nx\n"),
+                }
+            ],
+        )
+        with self.assertRaisesRegex(ApplyError, "temporary path"):
+            self._apply(proposal, {"append_at_eof": "auto_apply"})
+        self.assertEqual(temp.read_text(encoding="utf-8"), "someone else's data")
+
+    def test_rollback_removes_created_directories(self) -> None:
+        # A create into a new nested dir plus a second edit that fails
+        # validation: the whole proposal rolls back, including the new dirs.
+        kept = self.vault.root / "kept.md"
+        proposal = self._proposal(
+            "prp-nesteddirroll0",
+            [
+                {
+                    "mutation_class": "create_new_file",
+                    "relative_path": "nested/deep/new.md",
+                    "replacement_text": "# New\n",
+                    "predicted_post_hash": _sha(b"# New\n"),
+                },
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "kept.md",
+                    "precondition_content_hash": _sha(kept.read_bytes()),
+                    "replacement_text": "\nSee [[NoSuchNote]].\n",
+                    "predicted_post_hash": _sha(
+                        kept.read_bytes() + b"\nSee [[NoSuchNote]].\n"
+                    ),
+                },
+            ],
+        )
+        with self.assertRaises(ApplyError):
+            self._apply(
+                proposal,
+                {
+                    "create_new_file": "auto_apply",
+                    "append_at_eof": "auto_apply",
+                },
+            )
+        self.assertFalse((self.vault.root / "nested").exists(),
+                         "rollback left a created directory behind")
 
 
 if __name__ == "__main__":

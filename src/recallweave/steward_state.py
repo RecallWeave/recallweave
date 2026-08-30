@@ -94,6 +94,13 @@ def guard_within(path: Path, within: Path) -> None:
         raise ValueError(
             f"Refusing a state write outside its state directory: {path}"
         ) from None
+    # Reject traversal components outright: a ".." in the relative path can
+    # escape `within` even though relative_to accepted the lexical prefix,
+    # and the resolved-parent check below only fires once the parent exists.
+    if any(part == ".." for part in relative.parts):
+        raise ValueError(
+            f"Refusing a state write with a traversal component: {path}"
+        )
     current = within
     for part in relative.parts[:-1]:
         current = current / part
@@ -103,9 +110,15 @@ def guard_within(path: Path, within: Path) -> None:
             )
     if is_link_like(path):
         raise ValueError(f"Refusing to replace a symlink or junction: {path}")
-    parent = path.parent
-    if parent.exists() and resolved_within not in parent.resolve().parents and (
-        parent.resolve() != resolved_within
+    # Containment is verified against the nearest existing ancestor, so a
+    # not-yet-created parent cannot skip the check (mkdir would create it).
+    probe = path.parent
+    while not probe.exists():
+        probe = probe.parent
+    resolved_probe = probe.resolve()
+    if not (
+        resolved_probe == resolved_within
+        or resolved_within in resolved_probe.parents
     ):
         raise ValueError(
             f"Refusing a state write outside its state directory: {path}"

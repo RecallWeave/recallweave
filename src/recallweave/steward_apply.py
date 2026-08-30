@@ -74,6 +74,10 @@ from .steward_state import (
     lock_state,
 )
 
+import re
+
+_PROPOSAL_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+
 APPLY_RECEIPT_KIND = "apply_receipt"
 JOURNAL_KIND = "apply_journal"
 
@@ -221,12 +225,47 @@ def _guarded_unlink(target: Path, boundary: Path) -> None:
                 pass
 
 
+def _remove_created_dirs(created_dirs: list[Path], boundary: Path) -> None:
+    """Remove directories this apply created, deepest first, on rollback.
+
+    Only empty directories are removed and only those inside the boundary;
+    a directory that has since gained other content is left in place."""
+
+    resolved_boundary = boundary.resolve()
+    for directory in sorted(set(created_dirs), key=lambda p: len(p.parts), reverse=True):
+        try:
+            if is_link_like(directory):
+                continue
+            resolved = directory.resolve()
+            if not (
+                resolved != resolved_boundary
+                and resolved_boundary in resolved.parents
+            ):
+                continue
+            if any(directory.iterdir()):
+                continue
+            directory.rmdir()
+        except OSError:
+            continue
+
+
 def _validate_proposal(proposal: Any) -> None:
     if not isinstance(proposal, dict):
         raise ApplyError("Proposal must be a JSON object.")
     for key in ("schema_version", "kind", "proposal_id", "source", "edits"):
         if key not in proposal:
             raise ApplyError(f"Proposal is missing required key: {key}")
+    proposal_id = proposal["proposal_id"]
+    # proposal_id is embedded into state filenames (journal, backup dir,
+    # receipt); constrain it to the same slug shape as source names so it
+    # cannot carry path separators or traversal.
+    if not isinstance(proposal_id, str) or not _PROPOSAL_ID_RE.fullmatch(
+        proposal_id
+    ):
+        raise ApplyError(
+            f"Proposal id {proposal_id!r} is not a valid identifier "
+            "([A-Za-z0-9._:-], no separators)."
+        )
     if proposal["schema_version"] != STEWARD_SCHEMA_VERSION:
         raise ApplyError(
             f"Unsupported proposal schema_version {proposal['schema_version']!r}."
@@ -445,6 +484,17 @@ def _preflight_edit(
     parent = target.parent if target.parent.exists() else source_root
     if not os.access(parent, os.W_OK):
         raise ApplyError(f"Edit target parent is not writable: {parent}")
+    if mutation_class != "move_to_trash":
+        # The apply temp name is predictable; a pre-existing file there would
+        # both block the write and, worse, block the rollback restore. Catch
+        # it in preflight so the whole proposal refuses before any mutation
+        # rather than failing mid-transaction.
+        temp = target.parent / f".{target.name}.steward-apply.tmp"
+        if temp.exists() or is_link_like(temp):
+            raise ApplyError(
+                f"Refusing to apply: a file already occupies the temporary "
+                f"path {temp}. Remove it and retry."
+            )
     usage = shutil.disk_usage(parent)
     needed = (len(post) if post is not None else 0) + _FREE_SPACE_SLACK_BYTES
     if usage.free < needed:
@@ -510,14 +560,16 @@ def _guarded_replace(target: Path, data: bytes, boundary: Path | None = None) ->
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
+    # O_EXCL means a pre-existing file (a planted collision, a real note, or
+    # another process's temp) makes this raise rather than be destroyed: a
+    # write outside the approved edit set is never acceptable, so refuse.
     try:
         fd = os.open(temp, flags, 0o644)
-    except FileExistsError:
-        try:
-            temp.unlink()
-        except OSError:
-            pass
-        fd = os.open(temp, flags, 0o644)
+    except FileExistsError as error:
+        raise ApplyError(
+            f"Refusing to apply: a file already occupies the temporary path "
+            f"{temp}. Remove it and retry."
+        ) from error
     with os.fdopen(fd, "wb") as handle:
         handle.write(data)
         handle.flush()
@@ -810,6 +862,7 @@ def apply_proposal(
     atomic_write_json(journal_path, journal, within=journal_dir)
 
     completed: list[dict[str, Any]] = []
+    created_dirs: list[Path] = []
     mutations = 0
     try:
         for index, plan in enumerate(plans):
@@ -863,7 +916,16 @@ def apply_proposal(
             else:
                 if not target.parent.exists():
                     _recheck_parent_chain(target, source.root)
+                    # Record directories this apply creates, deepest first,
+                    # so rollback can remove them and the transaction stays
+                    # all-or-nothing.
+                    missing = []
+                    probe = target.parent
+                    while not probe.exists():
+                        missing.append(probe)
+                        probe = probe.parent
                     target.parent.mkdir(parents=True, exist_ok=True)
+                    created_dirs.extend(missing)
                 _guarded_replace(target, plan["post"], boundary=source.root)
                 written = target.read_bytes()
                 if _sha256_bytes(written) != op["content_hash_after"]:
@@ -885,14 +947,17 @@ def apply_proposal(
         index_deltas = validate_l1(receipt_before, receipt_after, plans)
     except ApplyError:
         _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
+        _remove_created_dirs(created_dirs, source.root)
         raise
     except ValidationError as error:
         _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
+        _remove_created_dirs(created_dirs, source.root)
         raise ApplyError(
             f"Validation failed and the apply was rolled back: {error}"
         ) from error
     except Exception as error:
         _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
+        _remove_created_dirs(created_dirs, source.root)
         raise ApplyError(
             f"Apply failed and was rolled back: {type(error).__name__}: {error}"
         ) from error
