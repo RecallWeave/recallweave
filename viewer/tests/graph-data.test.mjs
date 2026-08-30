@@ -1173,6 +1173,49 @@ test("drops fabricated shared_tags that are not on both endpoint nodes", () => {
   assert.deepEqual(normalized.edges[0].evidence?.signals?.shared_tags, ["shared"]);
 });
 
+test("keeps shared_tags that only appear after the display tag cap", () => {
+  const hash = "b".repeat(64);
+  const filler = Array.from({ length: 24 }, (_, i) => `filler-${i}`);
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      {
+        id: "a.md",
+        title: "A",
+        path: "a.md",
+        tags: [...filler, "deep-shared"],
+        created_at: "2026-01-02T03:04:05Z",
+        modified_at: "2026-01-03T03:04:05Z",
+        content_hash: hash,
+      },
+      {
+        id: "b.md",
+        title: "B",
+        path: "b.md",
+        tags: [...filler, "deep-shared"],
+        created_at: "2026-01-02T03:04:05Z",
+        modified_at: "2026-01-03T03:04:05Z",
+        content_hash: hash,
+      },
+    ],
+    edges: [
+      {
+        id: "candidate",
+        source: "a.md",
+        target: "b.md",
+        verified: false,
+        evidence: {
+          signals: {
+            shared_tags: ["deep-shared"],
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(normalized.nodes[0].tags.includes("deep-shared"), false);
+  assert.deepEqual(normalized.edges[0].evidence?.signals?.shared_tags, ["deep-shared"]);
+});
+
 test("rejects malformed nodes and count caps", () => {
   assert.throws(
     () => normalizeGraph(graph({ nodes: [null] })),

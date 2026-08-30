@@ -173,6 +173,35 @@ class RecallWeaveTest(unittest.TestCase):
         self.assertIn("Archive/Whiteboard Fragment.md", paths)
         self.assertTrue(all("why" in item for item in result["results"]))
 
+    def test_resurface_uses_mtime_not_birth_for_dormancy(self) -> None:
+        """Recently edited notes must not look dormant because of old birth time."""
+        import sqlite3
+        from datetime import datetime, timedelta, timezone
+
+        connection = sqlite3.connect(self.database)
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT id, relative_path FROM notes WHERE relative_path LIKE 'Archive/%' LIMIT 1"
+        ).fetchone()
+        self.assertIsNotNone(row)
+        now = datetime.now(timezone.utc)
+        old_birth = (now - timedelta(days=800)).isoformat()
+        recent_mtime = (now - timedelta(days=2)).isoformat()
+        connection.execute(
+            "UPDATE notes SET created_at = ?, updated_at = NULL, modified_at = ? WHERE id = ?",
+            (old_birth, recent_mtime, row["id"]),
+        )
+        connection.commit()
+        connection.close()
+
+        result = resurface(
+            self.database,
+            "binding constraint reversible experiment",
+            minimum_age_days=30,
+        )
+        paths = {item["relative_path"] for item in result["results"]}
+        self.assertNotIn(row["relative_path"], paths)
+
     def test_verified_path_does_not_need_candidates(self) -> None:
         result = path_between(self.database, "Growth Atlas", "System Maps")
         self.assertTrue(result["found"])

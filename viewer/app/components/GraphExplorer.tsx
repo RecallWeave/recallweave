@@ -690,8 +690,9 @@ function ConnectionGroup({
         {edges.map((edge) => {
           const otherId = edge.source === selected.id ? edge.target : edge.source;
           const other = positioned.find((node) => node.id === otherId);
-          const sourceNode = positioned.find((node) => node.id === edge.source);
-          const targetNode = positioned.find((node) => node.id === edge.target);
+          // Every edge in this group touches `selected`; avoid scanning all nodes twice.
+          const sourceNode = edge.source === selected.id ? selected : other;
+          const targetNode = edge.target === selected.id ? selected : other;
           return (
             <article className={`connection-card ${edge.verified ? "authored" : "candidate"}`} key={edge.id}>
               <button

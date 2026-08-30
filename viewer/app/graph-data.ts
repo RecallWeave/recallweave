@@ -385,6 +385,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
   };
   const nodeIds = new Set<string>();
   const nodes: GraphNode[] = [];
+  const validationTagsById = new Map<string, string[]>();
 
   raw.nodes.forEach((item, index) => {
     if (!item || typeof item !== "object") {
@@ -398,6 +399,10 @@ export function normalizeGraph(value: unknown): GraphDocument {
       return;
     }
     nodeIds.add(id);
+    const sanitizedTags = Array.isArray(node.tags)
+      ? node.tags.map((tag) => safeLabel(tag)).filter(Boolean)
+      : [];
+    validationTagsById.set(id, sanitizedTags);
     const normalized: GraphNode = {
       id,
       title: safeLabel(node.title, id),
@@ -405,9 +410,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
       status: safeLabel(node.status),
       domain: safeLabel(node.domain, "Unclassified"),
       summary: safeText(node.summary),
-      tags: Array.isArray(node.tags)
-        ? node.tags.map((tag) => safeLabel(tag)).filter(Boolean).slice(0, 24)
-        : [],
+      tags: sanitizedTags.slice(0, 24),
       section_count: finiteNumber(node.section_count),
     };
     if (isV2) {
@@ -454,10 +457,10 @@ export function normalizeGraph(value: unknown): GraphDocument {
     let signals = isV2 ? evidenceSignals(evidence.signals) : undefined;
     if (signals?.shared_tags?.length) {
       const sourceTags = new Set(
-        (nodesById.get(source)?.tags || []).map((tag) => tag.toLowerCase()),
+        (validationTagsById.get(source) || []).map((tag) => tag.toLowerCase()),
       );
       const targetTags = new Set(
-        (nodesById.get(target)?.tags || []).map((tag) => tag.toLowerCase()),
+        (validationTagsById.get(target) || []).map((tag) => tag.toLowerCase()),
       );
       const shared_tags = signals.shared_tags.filter(
         (tag) => sourceTags.has(tag.toLowerCase()) && targetTags.has(tag.toLowerCase()),
