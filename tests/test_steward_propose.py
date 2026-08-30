@@ -633,6 +633,41 @@ class ProposeLatestTest(StewardProposeTest):
             json.dumps(assessment), encoding="utf-8"
         )
 
+    def test_reemitted_duplicate_syncs_conflict_onto_existing(self) -> None:
+        # A re-emitted proposal P (id already on disk) that newly conflicts with
+        # a fresh proposal Q must sync the conflict onto the on-disk P too, so P
+        # is not left conflict-free-and-applyable.
+        self._rename_assessment("20260101T000000Z", "Beta.md", "BetaNew.md")
+        propose_latest(self.registry, self.state_root, self.database)
+        beta_fix = [
+            p for p in self.dirs["proposals"].glob("20260101T000000Z-vault-*.json")
+            if json.loads(p.read_text())["action"] == "fix_links_after_rename"
+        ][0]
+        beta_id = json.loads(beta_fix.read_text())["proposal_id"]
+        self.assertEqual(json.loads(beta_fix.read_text())["conflicts_with"], [])
+
+        # Re-emit Beta's batch+assessment under a new timestamp (same id P), and
+        # add a Gamma rename (Q) touching the same referrer (Alpha).
+        import shutil
+        for sub in ("changes", "assessments"):
+            src = self.dirs[sub] / "20260101T000000Z-vault.json"
+            dst = self.dirs[sub] / "20260102T000000Z-vault.json"
+            doc = json.loads(src.read_text())
+            if sub == "assessments":
+                doc["change_batch_ref"] = "20260102T000000Z-vault.json"
+            dst.write_text(json.dumps(doc), encoding="utf-8")
+        self._rename_assessment("20260103T000000Z", "Gamma.md", "GammaNew.md")
+        propose_latest(self.registry, self.state_root, self.database)
+
+        # On-disk P now declares the conflict with Q (not left conflict-free).
+        beta_doc = json.loads(beta_fix.read_text())
+        gamma_fix = json.loads([
+            p for p in self.dirs["proposals"].glob("20260103T000000Z-vault-*.json")
+            if json.loads(p.read_text())["action"] == "fix_links_after_rename"
+        ][0].read_text())
+        self.assertIn(gamma_fix["proposal_id"], beta_doc["conflicts_with"])
+        self.assertIn(beta_id, gamma_fix["conflicts_with"])
+
     def test_applied_proposal_excluded_from_new_conflict_set(self) -> None:
         # An APPLIED proposal for a path must not appear in a later proposal's
         # conflicts_with (which would make _validate_proposal reject the new work

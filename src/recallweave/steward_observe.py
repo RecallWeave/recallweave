@@ -649,11 +649,30 @@ def observe_source(
     while (state_dirs["changes"] / filename).exists():
         filename = f"{stamp}_{nonce:04d}-{source.name}.json"
         nonce += 1
-    atomic_write_json(
-        state_dirs["changes"] / filename,
-        receipt,
-        within=state_dirs["changes"],
-    )
+    batch_path = state_dirs["changes"] / filename
+    atomic_write_json(batch_path, receipt, within=state_dirs["changes"])
+
+    # Re-verify identity AFTER the batch is on disk and BEFORE it can influence
+    # assessment (the checkpoint has not advanced yet). If the registered root
+    # was renamed/replaced while the batch was being written, RETRACT the batch
+    # (delete it) and advance nothing, so no out-of-scope snapshot ever becomes
+    # visible to assessment and the checkpoint is never advanced under a changed
+    # identity.
+    if source.root_dev is not None and source.root_ino is not None:
+        try:
+            post_write_identity = path_identity(resolved_root)
+        except OSError:
+            post_write_identity = None
+        if post_write_identity != (source.root_dev, source.root_ino):
+            try:
+                batch_path.unlink()
+            except OSError:
+                pass
+            if post_write_identity is None:
+                return _source_missing_receipt(source, generated_at, registry_sha256)
+            return _source_error_receipt(
+                source, generated_at, registry_sha256, "source_identity_changed"
+            )
 
     save_checkpoint(
         state_dirs,

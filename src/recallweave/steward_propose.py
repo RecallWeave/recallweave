@@ -957,39 +957,53 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
         # would let an apply select both -- the first mutating, the second
         # failing its now-stale precondition. Collapse by id: never write a
         # proposal whose id already exists.
-        existing_ids: set[str] = set()
+        existing_by_id: dict[str, list[Path]] = {}
         for existing_path in proposals_dir.glob("*.json"):
             try:
                 doc = json.loads(existing_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
             if isinstance(doc, dict) and isinstance(doc.get("proposal_id"), str):
-                existing_ids.add(doc["proposal_id"])
+                existing_by_id.setdefault(doc["proposal_id"], []).append(existing_path)
+
+        def _sync_conflicts_onto(target_path: Path, computed: dict[str, Any]) -> bool:
+            # Update ONLY conflicts_with on an existing pending proposal so both
+            # sides declare a conflict; never rewrite an applied proposal.
+            try:
+                existing = json.loads(target_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return False
+            if not isinstance(existing, dict) or existing.get("status") == "applied":
+                return False
+            if existing.get("conflicts_with") != computed.get("conflicts_with"):
+                existing["conflicts_with"] = computed.get("conflicts_with", [])
+                atomic_write_json(target_path, existing, within=proposals_dir)
+                return True
+            return False
 
         written = 0
         conflicts_synced = 0
         for filename, proposal, is_new in all_computed:
             path = proposals_dir / filename
             if is_new:
-                if proposal.get("proposal_id") in existing_ids:
-                    continue  # duplicate id from a re-emitted batch; skip
+                pid = proposal.get("proposal_id")
+                if pid in existing_by_id:
+                    # Duplicate id from a re-emitted batch: don't write a second
+                    # file, BUT still synchronize this run's freshly computed
+                    # conflicts onto the existing file(s) for that id -- otherwise
+                    # the on-disk copy could stay conflict-free and applyable
+                    # while its counterpart declares the conflict.
+                    for target_path in existing_by_id[pid]:
+                        if _sync_conflicts_onto(target_path, proposal):
+                            conflicts_synced += 1
+                    continue
                 atomic_write_json(path, proposal, within=proposals_dir)
-                existing_ids.add(proposal.get("proposal_id"))
+                existing_by_id.setdefault(pid, []).append(path)
                 written += 1
                 continue
-            # An EXISTING pending proposal may have gained a conflict with a
-            # newly written counterpart. If so, sync only its conflicts_with so
-            # both sides declare the conflict (an un-updated side would still be
-            # applyable despite the overlap). Never rewrite an applied proposal.
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if not isinstance(existing, dict) or existing.get("status") == "applied":
-                continue
-            if existing.get("conflicts_with") != proposal.get("conflicts_with"):
-                existing["conflicts_with"] = proposal.get("conflicts_with", [])
-                atomic_write_json(path, existing, within=proposals_dir)
+            # An EXISTING pending proposal (same filename) may have gained a
+            # conflict with a newly written counterpart; sync it too.
+            if _sync_conflicts_onto(path, proposal):
                 conflicts_synced += 1
 
         # Durable per-assessment completion markers, written ONLY after every
