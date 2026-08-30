@@ -179,6 +179,8 @@ class PruneAnchorTest(unittest.TestCase):
         # corrupt marker/assessment cannot crash the prune allow-set read.
         import recallweave.steward_sweep as _sw
 
+        if not _sw._DIR_FD_PRUNE:
+            self.skipTest("_read_json_at (dir_fd) is a descriptor-relative path")
         with tempfile.TemporaryDirectory() as name:
             directory = Path(name)
             (directory / "bad.json").write_bytes(b"\xff\xfe not utf-8 \x00")

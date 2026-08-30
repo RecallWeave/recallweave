@@ -1311,26 +1311,27 @@ def status_report(
         cutoff_epoch = datetime.now(timezone.utc).timestamp() - (
             prune_older_than_days * 86400
         )
-        if not _DIR_FD_PRUNE:
-            # Fail closed on platforms without descriptor-relative deletion:
-            # prune nothing and report it unsupported rather than delete by
-            # pathname through a possibly-swapped directory (see _prune_dir).
-            pruned = {
-                "unsupported_platform": True,
-                "reports": 0,
-                "changes": 0,
-                "assessments": 0,
-                "total": 0,
-            }
-        else:
-            # Destructive pruning is serialized by the same lock the pipeline
-            # stages use, so no legitimate concurrent run can write an artifact
-            # while pruning selects and deletes. The whole prune -- allow-set,
-            # every subdirectory deletion, and marker cleanup -- runs under ONE
-            # O_NOFOLLOW-pinned state-root descriptor (see _prune_state), so a
-            # state-root swap between any two of those steps cannot redirect them,
-            # and each deletion is inode-verified against a leaf swap.
-            with lock_state(state_root):
+        # Acquire the state lock FIRST on every platform, so pruning is serialized
+        # against the pipeline stages (and refuses while another run holds it)
+        # whether or not descriptor-relative deletion is available.
+        with lock_state(state_root):
+            if not _DIR_FD_PRUNE:
+                # Fail closed on platforms without descriptor-relative deletion:
+                # prune nothing and report it unsupported rather than delete by
+                # pathname through a possibly-swapped directory (see _prune_dir).
+                pruned = {
+                    "unsupported_platform": True,
+                    "reports": 0,
+                    "changes": 0,
+                    "assessments": 0,
+                    "total": 0,
+                }
+            else:
+                # The whole prune -- allow-set, every subdirectory deletion, and
+                # marker cleanup -- runs under ONE O_NOFOLLOW-pinned state-root
+                # descriptor (see _prune_state), so a state-root swap between any
+                # two of those steps cannot redirect them, and each deletion is
+                # inode-verified against a leaf swap.
                 pruned = _prune_state(state_root, cutoff_epoch, registry_sha256)
 
     counts = {

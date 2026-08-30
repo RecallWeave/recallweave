@@ -545,7 +545,10 @@ class BoundedEditReadTest(unittest.TestCase):
                 _read_edit_target(linked, 1000)
             directory = base / "d"
             directory.mkdir()
-            with self.assertRaises(_EditTargetUnsafe):
+            # A directory is refused: on POSIX the fstat S_ISREG check raises
+            # _EditTargetUnsafe; on Windows os.open of a directory raises OSError
+            # before that -- either way _preflight_edit turns it into a refusal.
+            with self.assertRaises((_EditTargetUnsafe, OSError)):
                 _read_edit_target(directory, 1000)
 
 
