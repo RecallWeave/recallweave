@@ -58,6 +58,16 @@ primitives are in scope precisely because they run entirely on the operator's ow
 machine; the moment such a mechanism is hosted, shared, or centralized, it
 crosses into the commercial layer.
 
+The line is drawn at *who runs it and whose data flows through it*, not at whether
+a network call is ever made. An optional provider that runs locally, is invoked by
+the single operator, and uses that operator's own credentials to reach an external
+API they chose (see **Extension points**) stays on the local side of the line —
+it needs an offline fallback and inspectable configuration, but it is the
+operator's own client. What crosses the line is *hosted execution* on someone
+else's server, *managed* credentials or connectors held on a user's behalf, and
+anything shared across users. "No network calls" describes the default core;
+it is not a blanket ban on operator-configured optional providers.
+
 The trust model above already assumes this split: identity, authorization,
 redaction, audit receipts, and human approval live in the **private broker /
 control plane**, and RecallWeave hands it bounded, cited, read-only evidence.
@@ -156,13 +166,19 @@ state.
 
 ## Extension points
 
-Planned optional providers may add local embeddings, hosted embeddings, entity
-extraction, or MCP transport. They must preserve:
+Planned optional providers may add local embeddings, a client for a hosted
+embedding API (run locally by the operator, using the operator's own credentials),
+entity extraction, or MCP transport. These stay within the local, single-user
+**Product boundary** above: each is an opt-in client the operator configures and
+runs on their own machine, not hosted infrastructure the project operates on a
+user's behalf. Every provider must preserve:
 
-1. offline deterministic core behavior;
+1. offline deterministic core behavior (the default core stays fully offline, and
+   every provider ships a working offline fallback);
 2. evidence-class separation;
 3. no note mutation;
-4. inspectable provider and privacy configuration;
+4. inspectable provider and privacy configuration, with any external credentials
+   supplied and held by the operator alone;
 5. versioned JSON output.
 
 Task contracts are a projection over the same evidence classes, so any provider

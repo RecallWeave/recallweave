@@ -95,12 +95,16 @@ specification. If the specification is wrong, the specification is the defect.
 ## Current cycle
 
 <!-- CYCLE-CONTEXT-START -->
-Cycle 32b — remediations after cycle-32 FAIL (`review-20260828T175053Z.md`):
-update rendered-html guard so `Index claims:` is asserted on
-`AtlasProvenanceChrome.ts` after extraction from GraphExplorer. Prior tip
-`e15cf4d`. Base: merged PR #10 squash `2c67665` on `main`.
+Review the current working tree as checked out. Determine the change set from the
+repository itself rather than assuming a specific cycle, prior tip, base commit,
+or turn number. Derive the comparison base from the checked-out branch's own
+upstream (`@{upstream}`) when it has one; otherwise fall back to the repository's
+default branch (e.g. `origin/HEAD` / `main`), or use a base passed explicitly to
+the review. Do not assume any particular integration-branch name — it may not
+exist in a fresh clone or a contributor fork.
 
-Suite target **511** Python OK (1 skip) plus full viewer `npm test`. Prefer
-clean PASS; PASS WITH FIXES only for remaining Low. Max 3 review turns (this is
-turn 2).
+Use the accompanying harness report for the authoritative suite result: the
+Python `unittest` count and any skips, plus the full viewer `npm test`. Treat the
+report's numbers as current instead of any figure hard-coded here. Prefer a clean
+PASS; use PASS WITH FIXES only when solely Low or Medium findings remain.
 <!-- CYCLE-CONTEXT-END -->
