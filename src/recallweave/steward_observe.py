@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .parser import parse_note
 from .policy import RESERVED_DIRECTORY_NAMES
 from .steward_checkpoint import (
     CheckpointEntry,
@@ -240,6 +241,30 @@ def observe_source(
             skipped[reason or "policy"] += 1
             policy_excluded.add(relative)
             continue
+
+        # The full IndexPolicy applies, frontmatter denial included: a note
+        # the index would refuse must not be hashed or recorded by path
+        # anywhere in steward state. Parsing mirrors indexing's fail-closed
+        # behavior; with no deny rules configured, frontmatter_allowed always
+        # admits and the parse is skipped.
+        if source.policy.deny_frontmatter:
+            try:
+                note = parse_note(path, resolved_root)
+            except UnicodeError:
+                skipped["unsupported_encoding"] += 1
+                policy_excluded.add(relative)
+                continue
+            except RecursionError:
+                skipped["unparseable_frontmatter"] += 1
+                policy_excluded.add(relative)
+                continue
+            allowed, reason = source.policy.frontmatter_allowed(
+                note.frontmatter, valid=note.frontmatter_valid
+            )
+            if not allowed:
+                skipped[reason or "frontmatter_policy"] += 1
+                policy_excluded.add(relative)
+                continue
 
         # Every admitted file is hashed on every sweep. A size-and-mtime gate
         # would be cheaper, but equal-length bytes with a restored mtime would

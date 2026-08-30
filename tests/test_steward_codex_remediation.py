@@ -380,5 +380,136 @@ class MachineLocalArtifactsTest(unittest.TestCase):
                 vault.cleanup()
 
 
+
+
+class FrontmatterDenialTest(unittest.TestCase):
+    """The full IndexPolicy applies during observation, deny_frontmatter included."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        base = Path(self.temporary.name)
+        self.vault = TempVault(dir=base)
+        self.state_root = base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+        policy = IndexPolicy.from_payload(
+            {"deny_frontmatter": {"sensitivity": ["sealed"]}}
+        )
+        self.source = _source("src", self.vault.root, policy=policy)
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def test_sealed_note_is_absent_from_all_steward_state(self) -> None:
+        self.vault.write("open.md", "# Open\n\nBody.\n")
+        self.vault.write(
+            "sealed.md", "---\nsensitivity: sealed\n---\n# Secret\n"
+        )
+        receipt = observe_source(self.source, self.dirs, registry_sha256=None)
+        strings: list[str] = []
+        _walk_strings(receipt, strings)
+        self.assertFalse(any("sealed.md" in item for item in strings))
+        self.assertEqual(receipt["skipped"].get("denied_frontmatter:sensitivity"), 1)
+        checkpoint = json.loads(
+            (self.dirs["checkpoints"] / "src.json").read_text(encoding="utf-8")
+        )
+        paths = [entry["relative_path"] for entry in checkpoint["entries"]]
+        self.assertEqual(paths, ["open.md"])
+
+    def test_malformed_frontmatter_fails_closed_with_deny_rules(self) -> None:
+        self.vault.write("open.md", "# Open\n")
+        bad = self.vault.root / "bad.md"
+        bad.write_bytes(b"\xff\xfe\x00b\x00r\x00o\x00k\x00e\x00n")
+        receipt = observe_source(self.source, self.dirs, registry_sha256=None)
+        strings: list[str] = []
+        _walk_strings(receipt, strings)
+        self.assertFalse(any("bad.md" in item for item in strings))
+        self.assertEqual(receipt["skipped"].get("unsupported_encoding"), 1)
+
+
+class ProductionShapedSymlinkTest(unittest.TestCase):
+    """Symlinked state subdirs are refused in the exact production call shape."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.vault = TempVault(dir=self.base)
+        self.vault.write("a.md", "hello")
+        self.database = self.base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.registry = SourceRegistry(
+            sources=[_source("src", self.vault.root)], registry_sha256=None
+        )
+        self.state_root = self.base / "state"
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def _link_subdir(self, name: str) -> bool:
+        ensure_state_layout(self.state_root)
+        target = self.vault.root / "Injected"
+        target.mkdir(exist_ok=True)
+        subdir = self.state_root / name
+        os.rmdir(subdir)
+        return make_symlink(target, subdir)
+
+    def test_observe_refuses_symlinked_changes_dir_and_writes_nothing(self) -> None:
+        if not self._link_subdir("changes"):
+            self.skipTest("symlinks unsupported")
+        with self.assertRaisesRegex(ValueError, "symlinked steward state"):
+            observe_registry(self.registry, self.state_root)
+        self.assertEqual(
+            list((self.vault.root / "Injected").iterdir()), [],
+            "a state write escaped into the source",
+        )
+
+    def test_sweep_refuses_symlinked_reports_dir(self) -> None:
+        if not self._link_subdir("reports"):
+            self.skipTest("symlinks unsupported")
+        with self.assertRaisesRegex(ValueError, "symlinked steward state"):
+            sweep_registry(self.registry, self.state_root, self.database)
+        self.assertEqual(list((self.vault.root / "Injected").iterdir()), [])
+
+    def test_layout_refuses_symlinked_state_root(self) -> None:
+        elsewhere = self.base / "elsewhere"
+        elsewhere.mkdir()
+        link_root = self.base / "link-root"
+        if not make_symlink(elsewhere, link_root):
+            self.skipTest("symlinks unsupported")
+        with self.assertRaisesRegex(ValueError, "symlinked steward state root"):
+            ensure_state_layout(link_root)
+
+
+class BatchPathHygieneTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        base = Path(self.temporary.name)
+        self.vault = TempVault(dir=base)
+        self.vault.write("a.md", "hello")
+        self.database = base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def test_traversal_and_absolute_paths_in_batches_are_refused(self) -> None:
+        for hostile in ("../secret.md", "/etc/passwd", "a/../../b.md", "C:evil.md"):
+            batch = _batch(
+                "src",
+                [
+                    {
+                        "relative_path": hostile,
+                        "change_type": "modified",
+                        "previous_content_hash": "0" * 64,
+                        "current_content_hash": "1" * 64,
+                    }
+                ],
+            )
+            with self.assertRaisesRegex(ValueError, "Invalid relative path"):
+                assess_change_batch(batch, self.database, self.vault.root)
+
+
 if __name__ == "__main__":
     unittest.main()

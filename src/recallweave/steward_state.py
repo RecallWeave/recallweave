@@ -78,6 +78,10 @@ def guard_within(path: Path, within: Path) -> None:
     ``within`` itself is expected to be a directory Steward created.
     """
 
+    if is_link_like(within):
+        raise ValueError(
+            f"Refusing a state write through a symlinked directory: {within}"
+        )
     resolved_within = within.resolve()
     try:
         relative = path.absolute().relative_to(within.absolute())
@@ -104,9 +108,21 @@ def guard_within(path: Path, within: Path) -> None:
 
 
 def ensure_state_layout(root: Path) -> dict[str, Path]:
+    # The state tree is the write boundary: a symlinked root or subdirectory
+    # would redirect state writes elsewhere (including into a source) while
+    # receipts still claim zero vault writes. Refuse link-like entries before
+    # anything is created or written.
+    if is_link_like(root):
+        raise ValueError(
+            f"Refusing a symlinked steward state root: {root}"
+        )
     result: dict[str, Path] = {}
     for name in STEWARD_SUBDIRS:
         subdir = root / name
+        if is_link_like(subdir):
+            raise ValueError(
+                f"Refusing a symlinked steward state directory: {subdir}"
+            )
         subdir.mkdir(parents=True, exist_ok=True)
         result[name] = subdir
     return result

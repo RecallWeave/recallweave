@@ -128,6 +128,19 @@ def _extract_paths(items: Any) -> set[str]:
     return result
 
 
+def _require_clean_relative_path(path: str) -> None:
+    """Reject absolute, traversal, or platform-ambiguous relative paths.
+
+    Change batches are steward-authored, but they are also on-disk state an
+    operator (or another tool) can edit; a path like ``../secret.md`` must
+    never drive a read outside the source root."""
+
+    if not path or path.startswith("/") or "\\" in path or ":" in path.split("/")[0]:
+        raise ValueError(f"Invalid relative path in change record: {path!r}")
+    if any(part in ("", ".", "..") for part in path.split("/")):
+        raise ValueError(f"Invalid relative path in change record: {path!r}")
+
+
 def _record(relation: str, relative_path: str, inputs: dict[str, Any]) -> dict[str, Any]:
     return {
         "relation": relation,
@@ -238,6 +251,7 @@ def assess_change_batch(
             change_type = change.get("change_type")
             if not isinstance(path, str) or change_type not in _CHANGE_TYPES:
                 raise ValueError(f"Invalid change record: {change!r}")
+            _require_clean_relative_path(path)
             if path in skip_paths:
                 summary["skipped_changed_during_observe"] += 1
                 continue
@@ -459,6 +473,18 @@ def assess_change_batch(
                 continue
 
             full_path = source_root / path
+            try:
+                resolved_target = full_path.resolve(strict=True)
+            except OSError:
+                resolved_target = None
+            resolved_source = source_root.resolve()
+            if resolved_target is not None and not (
+                resolved_target == resolved_source
+                or resolved_source in resolved_target.parents
+            ):
+                raise ValueError(
+                    f"Change record path escapes the source root: {path!r}"
+                )
             try:
                 data = full_path.read_bytes()
             except OSError as error:
