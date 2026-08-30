@@ -1542,7 +1542,10 @@ def recover_journal(
     for item in candidates:
         state = item.pop("state")
         mutation_class = (item.pop("_op", None) or {}).get("mutation_class")
-        content_hash_after = item.pop("content_hash_after", None)
+        # Keep content_hash_after in the item: _rollback re-reads the target
+        # right before restoring and refuses on drift, which closes the
+        # TOCTOU window between this pre-screen and the restore.
+        content_hash_after = item.get("content_hash_after")
         backup_exists = Path(item["backup_path"]).exists()
         target = Path(item["target"])
         live: str | None = None
@@ -1678,7 +1681,7 @@ def revert_journal(
         {
             key: value
             for key, value in item.items()
-            if key not in ("state", "_op", "content_hash_after")
+            if key not in ("state", "_op")
         }
         for item in candidates
     ]

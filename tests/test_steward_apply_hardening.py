@@ -1191,5 +1191,111 @@ class RollbackDriftTest(unittest.TestCase):
             self.assertEqual(reloaded["status"], "rolled_back")
 
 
+
+
+class RecoverRevertDriftWindowTest(unittest.TestCase):
+    """Round 3: recovery and revert must not overwrite bytes changed in the
+    window between their pre-screen and _rollback's restore."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.vault = TempVault(dir=self.base)
+        self.vault.write("a.md", "pre-apply bytes")
+        self.database = self.base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.registry_path = self.base / "sources.json"
+        self.registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(self.vault.root),
+                            "mode": "appliable",
+                            "policy": {"include_paths": ["a.md"]},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.registry = load_registry(self.registry_path)
+        self.state_root = self.base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+        self.backup_dir = self.dirs["backups"] / "b"
+        self.backup_dir.mkdir()
+        (self.backup_dir / "0-a.md").write_bytes(b"pre-apply bytes")
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def _journal(self, status: str) -> str:
+        journal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "apply_journal",
+            "proposal_id": "prp-driftwindow000",
+            "source": "src",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "status": status,
+            "backup_dir": "b",
+            "operations": [
+                {
+                    "relative_path": "a.md",
+                    "mutation_class": "append_at_eof",
+                    "content_hash_before": _sha(b"pre-apply bytes"),
+                    "content_hash_after": _sha(b"stewards written bytes"),
+                    "backup_name": "0-a.md",
+                    "state": "done",
+                }
+            ],
+            "rollback_failures": [],
+        }
+        name = f"20260101T000000000000Z-{status}.json"
+        atomic_write_json(
+            self.dirs["journal"] / name, journal, within=self.dirs["journal"]
+        )
+        return name
+
+    def _mutate_before_rollback(self, newer: bytes):
+        # Hook _rollback so that, immediately before it runs, a concurrent
+        # writer replaces the target with newer content the pre-screen did
+        # not see.
+        from recallweave import steward_apply
+
+        real_rollback = steward_apply._rollback
+        target = self.vault.root / "a.md"
+
+        def racing_rollback(*args, **kwargs):
+            target.write_bytes(newer)
+            return real_rollback(*args, **kwargs)
+
+        return steward_apply, real_rollback, racing_rollback, target
+
+    def test_recovery_refuses_edit_in_the_rollback_window(self) -> None:
+        # Target holds Steward's post-apply bytes so the pre-screen accepts it.
+        target = self.vault.root / "a.md"
+        target.write_bytes(b"stewards written bytes")
+        name = self._journal("intent")
+        mod, real, racing, target = self._mutate_before_rollback(b"newer operator work")
+        with patch.object(mod, "_rollback", racing):
+            with self.assertRaises((ApplyError, RollbackError)):
+                recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        self.assertEqual(target.read_bytes(), b"newer operator work")
+
+    def test_revert_refuses_edit_in_the_rollback_window(self) -> None:
+        target = self.vault.root / "a.md"
+        target.write_bytes(b"stewards written bytes")
+        name = self._journal("applied")
+        mod, real, racing, target = self._mutate_before_rollback(b"newer operator work")
+        with patch.object(mod, "_rollback", racing):
+            with self.assertRaises((ApplyError, RollbackError)):
+                revert_journal(name, registry=self.registry, state_dirs=self.dirs)
+        self.assertEqual(target.read_bytes(), b"newer operator work")
+
+
 if __name__ == "__main__":
     unittest.main()
