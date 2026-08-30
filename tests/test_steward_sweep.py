@@ -439,6 +439,7 @@ class ReportBacklogAggregationTest(StewardSweepTest):
                     "schema_version": STEWARD_SCHEMA_VERSION,
                     "kind": "assessment_batch",
                     "source": "vault",
+                    "registry_sha256": self._registry().registry_sha256,
                     "summary": counts,
                     "assessments": records,
                 }
@@ -525,6 +526,32 @@ class ReportBacklogAggregationTest(StewardSweepTest):
         )
         self.assertEqual(dupes, [])
 
+    def test_foreign_registry_assessment_is_excluded_from_report(self) -> None:
+        # An assessment recorded under a different registry (same source name)
+        # must not leak its paths/citations/relations into this report.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        dirs = self._dirs()
+        (dirs["assessments"] / "20260101T000000Z-vault.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "assessment_batch",
+                    "source": "vault",
+                    "registry_sha256": "some-foreign-digest",
+                    "summary": {"CITATION_BROKEN": 1},
+                    "assessments": [{
+                        "relation": "CITATION_BROKEN", "relative_path": "Secret.md",
+                        "inputs": {"broken_citations": [{"citation": "Secret.md:9-9"}]},
+                    }],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary, broken, _d = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(summary["CITATION_BROKEN"], 0)
+        self.assertEqual(broken, [], "a foreign-registry finding leaked into the report")
+
     def test_same_path_in_two_sources_counts_as_two_findings(self) -> None:
         from recallweave.steward_sweep import _aggregate_assessments
 
@@ -551,6 +578,7 @@ class ReportBacklogAggregationTest(StewardSweepTest):
                         "schema_version": STEWARD_SCHEMA_VERSION,
                         "kind": "assessment_batch",
                         "source": src,
+                        "registry_sha256": registry.registry_sha256,
                         "summary": {"DELETED": 1},
                         "assessments": [{"relation": "DELETED", "relative_path": "Gone.md"}],
                     }
@@ -577,6 +605,7 @@ class ReportBacklogAggregationTest(StewardSweepTest):
                         "schema_version": STEWARD_SCHEMA_VERSION,
                         "kind": "assessment_batch",
                         "source": "vault",
+                        "registry_sha256": self._registry().registry_sha256,
                         "summary": {relation: 1},
                         "assessments": [{"relation": relation, "relative_path": "Gone.md"}],
                     }
@@ -603,6 +632,7 @@ class ReportBacklogAggregationTest(StewardSweepTest):
                     "schema_version": STEWARD_SCHEMA_VERSION,
                     "kind": "assessment_batch",
                     "source": "vault",
+                    "registry_sha256": self._registry().registry_sha256,
                     "summary": {"CITATION_BROKEN": 1},
                     "assessments": [
                         {
@@ -622,6 +652,7 @@ class ReportBacklogAggregationTest(StewardSweepTest):
                     "schema_version": STEWARD_SCHEMA_VERSION,
                     "kind": "assessment_batch",
                     "source": "vault",
+                    "registry_sha256": self._registry().registry_sha256,
                     "summary": {"MODIFIED": 1},
                     "assessments": [{"relation": "MODIFIED", "relative_path": "Note.md"}],
                 }
@@ -644,6 +675,7 @@ class ReportBacklogAggregationTest(StewardSweepTest):
                         "schema_version": STEWARD_SCHEMA_VERSION,
                         "kind": "assessment_batch",
                         "source": "vault",
+                        "registry_sha256": self._registry().registry_sha256,
                         "summary": {"DELETED": 1},
                         "assessments": [
                             {"relation": "DELETED", "relative_path": "Gone.md"}

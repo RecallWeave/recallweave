@@ -279,6 +279,14 @@ def _aggregate_assessments(
             assessment = _load_json(assessment_path)
             if not isinstance(assessment, dict):
                 continue
+            # Bind to the active registry: an assessment recorded under a
+            # different (or, when one is active, a null) source registry -- e.g.
+            # a same-named source repointed after a registry change -- must never
+            # leak its paths/citations/relations into this registry's report.
+            if registry.registry_sha256 is not None and (
+                assessment.get("registry_sha256") != registry.registry_sha256
+            ):
+                continue
             for key, value in (assessment.get("summary") or {}).items():
                 # Relation counts are recomputed from the durable state below;
                 # only the informational bookkeeping stats are carried here.
