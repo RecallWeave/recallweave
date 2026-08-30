@@ -574,6 +574,29 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    except Exception as error:
+        # Structural safety net for the steward-* write pipeline: any
+        # otherwise-unhandled exception (e.g. an AttributeError from a
+        # malformed on-disk artifact) becomes the same single, path-redacted
+        # JSON error envelope with exit 2 — never a raw traceback. Only
+        # Exception is caught, so KeyboardInterrupt, SystemExit, and other
+        # BaseException control-flow are never swallowed. Non-steward commands
+        # keep their original behavior: the exception propagates unchanged.
+        if not args.command.startswith("steward-"):
+            raise
+        print(
+            json.dumps(
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "error": type(error).__name__,
+                    "message": _redact_local_paths(str(error)),
+                    "operation": args.command,
+                },
+                ensure_ascii=True,
+            ),
+            file=sys.stderr,
+        )
+        return 2
 
 
 if __name__ == "__main__":

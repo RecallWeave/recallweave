@@ -1495,6 +1495,13 @@ def _incomplete_journals(journal_dir: Path) -> list[Path]:
         except (OSError, ValueError):
             incomplete.append(path)
             continue
+        # A journal whose decoded top level is not an object is malformed;
+        # fail closed by treating it as an incomplete journal (blocking new
+        # applies until the operator recovers/removes it) rather than calling
+        # .get() on a non-dict and raising an uncaught AttributeError.
+        if not isinstance(document, dict):
+            incomplete.append(path)
+            continue
         if document.get("status") in ("intent", None):
             incomplete.append(path)
     return incomplete
@@ -1794,6 +1801,10 @@ def apply_latest(
                 raise ApplyError(
                     f"Proposal file {path.name} is not valid JSON: {error}"
                 ) from error
+            if not isinstance(document, dict):
+                raise ApplyError(
+                    f"Proposal file {path.name} is not a JSON object."
+                )
             if document.get("status") == "applied":
                 continue
             candidates.append((path, document))
