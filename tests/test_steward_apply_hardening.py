@@ -258,5 +258,143 @@ class CliDocContractTest(unittest.TestCase):
             )
 
 
+
+
+class Round2RegressionTest(unittest.TestCase):
+    def test_redaction_swallows_colon_components(self) -> None:
+        from recallweave.cli import _redact_local_paths
+
+        redacted = _redact_local_paths(
+            "unreadable /vault/customer:alpha/secret.md while observing"
+        )
+        self.assertNotIn("alpha", redacted)
+        self.assertNotIn("secret", redacted)
+
+    @unittest.skipUnless(git_available(), "git is not installed")
+    def test_commit_excludes_previously_staged_unrelated_content(self) -> None:
+        from recallweave.steward_git import commit_applied
+
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+
+            def git(*args: str) -> None:
+                subprocess.run(
+                    ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
+
+            git("init", "-q")
+            (root / "touched.md").write_text("v1", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "seed")
+            # Unrelated file staged BEFORE steward runs.
+            (root / "unrelated-secret.md").write_text("sensitive", encoding="utf-8")
+            git("add", "unrelated-secret.md")
+            (root / "touched.md").write_text("v2", encoding="utf-8")
+            result = commit_applied(
+                root,
+                ["touched.md"],
+                proposal_id="prp-test",
+                journal_ref="j.json",
+            )
+            shown = subprocess.run(
+                ["git", "show", "--name-only", "--format=", result["commit"]],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertIn("touched.md", shown)
+            self.assertNotIn("unrelated-secret.md", shown)
+
+
+class RevertDriftTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.vault = TempVault(dir=self.base)
+        self.vault.write("grow.md", "# Grow\n")
+        self.database = self.base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.registry_path = self.base / "sources.json"
+        self.registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(self.vault.root),
+                            "mode": "appliable",
+                            "policy": {"include_paths": ["grow.md"]},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.registry = load_registry(self.registry_path)
+        self.state_root = self.base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def test_revert_refuses_after_post_apply_edit(self) -> None:
+        from recallweave.steward_apply import apply_proposal
+        from recallweave.steward_policy import WritePolicy
+
+        base = self.vault.root / "grow.md"
+        data = base.read_bytes()
+        appended = "\nAppended.\n"
+        policy = WritePolicy.from_bytes(
+            json.dumps(
+                {
+                    "spec_version": "recallweave.steward.policy.v1",
+                    "class_levels": {"append_at_eof": "auto_apply"},
+                }
+            ).encode()
+        )
+        receipt = apply_proposal(
+            {
+                "schema_version": STEWARD_SCHEMA_VERSION,
+                "kind": "proposal",
+                "proposal_id": "prp-driftdriftdrift",
+                "source": "src",
+                "action": "test",
+                "policy_level": "propose_only",
+                "edits": [
+                    {
+                        "mutation_class": "append_at_eof",
+                        "relative_path": "grow.md",
+                        "precondition_content_hash": _sha(data),
+                        "replacement_text": appended,
+                        "predicted_post_hash": _sha(data + appended.encode()),
+                    }
+                ],
+                "conflicts_with": [],
+                "registry_sha256": self.registry.registry_sha256,
+            },
+            registry=self.registry,
+            state_dirs=self.dirs,
+            database=self.database,
+            policy=policy,
+            mode="per_item",
+            execute=True,
+        )
+        # Operator edits the note after the apply.
+        base.write_bytes(base.read_bytes() + b"\nnewer operator work\n")
+        newer = base.read_bytes()
+        with self.assertRaisesRegex(ApplyError, "newer work"):
+            revert_journal(
+                receipt["journal_ref"], registry=self.registry, state_dirs=self.dirs
+            )
+        self.assertEqual(base.read_bytes(), newer)
+
+
 if __name__ == "__main__":
     unittest.main()

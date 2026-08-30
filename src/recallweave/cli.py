@@ -44,8 +44,10 @@ def _emit(payload: dict[str, Any]) -> None:
 # sentence boundary (". " or end), colon, semicolon, or quote. Paths with
 # spaces redact whole; over-redacting neighboring words is acceptable -- the
 # failure direction must be "too much removed", never a leaked component.
+# Colons are legal POSIX filename characters, so they do not terminate a
+# match; over-redacting trailing prose is the safe failure direction.
 _ABSOLUTE_PATH_RE = re.compile(
-    r"(?:[A-Za-z]:)?[\\/](?:[^.:;\"'\n]|\.(?!\s|$))*"
+    r"(?:[A-Za-z]:)?[\\/](?:[^.;\"'\n]|\.(?!\s|$))*"
 )
 
 

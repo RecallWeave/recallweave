@@ -268,7 +268,14 @@ def commit_applied(
         f"Journal: {journal_ref}\n"
         "Automated, operator-approved steward apply."
     )
-    _run_git(identity_args + ["commit", "--no-verify", "-m", message], root)
+    # Pathspec-limited commit: only the touched paths enter this commit,
+    # even if unrelated content was already staged before the apply ran.
+    _run_git(
+        identity_args
+        + ["commit", "--no-verify", "-m", message, "--"]
+        + list(touched_relative_paths),
+        root,
+    )
 
     sha_result = _run_git(["rev-parse", "HEAD"], root)
     return {"committed": True, "commit": sha_result.stdout.strip()}

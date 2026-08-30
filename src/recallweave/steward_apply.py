@@ -984,6 +984,7 @@ def recover_journal(
         states=("done", "in_progress"),
     )
     completed = []
+    creates_removed = 0
     for item in candidates:
         state = item.pop("state")
         item.pop("_op", None)
@@ -998,11 +999,13 @@ def recover_journal(
         elif state == "in_progress" and item["content_hash_before"] is None:
             # A create that may have landed: remove the target ONLY when it
             # matches the planned post-state exactly; anything else is left
-            # untouched.
+            # untouched. This deletion is a source write and is counted as
+            # one in the receipt.
             target = Path(item["target"])
             if target.is_file() and content_hash_after is not None:
                 if _sha256_bytes(target.read_bytes()) == content_hash_after:
                     target.unlink()
+                    creates_removed += 1
     _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
@@ -1011,8 +1014,9 @@ def recover_journal(
         "generated_at": _utc_now(),
         "journal_ref": journal_name,
         "operations_rolled_back": len(completed),
+        "creates_removed": creates_removed,
         "network_calls": 0,
-        "vault_writes": len(completed),
+        "vault_writes": len(completed) + creates_removed,
     }
 
 
@@ -1050,19 +1054,42 @@ def revert_journal(
             f"Journal {journal_name} names an unknown source "
             f"{journal.get('source')!r}."
         )
+    candidates = _validated_journal_ops(
+        journal,
+        journal_name,
+        source=source,
+        state_dirs=state_dirs,
+        states=("done",),
+    )
+    # A revert is hash-pinned like every other write: the live target must
+    # still hold the journaled post-apply bytes, or the operator edited it
+    # since and the revert would destroy that newer work.
+    drifted: list[str] = []
+    for item in candidates:
+        target = Path(item["target"])
+        expected_after = item.get("content_hash_after")
+        if expected_after is None:
+            if target.exists():
+                drifted.append(item["relative_path"])
+            continue
+        if not target.is_file():
+            drifted.append(item["relative_path"])
+            continue
+        if _sha256_bytes(target.read_bytes()) != expected_after:
+            drifted.append(item["relative_path"])
+    if drifted:
+        raise ApplyError(
+            "Refusing to revert: these files changed after the apply and a "
+            f"revert would overwrite that newer work: {sorted(drifted)}. "
+            "Re-run the steward pipeline instead."
+        )
     completed = [
         {
             key: value
             for key, value in item.items()
             if key not in ("state", "_op", "content_hash_after")
         }
-        for item in _validated_journal_ops(
-            journal,
-            journal_name,
-            source=source,
-            state_dirs=state_dirs,
-            states=("done",),
-        )
+        for item in candidates
     ]
     _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
     journal["status"] = "reverted"
