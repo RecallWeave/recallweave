@@ -127,3 +127,13 @@ identity or assignee fields, reference content only by relative path and local
 hashes, and are not safe or meaningful to transport to another machine. A
 single lock file serializes runs; a second concurrent run refuses with an
 actionable error.
+
+## Rollback is not undo
+
+Every apply journals verified backups before it writes, and a failed apply —
+including a failed post-apply validation gate — restores every target and
+re-hashes each restore. `steward-apply --revert <journal>` restores an
+already-applied journal the same way. But restoring bytes does not restore
+the index (rebuild it), does not change artifacts you already exported, and
+does not un-happen anything a reader saw. Steward reports exactly what it
+restored and never claims a rollback it could not verify.

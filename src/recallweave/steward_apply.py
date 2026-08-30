@@ -55,6 +55,15 @@ from .steward_policy import (
 )
 from .steward_propose import _rebuild_bytes, _split_lines_keepends
 from .steward_sources import SourceRegistry
+from .steward_validate import (
+    ValidationError,
+    rebuild_receipt,
+    source_manifest,
+    validate_l0_l2,
+    validate_l1,
+    validate_l3,
+    _section_shape,
+)
 from .steward_state import (
     STEWARD_SCHEMA_VERSION,
     atomic_write_json,
@@ -569,6 +578,24 @@ def apply_proposal(
             "vault_writes": 0,
         }
 
+    # Pre-apply evidence for the validation gates (L1/L2/L3): structure
+    # shapes of the touched files, the whole-source manifest, and a rebuild
+    # receipt of the source as it stands right now.
+    state_root_dir = state_dirs["journal"].parent
+    preapply_shapes = {}
+    for plan in plans:
+        relative = plan["edit"]["relative_path"]
+        if plan["current"] is not None:
+            try:
+                preapply_shapes[relative] = _section_shape(source.root, relative)
+            except (UnicodeError, RecursionError, OSError):
+                preapply_shapes[relative] = None
+    preapply_shapes = {
+        key: value for key, value in preapply_shapes.items() if value is not None
+    }
+    manifest_before = source_manifest(source)
+    receipt_before = rebuild_receipt(source, state_root_dir)
+
     journal_dir = state_dirs["journal"]
     backups_root = state_dirs["backups"]
     trash_root = state_dirs["trash"]
@@ -656,9 +683,22 @@ def apply_proposal(
             mutations += 1
             op["state"] = "done"
             atomic_write_json(journal_path, journal, within=journal_dir)
+
+        # Post-apply validation gates run inside the transaction: a failure
+        # here raises and the verified rollback below restores every target.
+        validate_l0_l2(plans, source, preapply_shapes)
+        manifest_after = source_manifest(source)
+        validate_l3(manifest_before, manifest_after, plans)
+        receipt_after = rebuild_receipt(source, state_root_dir)
+        index_deltas = validate_l1(receipt_before, receipt_after, plans)
     except ApplyError:
         _rollback(completed, journal_path, journal, journal_dir)
         raise
+    except ValidationError as error:
+        _rollback(completed, journal_path, journal, journal_dir)
+        raise ApplyError(
+            f"Validation failed and the apply was rolled back: {error}"
+        ) from error
     except Exception as error:
         _rollback(completed, journal_path, journal, journal_dir)
         raise ApplyError(
@@ -683,6 +723,7 @@ def apply_proposal(
         "edits": planned_ops,
         "journal_ref": journal_path.name,
         "backup_dir": backup_dir.name,
+        "validation": {"passed": True, "index_deltas": index_deltas},
         "steward_vault_mutations": mutations,
         "network_calls": 0,
         "vault_writes": mutations,
@@ -772,6 +813,69 @@ def recover_journal(
     }
 
 
+def revert_journal(
+    journal_name: str,
+    *,
+    registry: SourceRegistry,
+    state_dirs: dict[str, Path],
+) -> dict[str, Any]:
+    """Operator regret: verified restore of a successfully APPLIED journal.
+
+    Rollback is not undo — the index must be rebuilt afterwards and exported
+    artifacts are unaffected — but every byte the apply wrote is restored
+    from its verified backup."""
+
+    if "/" in journal_name or "\\" in journal_name or journal_name in ("", ".", ".."):
+        raise ApplyError(f"Invalid journal name: {journal_name!r}")
+    journal_dir = state_dirs["journal"]
+    journal_path = journal_dir / journal_name
+    if not journal_path.is_file():
+        raise ApplyError(f"No such journal: {journal_name}")
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    if journal.get("status") != "applied":
+        raise ApplyError(
+            f"Journal {journal_name} has status {journal.get('status')!r}; "
+            "only an applied journal can be reverted (use --recover for an "
+            "interrupted one)."
+        )
+    source = next(
+        (item for item in registry.sources if item.name == journal.get("source")),
+        None,
+    )
+    if source is None:
+        raise ApplyError(
+            f"Journal {journal_name} names an unknown source "
+            f"{journal.get('source')!r}."
+        )
+    backup_dir = state_dirs["backups"] / str(journal.get("backup_dir"))
+    completed = []
+    for op in journal.get("operations", []):
+        if op.get("state") != "done":
+            continue
+        completed.append(
+            {
+                "relative_path": op["relative_path"],
+                "target": str(source.root / op["relative_path"]),
+                "had_file": op.get("content_hash_before") is not None,
+                "backup_path": str(backup_dir / op["backup_name"]),
+                "content_hash_before": op.get("content_hash_before"),
+            }
+        )
+    _rollback(completed, journal_path, journal, journal_dir)
+    journal["status"] = "reverted"
+    atomic_write_json(journal_path, journal, within=journal_dir)
+    return {
+        "schema_version": STEWARD_SCHEMA_VERSION,
+        "kind": "apply_revert_receipt",
+        "operation": "steward_apply",
+        "generated_at": _utc_now(),
+        "journal_ref": journal_name,
+        "operations_reverted": len(completed),
+        "network_calls": 0,
+        "vault_writes": len(completed),
+    }
+
+
 def apply_latest(
     registry: SourceRegistry,
     state_root: Path,
@@ -781,6 +885,7 @@ def apply_latest(
     proposal_id: str | None = None,
     approve_class: str | None = None,
     recover: str | None = None,
+    revert: str | None = None,
     execute: bool = False,
     allow_sync_root: bool = False,
 ) -> dict[str, Any]:
@@ -789,11 +894,13 @@ def apply_latest(
     Exactly one of ``proposal_id``, ``approve_class``, ``recover`` must be
     given. Dry-run is the only mode without ``execute``."""
 
-    chosen = [value for value in (proposal_id, approve_class, recover) if value]
+    chosen = [
+        value for value in (proposal_id, approve_class, recover, revert) if value
+    ]
     if len(chosen) != 1:
         raise ApplyError(
-            "Exactly one of a proposal id, --approve-class, or --recover is "
-            "required."
+            "Exactly one of a proposal id, --approve-class, --recover, or "
+            "--revert is required."
         )
 
     state_root = Path(state_root)
@@ -812,6 +919,15 @@ def apply_latest(
                 )
             return recover_journal(
                 recover, registry=registry, state_dirs=dirs
+            )
+        if revert is not None:
+            if not execute:
+                raise ApplyError(
+                    "--revert mutates the source (it restores backups); pass "
+                    "--execute to confirm."
+                )
+            return revert_journal(
+                revert, registry=registry, state_dirs=dirs
             )
 
         incomplete = _incomplete_journals(dirs["journal"])

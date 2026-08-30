@@ -330,6 +330,11 @@ def _parser() -> argparse.ArgumentParser:
         dest="recover",
         help="Roll back an interrupted apply by its journal file name.",
     )
+    apply_selector.add_argument(
+        "--revert",
+        dest="revert",
+        help="Restore an APPLIED journal's targets from their verified backups.",
+    )
     steward_apply_parser.add_argument(
         "--execute",
         action="store_true",
@@ -424,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
                 proposal_id=args.proposal_id,
                 approve_class=args.approve_class,
                 recover=args.recover,
+                revert=args.revert,
                 execute=args.execute,
                 allow_sync_root=args.allow_sync_root,
             )
