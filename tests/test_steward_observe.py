@@ -505,6 +505,79 @@ class ObserveSourceTest(unittest.TestCase):
         self.assertIn("b.md", added)
         self.assertNotIn("a.md", added)
 
+    def test_prior_note_failing_to_open_is_not_reported_as_removal(self) -> None:
+        # A checkpointed note that fails to OPEN on a later run (unreadable,
+        # vanished, or symlink-swapped between enumeration and open) must not be
+        # emitted as a removal and dropped from the checkpoint: doing so makes a
+        # subsequent stable run resurface it as newly added. Its prior entry is
+        # retained and it is marked changed-during-observe. Regression for the
+        # pre-open failure branch that only counted skipped["unreadable_path"].
+        self.vault.write("a.md", "note a")
+        self.vault.write("b.md", "note b")
+        self.observe(now="2026-01-01T00:00:00+00:00")
+        import recallweave.steward_observe as _obs
+
+        real_open = _obs._open_note_fd
+
+        def flaky_open(source, resolved_root, base, relative):
+            if relative == "a.md":
+                raise OSError("unreadable at open")
+            return real_open(source, resolved_root, base, relative)
+
+        with patch("recallweave.steward_observe._open_note_fd", side_effect=flaky_open):
+            receipt = self.observe(now="2026-01-01T00:00:01+00:00")
+        removed = {
+            c["relative_path"]
+            for c in receipt["changes"]
+            if c["change_type"] == "removed"
+        }
+        self.assertNotIn("a.md", removed)
+        self.assertIn("a.md", receipt["changed_during_observe"])
+        entry_paths = {e["relative_path"] for e in self.checkpoint()["entries"]}
+        self.assertIn("a.md", entry_paths)
+        # A later run with a.md readable and unchanged must not resurface it as
+        # newly added (the churn the false removal would have caused).
+        receipt3 = self.observe(now="2026-01-01T00:00:02+00:00")
+        added3 = {
+            c["relative_path"]
+            for c in receipt3["changes"]
+            if c["change_type"] == "added"
+        }
+        self.assertNotIn("a.md", added3)
+
+    def test_prior_note_failing_post_open_stat_is_not_reported_as_removal(
+        self,
+    ) -> None:
+        # The false-removal retention must also cover a POST-OPEN _pinned_stat
+        # failure (a swap/removal racing after the descriptor is opened), not
+        # only a failed open. Regression for the stat-OSError branch dropping the
+        # prior entry.
+        self.vault.write("a.md", "note a")
+        self.vault.write("b.md", "note b")
+        self.observe(now="2026-01-01T00:00:00+00:00")
+        import recallweave.steward_observe as _obs
+
+        real_stat = _obs._pinned_stat
+        calls = {"n": 0}
+
+        def flaky_stat(fd):
+            calls["n"] += 1
+            if calls["n"] == 1:  # a.md (sorted first): its first stat fails
+                raise OSError("stat failed after open")
+            return real_stat(fd)
+
+        with patch("recallweave.steward_observe._pinned_stat", side_effect=flaky_stat):
+            receipt = self.observe(now="2026-01-01T00:00:01+00:00")
+        removed = {
+            c["relative_path"]
+            for c in receipt["changes"]
+            if c["change_type"] == "removed"
+        }
+        self.assertNotIn("a.md", removed)
+        self.assertIn("a.md", receipt["changed_during_observe"])
+        entry_paths = {e["relative_path"] for e in self.checkpoint()["entries"]}
+        self.assertIn("a.md", entry_paths)
+
     def test_unreadable_subtree_is_not_reported_as_deletions(self) -> None:
         if os.name == "nt":
             self.skipTest("POSIX directory permissions")

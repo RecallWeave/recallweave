@@ -45,7 +45,14 @@ import shutil
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+
+# Rollback sentinel: the target is present but not a plain, readable file within
+# the pinned source root (a symlink swapped in, a symlinked parent, otherwise
+# unreadable). It is never equal to a content hash, so every hash-pinned rollback
+# comparison treats it as drift and refuses rather than trusting external bytes.
+_ROLLBACK_UNREADABLE = object()
 
 from .parser import parse_note
 from .policy import RESERVED_DIRECTORY_NAMES
@@ -664,6 +671,50 @@ def _compute_post_bytes(edit: dict[str, Any], current: bytes | None) -> bytes | 
     return _rebuild_bytes(pieces, line_no - 1, new_line_text, current)
 
 
+class _EditTargetTooLarge(Exception):
+    """Signals an edit target that exceeds the source policy size cap."""
+
+
+def _read_edit_target(target: Path, max_bytes: int | None) -> bytes:
+    """Read an edit target, bounding the read at the source policy size cap.
+
+    A stale proposal can point at a path that has since grown far beyond the
+    policy's ``max_file_bytes``; reading it whole just to hash it would let an
+    untrusted file drive memory use proportional to its size (and potentially
+    OOM the apply). Read at most ``max_bytes + 1`` and reject anything over the
+    cap BEFORE hashing or policy admission -- the same size boundary observe
+    enforces before it ever reads a note. ``O_BINARY`` keeps the bytes (and thus
+    the precondition hash) identical to the observed content on Windows."""
+
+    flags = (
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    )
+    fd = os.open(target, flags)
+    try:
+        if max_bytes is None:
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(fd, 1 << 20)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks)
+        remaining = max_bytes + 1
+        chunks = []
+        while remaining > 0:
+            chunk = os.read(fd, min(1 << 20, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        if len(data) > max_bytes:
+            raise _EditTargetTooLarge()
+        return data
+    finally:
+        os.close(fd)
+
+
 def _preflight_edit(
     edit: dict[str, Any],
     source: Any,
@@ -683,8 +734,15 @@ def _preflight_edit(
                 f"create_new_file target already exists: {edit['relative_path']}"
             )
     else:
+        max_bytes = getattr(source.policy, "max_file_bytes", None)
         try:
-            current = target.read_bytes()
+            current = _read_edit_target(target, max_bytes)
+        except _EditTargetTooLarge:
+            raise ApplyError(
+                f"Edit target {edit['relative_path']} exceeds the source "
+                f"policy max_file_bytes; refusing to read or rewrite a stale "
+                "oversize target."
+            ) from None
         except OSError as error:
             raise ApplyError(
                 f"Edit target is unreadable: {edit['relative_path']} "
@@ -1002,6 +1060,17 @@ def _guarded_replace(
                 except OSError:
                     pass
                 raise
+        except BaseException:
+            # The write failed after _open_parent_chain may have created parent
+            # directories. Created dirs are only RETURNED to the caller on
+            # success, so without this a failure would strand empty directories
+            # in the vault that the caller's rollback never receives and cannot
+            # clean up (and the journal could then be marked rolled_back with
+            # those directories still present). Remove them here, deepest first;
+            # a directory that meanwhile gained content is a benign skip.
+            if created:
+                _remove_created_dirs(created, boundary, root_identity)
+            raise
         finally:
             try:
                 os.close(parent_fd)
@@ -1135,7 +1204,33 @@ def _rollback(
         after = op.get("content_hash_after")
         before = op.get("content_hash_before")
         try:
-            live = _sha256_bytes(target.read_bytes()) if target.is_file() else None
+            # Classify the LIVE target through the identity-pinned root, never
+            # via pathname is_file()/read_bytes(): if the target (or a parent)
+            # were swapped for a symlink after journal validation, following it
+            # could read an EXTERNAL file that happens to match content_hash_
+            # before, making this skip the descriptor-relative restore and later
+            # mark the journal rolled_back even though the real source target was
+            # never restored. Present-but-unreadable-through-the-root reads as a
+            # drift sentinel so rollback refuses rather than trusts those bytes.
+            rollback_shim = SimpleNamespace(root=boundary)
+            relative_path = op["relative_path"]
+            try:
+                present = _present_within_root(
+                    rollback_shim, relative_path, root_identity
+                )
+            except ApplyError:
+                present = True  # symlinked/non-dir parent: conservatively present
+            if not present:
+                live: Any = None
+            else:
+                try:
+                    live = _sha256_bytes(
+                        _read_pinned_bytes(
+                            rollback_shim, relative_path, root_identity
+                        )
+                    )
+                except ApplyError:
+                    live = _ROLLBACK_UNREADABLE
             # Rollback is hash-pinned like every other write: only touch the
             # target if it still holds exactly what this transaction wrote
             # (its post-apply hash), or already holds the pre-apply bytes
@@ -1189,7 +1284,24 @@ def _rollback(
                     restore_mode=op.get("original_mode"),
                     root_identity=root_identity,
                 )
-                restored = target.read_bytes()
+                # Verify the restore through the SAME identity-pinned root, not
+                # a pathname read_bytes(): between _guarded_replace and this
+                # check the target could be swapped for a symlink to an external
+                # file whose bytes hash to `before`, which would falsely confirm
+                # the restore and mark the journal rolled_back. A read that
+                # cannot go through the pinned root is a restore failure.
+                try:
+                    restored = _read_pinned_bytes(
+                        rollback_shim, relative_path, root_identity
+                    )
+                except ApplyError:
+                    failures.append(
+                        f"{op['relative_path']}: restore verification could not "
+                        f"read the target through the pinned source root (a "
+                        f"symlink or swap after restore?), backup retained at "
+                        f"{backup}"
+                    )
+                    continue
                 if _sha256_bytes(restored) != before:
                     failures.append(
                         f"{op['relative_path']}: restore verification failed, "

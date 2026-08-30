@@ -155,11 +155,21 @@ def ensure_state_layout(root: Path) -> dict[str, Path]:
     return result
 
 
+_LOCK_NAME = "steward.lock"
+
+
 class StateLock:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.lock_path = root / "steward.lock"
+        self.lock_path = root / _LOCK_NAME
         self._held = False
+        # A directory descriptor pinned to the state root inode for the lock's
+        # whole lifetime (POSIX). Holding it means create, existence checks, and
+        # release's unlink are all relative to the SAME inode: a state root
+        # renamed-and-recreated after acquire cannot make release unlink a
+        # replacement process's lock, nor let this process acquire in a
+        # replacement tree while the original lock is still held.
+        self._dir_fd: int | None = None
 
     def acquire(self) -> None:
         root = self.root
@@ -172,6 +182,59 @@ class StateLock:
             "pid": os.getpid(),
             "acquired_at": datetime.now(timezone.utc).isoformat(),
         }
+
+        if _DIR_FD_STATE_WRITES:
+            try:
+                dir_fd = os.open(
+                    str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                )
+            except OSError as error:
+                raise ValueError(
+                    f"Refusing a symlinked or missing steward state root: "
+                    f"{root} ({type(error).__name__})"
+                ) from error
+            try:
+                fd = os.open(
+                    _LOCK_NAME,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                    0o644,
+                    dir_fd=dir_fd,
+                )
+            except FileExistsError as error:
+                detail = self._existing_detail_fd(dir_fd)
+                try:
+                    os.close(dir_fd)
+                except OSError:
+                    pass
+                raise ValueError(self._held_message(detail)) from error
+            except BaseException:
+                try:
+                    os.close(dir_fd)
+                except OSError:
+                    pass
+                raise
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(
+                        payload, handle, ensure_ascii=True, sort_keys=True, indent=2
+                    )
+            except BaseException:
+                try:
+                    os.unlink(_LOCK_NAME, dir_fd=dir_fd)
+                except OSError:
+                    pass
+                try:
+                    os.close(dir_fd)
+                except OSError:
+                    pass
+                raise
+            self._dir_fd = dir_fd
+            self._held = True
+            return
+
+        # Pathname fallback (e.g. Windows without dir_fd): a state-root swap
+        # between this open and release cannot be fully excluded, matching the
+        # module's other documented pathname fallbacks.
         try:
             fd = os.open(
                 self.lock_path,
@@ -179,16 +242,7 @@ class StateLock:
                 0o644,
             )
         except FileExistsError as error:
-            detail = self._existing_detail()
-            raise ValueError(
-                f"Another steward run holds the lock: {self.lock_path}."
-                + (
-                    f" It records pid={detail[0]} acquired_at={detail[1]}."
-                    if detail is not None
-                    else ""
-                )
-                + " If no steward process is running, remove the file to recover."
-            ) from error
+            raise ValueError(self._held_message(self._existing_detail())) from error
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=True, sort_keys=True, indent=2)
@@ -200,10 +254,22 @@ class StateLock:
             raise
         self._held = True
 
-    def _existing_detail(self) -> tuple[str, str] | None:
+    def _held_message(self, detail: tuple[str, str] | None) -> str:
+        return (
+            f"Another steward run holds the lock: {self.lock_path}."
+            + (
+                f" It records pid={detail[0]} acquired_at={detail[1]}."
+                if detail is not None
+                else ""
+            )
+            + " If no steward process is running, remove the file to recover."
+        )
+
+    @staticmethod
+    def _detail_from_text(text: str) -> tuple[str, str] | None:
         try:
-            data = json.loads(self.lock_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            data = json.loads(text)
+        except (ValueError, TypeError):
             return None
         pid = data.get("pid")
         acquired_at = data.get("acquired_at")
@@ -211,13 +277,44 @@ class StateLock:
             return None
         return str(pid), str(acquired_at)
 
+    def _existing_detail(self) -> tuple[str, str] | None:
+        try:
+            text = self.lock_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return self._detail_from_text(text)
+
+    def _existing_detail_fd(self, dir_fd: int) -> tuple[str, str] | None:
+        try:
+            fd = os.open(_LOCK_NAME, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except OSError:
+            return None
+        try:
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            return None
+        return self._detail_from_text(text)
+
     def release(self) -> None:
-        if self._held:
+        if not self._held:
+            return
+        if self._dir_fd is not None:
+            try:
+                os.unlink(_LOCK_NAME, dir_fd=self._dir_fd)
+            except OSError:
+                pass
+            try:
+                os.close(self._dir_fd)
+            except OSError:
+                pass
+            self._dir_fd = None
+        else:
             try:
                 self.lock_path.unlink()
             except OSError:
                 pass
-            self._held = False
+        self._held = False
 
     def __enter__(self) -> "StateLock":
         self.acquire()
@@ -265,16 +362,21 @@ _DIR_FD_STATE_WRITES = (
 )
 
 
-def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) -> None:
+def atomic_write_bytes(path: Path, data: bytes, *, within: Path | None = None) -> None:
+    """Atomically write ``data`` to ``path``, descriptor-relative and anchored
+    inside ``within`` where the platform supports it.
+
+    Shared by JSON state writes and the sweep Markdown report projection so both
+    get the same symlink-race-proof, within-anchored write: a parent (or the
+    state root, or any directory between) swapped for a symlink after
+    ``guard_within`` cannot redirect the temp file or the rename outside the
+    state tree."""
     if within is not None:
         guard_within(path, within)
     if is_link_like(path):
         raise ValueError(f"Refusing to replace a symlink or junction: {path}")
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(
-        payload, ensure_ascii=True, sort_keys=True, indent=2
-    ).encode("utf-8")
 
     if _DIR_FD_STATE_WRITES:
         # Reach the destination parent by a descriptor-relative, component-by-
@@ -401,3 +503,10 @@ def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) 
         except OSError:
             pass
         raise
+
+
+def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) -> None:
+    data = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, indent=2
+    ).encode("utf-8")
+    atomic_write_bytes(path, data, within=within)

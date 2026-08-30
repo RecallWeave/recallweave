@@ -27,9 +27,37 @@ from recallweave.steward_sweep import (
     SWEEP_EXIT_CODES,
     SWEEP_RESULTS,
     _assemble_report,
+    _atomic_write_text,
     status_report,
     sweep_registry,
 )
+
+
+class MarkdownReportAnchorTest(unittest.TestCase):
+    def test_markdown_report_refuses_symlinked_state_root_ancestor(self) -> None:
+        # The Markdown report projection must use the shared descriptor-relative
+        # writer, so a state root swapped for a symlink cannot redirect the
+        # report (temp + final file) outside the state tree -- e.g. into a vault.
+        # Reaching `within` (the reports dir) through a symlinked state root must
+        # be refused, not followed. Regression for the pathname-mkstemp writer.
+        import recallweave.steward_state as _st
+
+        if not _st._DIR_FD_STATE_WRITES:
+            self.skipTest("descriptor-relative writes unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            real_root = base / "state_real"
+            (real_root / "reports").mkdir(parents=True)
+            link_root = base / "state"
+            try:
+                link_root.symlink_to(real_root, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            within = link_root / "reports"  # reached through the symlinked root
+            target = within / "20260101T000000000000Z-src-sweep.md"
+            with self.assertRaisesRegex(ValueError, "symlinked or missing state root"):
+                _atomic_write_text(target, "# report body", within=within)
+            self.assertEqual(list((real_root / "reports").iterdir()), [])
 
 
 def _run_cli(*args: str) -> tuple[int, str, str]:

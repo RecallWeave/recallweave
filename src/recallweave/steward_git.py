@@ -229,12 +229,29 @@ def check_apply_preconditions(
     except ValueError:
         prefix = Path(".")
     dirty = set(status["dirty_paths"])
+    # `git status --porcelain` collapses a WHOLLY-untracked directory to a
+    # single `dir/` entry rather than listing `dir/note.md`. A touched note
+    # inside such a directory would not match by exact path, so steward could
+    # edit and commit an operator's previously untracked note despite the
+    # precondition promising to refuse dirty targets. Treat any dirty entry
+    # ending in `/` as a directory prefix covering every touched descendant.
+    dirty_dirs = [entry for entry in dirty if entry.endswith("/")]
     overlap = []
     for touched in touched_relative_paths:
         candidates = {touched}
         if str(prefix) not in ("", "."):
             candidates.add((prefix / touched).as_posix())
-        if candidates & dirty:
+        overlapped = bool(candidates & dirty)
+        if not overlapped:
+            for directory in dirty_dirs:
+                base = directory[:-1]  # drop trailing slash
+                if any(
+                    candidate == base or candidate.startswith(directory)
+                    for candidate in candidates
+                ):
+                    overlapped = True
+                    break
+        if overlapped:
             overlap.append(touched)
     if overlap:
         raise GitError(
@@ -288,15 +305,18 @@ def commit_applied(
     root = Path(root)
     _run_git(["add", "--"] + list(touched_relative_paths), root)
 
+    # Git needs BOTH user.name and user.email to commit; with
+    # user.useConfigOnly=true it will not synthesize either. Supply a fallback
+    # for whichever field is absent (checking each independently) so a repo that
+    # has only one configured still gets a commit -- and a configured field is
+    # preserved rather than overwritten by the fallback.
     identity_args: list[str] = []
+    name_result = _run_git(["config", "user.name"], root, check=False)
+    if name_result.returncode != 0 or not name_result.stdout.strip():
+        identity_args += ["-c", "user.name=RecallWeave Steward"]
     email_result = _run_git(["config", "user.email"], root, check=False)
     if email_result.returncode != 0 or not email_result.stdout.strip():
-        identity_args = [
-            "-c",
-            "user.name=RecallWeave Steward",
-            "-c",
-            "user.email=steward@localhost",
-        ]
+        identity_args += ["-c", "user.email=steward@localhost"]
 
     message = (
         f"steward-apply {proposal_id}\n\n"

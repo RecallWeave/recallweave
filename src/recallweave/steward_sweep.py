@@ -71,6 +71,7 @@ from .steward_sources import SourceRegistry
 from .steward_state import (
     STEWARD_SCHEMA_VERSION,
     STEWARD_SUBDIRS,
+    atomic_write_bytes,
     atomic_write_json,
     ensure_state_layout,
     ensure_state_root_outside_sources,
@@ -136,29 +137,14 @@ def _file_timestamp(iso: str) -> str:
 
 
 def _atomic_write_text(path: Path, text: str, *, within: Path | None = None) -> None:
-    if within is not None:
-        guard_within(path, within)
-    """Write text atomically, mirroring steward_state.atomic_write_json."""
-    if is_link_like(path):
-        raise ValueError(f"Refusing to replace a symlink or junction: {path}")
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    data = text.encode("utf-8")
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
-    )
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_name, path)
-    except BaseException:
-        try:
-            os.unlink(temp_name)
-        except OSError:
-            pass
-        raise
+    """Write text atomically via the shared descriptor-relative state writer.
+
+    Using ``atomic_write_bytes`` (not a private pathname-based ``mkstemp``) means
+    a Markdown report gets the same within-anchored, symlink-race-proof write as
+    JSON state: the reports directory swapped for a symlink after ``guard_within``
+    cannot redirect the temp file or the final report outside the state tree
+    (e.g. into a vault)."""
+    atomic_write_bytes(path, text.encode("utf-8"), within=within)
 
 
 def _load_json(path: Path) -> Any:

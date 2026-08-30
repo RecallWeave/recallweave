@@ -18,8 +18,11 @@ from recallweave.policy import IndexPolicy
 from recallweave.steward_apply import (
     ApplyError,
     RollbackError,
+    _EditTargetTooLarge,
     _guarded_replace,
+    _read_edit_target,
     _recheck_parent_chain,
+    _rollback,
     recover_journal,
     revert_journal,
 )
@@ -280,6 +283,169 @@ class MutationBoundaryTest(unittest.TestCase):
             boundary.mkdir()
             with self.assertRaisesRegex(ApplyError, "escaped its boundary"):
                 _recheck_parent_chain(base / "outside.md", boundary)
+
+    def test_guarded_replace_cleans_created_dirs_on_failure(self) -> None:
+        # If a write fails AFTER _open_parent_chain created parent directories,
+        # the helper must remove them: created dirs are only returned to the
+        # caller on success, so otherwise a failure strands empty directories in
+        # the vault that rollback never receives. Regression for the orphaned
+        # directories / falsely-rolled_back gap.
+        import recallweave.steward_apply as _ap
+
+        if not _ap._DIR_FD_WRITES:
+            self.skipTest("descriptor-relative writes unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            boundary = Path(name)
+            target = boundary / "new_dir" / "deep" / "note.md"
+            real_open = os.open
+
+            def failing_open(path, flags, *args, **kwargs):
+                # Fail only the temp-file creation (the dotted O_CREAT|O_EXCL
+                # open under the freshly created parent); let dir opens through.
+                if (
+                    isinstance(path, str)
+                    and path.startswith(".")
+                    and (flags & os.O_CREAT)
+                ):
+                    raise OSError("injected temp-write failure")
+                return real_open(path, flags, *args, **kwargs)
+
+            with patch("recallweave.steward_apply.os.open", side_effect=failing_open):
+                with self.assertRaises(OSError):
+                    _guarded_replace(target, b"data", boundary, create_dirs=True)
+            self.assertFalse(
+                (boundary / "new_dir").exists(),
+                "guarded_replace left orphaned created directories behind",
+            )
+
+
+class RollbackPinnedReadTest(unittest.TestCase):
+    def test_rollback_reads_live_target_through_pinned_root(self) -> None:
+        # Rollback must classify the live target through the identity-pinned
+        # root, not via pathname is_file()/read_bytes(). A target swapped for a
+        # symlink to an EXTERNAL file whose bytes equal content_hash_before must
+        # NOT be read as "already at pre-apply bytes; nothing to undo" -- that
+        # would skip the restore yet mark the journal rolled_back. It must fail
+        # closed (rollback_failed, backup retained), untouched external file.
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            boundary = base / "source"
+            boundary.mkdir()
+            before_bytes = b"pre-apply content\n"
+            after_bytes = b"post-apply content\n"
+            external = base / "external.md"
+            external.write_bytes(before_bytes)
+            target = boundary / "note.md"
+            if not make_symlink(external, target):
+                self.skipTest("symlinks unsupported")
+            backups = base / "backups"
+            backups.mkdir()
+            backup = backups / "note.md"
+            backup.write_bytes(before_bytes)
+            journal_dir = base / "journal"
+            journal_dir.mkdir()
+            journal_path = journal_dir / "j.json"
+            journal = {"status": "intent"}
+            op = {
+                "target": str(target),
+                "relative_path": "note.md",
+                "had_file": True,
+                "content_hash_before": _sha(before_bytes),
+                "content_hash_after": _sha(after_bytes),
+                "backup_path": str(backup),
+                "original_mode": 0o644,
+            }
+            with self.assertRaises(RollbackError):
+                _rollback([op], journal_path, journal, journal_dir, boundary)
+            self.assertEqual(journal["status"], "rollback_failed")
+            # The external file the symlink pointed at was never overwritten.
+            self.assertEqual(external.read_bytes(), before_bytes)
+
+    def test_rollback_verification_reads_restore_through_pinned_root(self) -> None:
+        # Even when the initial classification passes, the POST-restore
+        # verification must read through the pinned root: a target swapped for a
+        # symlink to an external file matching content_hash_before between
+        # _guarded_replace and verification must fail closed, not be confirmed by
+        # a pathname read. Regression for the pathname target.read_bytes() at the
+        # verification step.
+        import recallweave.steward_apply as _ap
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            boundary = base / "source"
+            boundary.mkdir()
+            before_bytes = b"pre-apply content\n"
+            after_bytes = b"post-apply content\n"
+            target = boundary / "note.md"
+            target.write_bytes(after_bytes)  # live == after: restore proceeds
+            external = base / "external.md"
+            external.write_bytes(before_bytes)
+            probe = base / "_symlink_probe"
+            try:
+                os.symlink(external, probe)
+                probe.unlink()
+            except OSError:
+                self.skipTest("symlinks unsupported")
+            backups = base / "backups"
+            backups.mkdir()
+            backup = backups / "note.md"
+            backup.write_bytes(before_bytes)
+            journal_dir = base / "journal"
+            journal_dir.mkdir()
+            journal_path = journal_dir / "j.json"
+            journal = {"status": "intent"}
+            op = {
+                "target": str(target),
+                "relative_path": "note.md",
+                "had_file": True,
+                "content_hash_before": _sha(before_bytes),
+                "content_hash_after": _sha(after_bytes),
+                "backup_path": str(backup),
+                "original_mode": 0o644,
+            }
+            real_guarded = _ap._guarded_replace
+
+            def restore_then_swap(t, data, b, **kwargs):
+                result = real_guarded(t, data, b, **kwargs)  # real restore
+                # Concurrent swap AFTER the restore, BEFORE verification.
+                os.unlink(t)
+                os.symlink(external, t)
+                return result
+
+            with patch(
+                "recallweave.steward_apply._guarded_replace",
+                side_effect=restore_then_swap,
+            ):
+                with self.assertRaises(RollbackError):
+                    _rollback([op], journal_path, journal, journal_dir, boundary)
+            self.assertEqual(journal["status"], "rollback_failed")
+            self.assertEqual(external.read_bytes(), before_bytes)
+
+
+class BoundedEditReadTest(unittest.TestCase):
+    def test_read_edit_target_rejects_oversize_before_reading_all(self) -> None:
+        # A stale proposal can point at a file that has grown far beyond the
+        # policy cap; the edit read is bounded at max_file_bytes + 1 and rejects
+        # an oversize target instead of reading it whole to hash it.
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            big = base / "big.md"
+            big.write_bytes(b"x" * 5000)
+            with self.assertRaises(_EditTargetTooLarge):
+                _read_edit_target(big, 1000)
+            small = base / "small.md"
+            small.write_bytes(b"y" * 500)
+            self.assertEqual(_read_edit_target(small, 1000), b"y" * 500)
+            # Exactly at the cap is admitted; one byte over is rejected.
+            at_cap = base / "at_cap.md"
+            at_cap.write_bytes(b"z" * 1000)
+            self.assertEqual(_read_edit_target(at_cap, 1000), b"z" * 1000)
+            over = base / "over.md"
+            over.write_bytes(b"z" * 1001)
+            with self.assertRaises(_EditTargetTooLarge):
+                _read_edit_target(over, 1000)
+            # No cap configured: the full file is returned.
+            self.assertEqual(_read_edit_target(big, None), b"x" * 5000)
 
 
 @unittest.skipUnless(git_available(), "git is not installed")

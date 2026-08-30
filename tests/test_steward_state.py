@@ -135,6 +135,35 @@ class StateLockTest(unittest.TestCase):
             self.assertTrue(lock.lock_path.exists())
         self.assertFalse(lock.lock_path.exists())
 
+    def test_release_unlinks_through_pinned_root_not_a_replacement(self) -> None:
+        # If the state root is renamed-and-recreated after acquisition, release
+        # must unlink the lock relative to the PINNED root inode (now moved
+        # aside), never by pathname -- otherwise it would delete a replacement
+        # process's freshly created lock. Regression for the unpinned lock race.
+        import recallweave.steward_state as _st
+
+        if not _st._DIR_FD_STATE_WRITES:
+            self.skipTest("descriptor-relative locking unavailable")
+        state_root = self.root / "state"
+        state_root.mkdir()
+        lock = StateLock(state_root)
+        lock.acquire()
+        self.assertIsNotNone(lock._dir_fd)
+        stashed = self.root / "stashed_root"
+        os.rename(state_root, stashed)  # original inode (with the lock) moves here
+        state_root.mkdir()  # a brand-new root inode at the same pathname
+        replacement_lock = state_root / "steward.lock"
+        replacement_lock.write_text("another process's lock", encoding="utf-8")
+        lock.release()
+        self.assertTrue(
+            replacement_lock.exists(),
+            "release removed a replacement process's lock via pathname",
+        )
+        self.assertFalse(
+            (stashed / "steward.lock").exists(),
+            "release did not unlink the original lock through the pinned fd",
+        )
+
 
 class AtomicWriteJsonTest(unittest.TestCase):
     def setUp(self) -> None:

@@ -448,17 +448,34 @@ def observe_source(
         try:
             fd = _open_note_fd(source, resolved_root, hash_base, relative)
         except OSError:
+            # A previously checkpointed note that becomes unreadable, vanishes,
+            # or is symlink-swapped between enumeration and open must NOT be
+            # dropped silently: doing so omits it from new_entries, so the later
+            # set difference emits a FALSE removal and advances the checkpoint
+            # past it -- a subsequent stable run then reports it as newly added.
+            # Route through _mark_changed_during so its prior entry is retained
+            # and it is re-examined next run, exactly like a read failure after
+            # the descriptor is opened.
             skipped["unreadable_path"] += 1
+            _mark_changed_during(relative)
             continue
         try:
             try:
                 info = _pinned_stat(fd)
             except OSError:
+                # Post-open stat failure (a racing swap/removal): retain any
+                # prior entry rather than let the set difference emit a false
+                # removal and advance the checkpoint past it.
                 skipped["unreadable_path"] += 1
+                _mark_changed_during(relative)
                 continue
             if not stat.S_ISREG(info.st_mode):
-                # A symlink, directory, or special file at the leaf: not a note.
+                # A symlink, directory, or special file at the leaf: not a note
+                # this run. A previously checkpointed note swapped for one is not
+                # confirmed REMOVED, so retain its prior entry instead of emitting
+                # a false removal (which a stable run would then re-add).
                 skipped["unreadable_path"] += 1
+                _mark_changed_during(relative)
                 continue
             # A hardlinked leaf (possibly planted after discovery) is not a vault
             # note. Enforce this on the opened descriptor on every platform:
@@ -467,7 +484,11 @@ def observe_source(
             # this stays fail-closed against a note swapped for a hardlink between
             # discovery and open even on the pathname fallback.
             if int(info.st_nlink) > 1:
+                # A hardlinked leaf is refused (its content is never committed);
+                # retain any prior entry so a note swapped for a hardlink is not
+                # falsely reported as removed.
                 skipped["hardlink"] += 1
+                _mark_changed_during(relative)
                 continue
             size = int(info.st_size)
             mtime_ns = int(info.st_mtime_ns)
