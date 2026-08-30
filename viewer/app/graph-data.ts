@@ -421,7 +421,6 @@ export function normalizeGraph(value: unknown): GraphDocument {
     nodes.push(normalized);
   });
 
-  const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const edgeIds = new Set<string>();
   const edges: GraphEdge[] = [];
   raw.edges.forEach((item, index) => {
