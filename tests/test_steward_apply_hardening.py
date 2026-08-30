@@ -1629,6 +1629,30 @@ class RenamePreconditionTest(unittest.TestCase):
                 self._proposal(_sha(b"different observed bytes")), self.source
             )
 
+    def test_removed_path_through_symlinked_parent_is_refused(self) -> None:
+        # The renamed-from absence check must go through the pinned root: a
+        # parent swapped for a symlink (whose external target lacks the file, so
+        # a pathname exists() would say "absent") must be refused, not accepted.
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        external = Path(self.temporary.name).parent / "steward-external-rm"
+        external.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(external, ignore_errors=True))
+        if not make_symlink(external, self.root / "sub"):
+            self.skipTest("symlinks unsupported")
+        proposal = {
+            "action": "fix_links_after_rename",
+            "edits": [{"mutation_class": "fix_unresolved_link", "relative_path": "r.md"}],
+            "rename_preconditions": {
+                "removed_path": "sub/old.md",
+                "removed_absent": True,
+                "added_path": "new.md",
+                "added_content_hash": _sha(b"moved bytes"),
+            },
+        }
+        with self.assertRaises(ApplyError):
+            _verify_rename_preconditions(proposal, self.source)
+
     def test_added_path_through_symlinked_parent_is_refused(self) -> None:
         # The renamed-to path resolves through a parent swapped for a symlink to
         # an external file whose bytes match the expected hash. A descriptor-

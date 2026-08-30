@@ -37,6 +37,7 @@ next sweep. Deletion is never ``unlink``: ``move_to_trash`` copies the bytes
 into the state trash (hash-verified) before removing the original.
 """
 
+import errno
 import hashlib
 import json
 import os
@@ -243,16 +244,27 @@ def _remove_created_dirs(
     created_dirs: list[Path],
     boundary: Path,
     root_identity: tuple[int, int] | None = None,
-) -> None:
+) -> list[Path]:
     """Remove directories this apply created, deepest first, on rollback.
 
     Descriptor-relative like every other Action-plane mutation: each parent
     is reached by an O_NOFOLLOW openat chain from the identity-verified root,
-    and rmdir(dir_fd=...) removes only the empty directory named there. rmdir
-    fails atomically on a non-empty directory, so a dir that has since gained
-    content is left in place. On platforms without dir_fd, the pathname
-    fallback keeps the link/containment/emptiness checks."""
+    and rmdir(dir_fd=...) removes only the empty directory named there.
 
+    Returns the directories that could NOT be removed for a real reason so the
+    caller can refuse to record a completed rollback. A directory that is
+    already gone (ENOENT) or that has since gained content (ENOTEMPTY) is a
+    benign skip -- NOT a failure -- so a dir intentionally left in place does
+    not block a rollback."""
+
+    def _benign(error: OSError) -> bool:
+        return error.errno in (
+            errno.ENOENT,
+            errno.ENOTEMPTY,
+            getattr(errno, "EEXIST", errno.ENOTEMPTY),
+        )
+
+    failures: list[Path] = []
     use_dir_fd = (
         os.rmdir in os.supports_dir_fd
         and os.open in os.supports_dir_fd
@@ -280,8 +292,9 @@ def _remove_created_dirs(
                         )
                     )
                 os.rmdir(parts[-1], dir_fd=fds[-1])
-            except OSError:
-                continue
+            except OSError as error:
+                if not _benign(error):
+                    failures.append(directory)
             finally:
                 for fd in fds:
                     try:
@@ -292,6 +305,7 @@ def _remove_created_dirs(
             resolved_boundary = boundary.resolve()
             try:
                 if is_link_like(directory):
+                    failures.append(directory)
                     continue
                 resolved = directory.resolve()
                 if not (
@@ -300,10 +314,12 @@ def _remove_created_dirs(
                 ):
                     continue
                 if any(directory.iterdir()):
-                    continue
+                    continue  # non-empty: intentionally left in place
                 directory.rmdir()
-            except OSError:
-                continue
+            except OSError as error:
+                if not _benign(error):
+                    failures.append(directory)
+    return failures
 
 
 def _validate_proposal(proposal: Any) -> None:
@@ -345,6 +361,52 @@ def _validate_proposal(proposal: Any) -> None:
             f"Proposal {proposal['proposal_id']} conflicts with "
             f"{sorted(conflicts)}; resolve the conflict before applying."
         )
+
+
+def _present_within_root(
+    source: Any, relative: str, root_identity: tuple[int, int] | None
+) -> bool:
+    """Whether ``relative`` exists under the source, checked without following
+    symlinks. Descriptor-relative from the pinned root on POSIX; O_NOFOLLOW at
+    every component. A missing parent means the path is absent (returns False);
+    a symlinked (or non-directory) parent raises ApplyError -- so the
+    renamed-from absence check cannot be satisfied through a symlink that
+    resolves outside the vault."""
+
+    target = source.root / relative
+    if not _DIR_FD_WRITES:
+        _recheck_parent_chain(target, source.root)  # raises on symlinked parent
+        return target.exists() or is_link_like(target)
+
+    rel = target.absolute().relative_to(source.root.absolute())
+    parts = rel.parts
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fds: list[int] = []
+    try:
+        fds.append(_open_verified_root(source.root, root_identity))
+        for part in parts[:-1]:
+            try:
+                fds.append(os.open(part, dir_flags, dir_fd=fds[-1]))
+            except FileNotFoundError:
+                return False  # a parent is gone: the path cannot exist
+            except OSError as error:
+                raise ApplyError(
+                    f"Refusing the rename check: a parent of {relative!r} is a "
+                    f"symlink or non-directory ({type(error).__name__})."
+                ) from error
+        try:
+            os.stat(parts[-1], dir_fd=fds[-1], follow_symlinks=False)
+            return True  # present (a regular file, directory, or symlink)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True  # conservatively present -> refuse the stale rename
+    finally:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _read_pinned_bytes(
@@ -463,8 +525,10 @@ def _verify_rename_preconditions(proposal: dict, source: Any) -> None:
             "referrers. Re-run the pipeline."
         )
     _require_clean_relative_path(removed)
-    removed_target = source.root / removed
-    if is_link_like(removed_target) or removed_target.exists():
+    # Check absence descriptor-relative from the pinned root (O_NOFOLLOW): a
+    # parent swapped for a symlink must not let a pathname existence check pass
+    # while resolving outside the vault.
+    if _present_within_root(source, removed, _source_identity(source)):
         raise ApplyError(
             "Rename precondition failed: the renamed-from path "
             f"{removed!r} exists again; the rename is stale, refusing to "
@@ -1153,9 +1217,16 @@ def _rollback(
             )
     # Remove created directories before persisting the terminal status: only
     # once every vault mutation (files AND directories) is undone may the
-    # journal record a completed rollback.
+    # journal record a completed rollback. A directory that could not be removed
+    # for a real reason (not merely non-empty/already-gone) is a rollback
+    # failure, so the journal stays recoverable rather than falsely terminal.
     if created_dirs:
-        _remove_created_dirs(created_dirs, boundary, root_identity)
+        dir_failures = _remove_created_dirs(created_dirs, boundary, root_identity)
+        for directory in dir_failures:
+            failures.append(
+                f"{directory}: created directory could not be removed during "
+                "rollback; the journal is retained for recovery"
+            )
     journal["status"] = "rollback_failed" if failures else "rolled_back"
     journal["rollback_failures"] = failures
     atomic_write_json(journal_path, journal, within=journal_dir)

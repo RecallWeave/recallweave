@@ -258,6 +258,15 @@ def _aggregate_assessments(
 
     broken_citations: list[str] = []
     duplicates: list[str] = []
+    # Count deterministic relations by DISTINCT finding identity (relation,
+    # relative_path), not by summing per-assessment counters. Summing would
+    # double-count a finding that recurs across retained assessments and would
+    # make the totals drift when processed assessments are later pruned; a
+    # distinct-identity count reflects the current integrity state and matches
+    # the deduplicated evidence arrays below.
+    distinct_relations: dict[str, set[str]] = {
+        relation: set() for relation in DETERMINISTIC_RELATIONS
+    }
 
     for source in registry.sources:
         if exclude_sources and source.name in exclude_sources:
@@ -269,11 +278,17 @@ def _aggregate_assessments(
         for assessment_path in _source_files(dirs["assessments"], source.name):
             assessment = _load_json(assessment_path)
             for key, value in (assessment.get("summary") or {}).items():
+                # Relation counts are recomputed from distinct findings below;
+                # only the non-relation bookkeeping stats are carried here.
+                if key in DETERMINISTIC_RELATIONS:
+                    continue
                 if isinstance(value, int) and not isinstance(value, bool):
                     summary[key] = summary.get(key, 0) + value
             for item in assessment.get("assessments") or []:
                 relation = item.get("relation")
                 path = item.get("relative_path")
+                if relation in distinct_relations and isinstance(path, str):
+                    distinct_relations[relation].add(path)
                 if relation == "CITATION_BROKEN":
                     for citation in (item.get("inputs") or {}).get("broken_citations") or []:
                         text = citation.get("citation") if isinstance(citation, dict) else None
@@ -281,6 +296,9 @@ def _aggregate_assessments(
                             broken_citations.append(text)
                 elif relation == "DUPLICATES_EXACT_BYTES" and isinstance(path, str):
                     duplicates.append(path)
+
+    for relation, paths in distinct_relations.items():
+        summary[relation] = len(paths)
 
     return summary, sorted(set(broken_citations)), sorted(set(duplicates))
 

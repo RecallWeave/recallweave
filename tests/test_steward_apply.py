@@ -671,25 +671,47 @@ class ApplyUnitTest(unittest.TestCase):
         )
         self.assertFalse((self.vault.root / "inbox" / "new.md").exists())
 
-    def test_rollback_does_not_mark_terminal_before_dir_cleanup(self) -> None:
-        # If directory cleanup fails, the journal must NOT be marked rolled_back
-        # (a terminal, unrecoverable status) -- it stays recoverable so no crash
-        # window can strand created directories under a "done" journal.
+    @unittest.skipUnless(
+        os.rmdir in os.supports_dir_fd, "descriptor-relative rmdir required"
+    )
+    def test_rollback_records_real_dir_cleanup_failure_as_non_terminal(self) -> None:
+        # Exercise the REAL _remove_created_dirs: make the actual rmdir fail with
+        # a non-benign error and assert the journal is rollback_failed (retained
+        # for recovery), never falsely rolled_back.
+        import errno as _errno
+
+        created = self.vault.root / "inbox"
+        created.mkdir(exist_ok=True)
         journal = {"status": "intent", "operations": [], "rollback_failures": []}
         journal_path = self.dirs["journal"] / "20260101T000000000000Z-x.json"
-        with patch.object(
-            steward_apply, "_remove_created_dirs", side_effect=OSError("boom")
-        ):
-            with self.assertRaises(OSError):
+
+        def boom_rmdir(*_args, **_kwargs):
+            raise OSError(_errno.EACCES, "permission denied")
+
+        with patch.object(steward_apply.os, "rmdir", side_effect=boom_rmdir):
+            with self.assertRaises(RollbackError):
                 steward_apply._rollback(
                     [], journal_path, journal, self.dirs["journal"],
                     boundary=self.vault.root,
-                    created_dirs=[self.vault.root / "inbox"],
+                    created_dirs=[created],
                 )
-        self.assertNotEqual(
-            journal["status"], "rolled_back",
-            "journal reached terminal status before directory cleanup completed",
+        self.assertEqual(journal["status"], "rollback_failed")
+        self.assertTrue(journal["rollback_failures"])
+
+    def test_nonempty_created_dir_is_a_benign_skip_not_a_failure(self) -> None:
+        # A created directory that has since gained content is intentionally left
+        # in place and must NOT be reported as a rollback failure.
+        created = self.vault.root / "inbox"
+        created.mkdir(exist_ok=True)
+        (created / "someone-elses.md").write_text("later content", encoding="utf-8")
+        journal = {"status": "intent", "operations": [], "rollback_failures": []}
+        journal_path = self.dirs["journal"] / "20260101T000000000000Z-y.json"
+        steward_apply._rollback(
+            [], journal_path, journal, self.dirs["journal"],
+            boundary=self.vault.root, created_dirs=[created],
         )
+        self.assertEqual(journal["status"], "rolled_back")
+        self.assertTrue(created.exists())
 
     def test_replace_whole_section_is_not_executable_yet(self) -> None:
         proposal = self._proposal(

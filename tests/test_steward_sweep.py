@@ -435,27 +435,57 @@ class ReportBacklogAggregationTest(StewardSweepTest):
 
         dirs = self._dirs()
 
-        def _assessment(name: str, summary: dict) -> None:
+        def _assessment(name: str, records: list) -> None:
             (dirs["assessments"] / name).write_text(
                 json.dumps(
                     {
                         "schema_version": STEWARD_SCHEMA_VERSION,
                         "kind": "assessment_batch",
                         "source": "vault",
-                        "summary": summary,
-                        "assessments": [],
+                        "summary": {"DELETED": len(records)},
+                        "assessments": records,
                     }
                 ),
                 encoding="utf-8",
             )
 
-        _assessment("20260101T000000Z-vault.json", {"DELETED": 1})
-        _assessment("20260102T000000Z-vault.json", {"DELETED": 0})
+        _assessment(
+            "20260101T000000Z-vault.json",
+            [{"relation": "DELETED", "relative_path": "Gone.md"}],
+        )
+        _assessment("20260102T000000Z-vault.json", [])
         summary, _broken, _dupes = _aggregate_assessments(dirs, self._registry())
         self.assertEqual(
             summary["DELETED"], 1,
             "the earlier assessment's DELETED relation was dropped from the report",
         )
+
+    def test_report_does_not_double_count_recurring_finding(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        dirs = self._dirs()
+
+        def _assessment(name: str) -> None:
+            (dirs["assessments"] / name).write_text(
+                json.dumps(
+                    {
+                        "schema_version": STEWARD_SCHEMA_VERSION,
+                        "kind": "assessment_batch",
+                        "source": "vault",
+                        "summary": {"DELETED": 1},
+                        "assessments": [
+                            {"relation": "DELETED", "relative_path": "Gone.md"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        # The SAME finding recorded in two retained assessments must count once.
+        _assessment("20260101T000000Z-vault.json")
+        _assessment("20260102T000000Z-vault.json")
+        summary, _broken, _dupes = _aggregate_assessments(dirs, self._registry())
+        self.assertEqual(summary["DELETED"], 1, "a recurring finding was double-counted")
 
 
 class PruneTest(StewardSweepTest):
