@@ -10,11 +10,13 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from recallweave.index import build_index
 from recallweave.policy import IndexPolicy
 from recallweave.steward_apply import (
     ApplyError,
+    RollbackError,
     _guarded_replace,
     _recheck_parent_chain,
     recover_journal,
@@ -206,7 +208,7 @@ class MutationBoundaryTest(unittest.TestCase):
             shutil.rmtree(boundary / "sub")
             if not make_symlink(elsewhere, boundary / "sub"):
                 self.skipTest("symlinks unsupported")
-            with self.assertRaisesRegex(ApplyError, "symlinked directory"):
+            with self.assertRaisesRegex(ApplyError, "symlink"):
                 _guarded_replace(target, b"attacker", boundary=boundary)
             self.assertEqual(list(elsewhere.iterdir()), [])
 
@@ -981,6 +983,209 @@ class Round3G3RegressionTest(unittest.TestCase):
             )
         self.assertFalse((self.vault.root / "nested").exists(),
                          "rollback left a created directory behind")
+
+
+
+
+class WriteRaceHardeningTest(unittest.TestCase):
+    """H1: a parent-directory swap in the validate->syscall window must not
+    redirect the write (the dir_fd anchoring holds)."""
+
+    def setUp(self) -> None:
+        from recallweave import steward_apply
+
+        if not steward_apply._DIR_FD_WRITES:
+            self.skipTest("platform lacks dir_fd primitives (documented fallback)")
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.vault = TempVault(dir=self.base)
+        (self.vault.root / "sub").mkdir()
+        self.vault.write("sub/note.md", "original")
+        self.database = self.base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.registry_path = self.base / "sources.json"
+        self.registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(self.vault.root),
+                            "mode": "appliable",
+                            "policy": {"include_paths": ["sub/note.md"]},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.registry = load_registry(self.registry_path)
+        self.state_root = self.base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def test_parent_swap_after_chain_open_does_not_escape(self) -> None:
+        import shutil
+
+        from recallweave import steward_apply
+
+        elsewhere = self.base / "elsewhere"
+        elsewhere.mkdir()
+        real_chain = steward_apply._open_parent_chain
+        state = {"swapped": False}
+
+        def swapping_chain(boundary, target, *, create_dirs):
+            result = real_chain(boundary, target, create_dirs=create_dirs)
+            # After the parent fd is open, swap the on-disk `sub` directory for
+            # a symlink to an outside tree, then let the write proceed relative
+            # to the already-open fd.
+            if not state["swapped"] and str(target).endswith("note.md"):
+                state["swapped"] = True
+                sub = self.vault.root / "sub"
+                moved = self.vault.root / "sub__moved"
+                sub.rename(moved)
+                try:
+                    sub.symlink_to(elsewhere)
+                except OSError:
+                    moved.rename(sub)
+                    self.skipTest("symlinks unsupported")
+            return result
+
+        note = self.vault.root / "sub" / "note.md"
+        original = note.resolve()
+        data = original.read_bytes()
+        proposal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "proposal",
+            "proposal_id": "prp-parentswaprace0",
+            "source": "src",
+            "action": "test",
+            "policy_level": "propose_only",
+            "edits": [
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "sub/note.md",
+                    "precondition_content_hash": _sha(data),
+                    "replacement_text": "\nappended\n",
+                    "predicted_post_hash": _sha(data + b"\nappended\n"),
+                }
+            ],
+            "conflicts_with": [],
+            "registry_sha256": self.registry.registry_sha256,
+        }
+        from recallweave.steward_apply import apply_proposal
+        from recallweave.steward_policy import WritePolicy
+
+        policy = WritePolicy.from_bytes(
+            json.dumps(
+                {
+                    "spec_version": "recallweave.steward.policy.v1",
+                    "class_levels": {"append_at_eof": "auto_apply"},
+                }
+            ).encode()
+        )
+        with patch.object(steward_apply, "_open_parent_chain", swapping_chain):
+            # The write is anchored to the real directory fd, so it either
+            # lands in the original (now-detached) directory or fails; it must
+            # NEVER traverse the planted symlink into `elsewhere`.
+            try:
+                apply_proposal(
+                    proposal,
+                    registry=self.registry,
+                    state_dirs=self.dirs,
+                    database=self.database,
+                    policy=policy,
+                    mode="per_item",
+                    execute=True,
+                )
+            except ApplyError:
+                pass
+        self.assertTrue(state["swapped"], "the swap hook did not fire")
+        self.assertEqual(
+            list(elsewhere.iterdir()), [],
+            "a write escaped through the swapped-in symlink parent",
+        )
+
+
+class RollbackDriftTest(unittest.TestCase):
+    """H2: in-process rollback must not overwrite bytes changed after the
+    apply wrote them."""
+
+    def test_rollback_refuses_drifted_target(self) -> None:
+        from recallweave.steward_apply import _rollback
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            state_root = base / "state"
+            dirs = ensure_state_layout(state_root)
+            source = base / "src"
+            source.mkdir()
+            target = source / "a.md"
+            # The user's newer content is live now.
+            target.write_text("newer operator work", encoding="utf-8")
+            backup_dir = dirs["backups"] / "b"
+            backup_dir.mkdir()
+            backup = backup_dir / "0-a.md"
+            backup.write_text("pre-apply bytes", encoding="utf-8")
+            completed = [
+                {
+                    "relative_path": "a.md",
+                    "target": str(target),
+                    "had_file": True,
+                    "backup_path": str(backup),
+                    "content_hash_before": _sha(b"pre-apply bytes"),
+                    "content_hash_after": _sha(b"stewards written bytes"),
+                }
+            ]
+            journal = {"status": "applied", "rollback_failures": []}
+            journal_path = dirs["journal"] / "j.json"
+            atomic_write_json(journal_path, journal, within=dirs["journal"])
+            with self.assertRaises(RollbackError):
+                _rollback(completed, journal_path, journal, dirs["journal"], source)
+            # The user's newer content must survive untouched.
+            self.assertEqual(
+                target.read_text(encoding="utf-8"), "newer operator work"
+            )
+            reloaded = json.loads(journal_path.read_text(encoding="utf-8"))
+            self.assertEqual(reloaded["status"], "rollback_failed")
+
+    def test_rollback_restores_when_stewards_write_is_intact(self) -> None:
+        from recallweave.steward_apply import _rollback
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            state_root = base / "state"
+            dirs = ensure_state_layout(state_root)
+            source = base / "src"
+            source.mkdir()
+            target = source / "a.md"
+            target.write_bytes(b"stewards written bytes")  # untouched since apply
+            backup_dir = dirs["backups"] / "b"
+            backup_dir.mkdir()
+            backup = backup_dir / "0-a.md"
+            backup.write_bytes(b"pre-apply bytes")
+            completed = [
+                {
+                    "relative_path": "a.md",
+                    "target": str(target),
+                    "had_file": True,
+                    "backup_path": str(backup),
+                    "content_hash_before": _sha(b"pre-apply bytes"),
+                    "content_hash_after": _sha(b"stewards written bytes"),
+                }
+            ]
+            journal = {"status": "applied", "rollback_failures": []}
+            journal_path = dirs["journal"] / "j.json"
+            atomic_write_json(journal_path, journal, within=dirs["journal"])
+            _rollback(completed, journal_path, journal, dirs["journal"], source)
+            self.assertEqual(target.read_bytes(), b"pre-apply bytes")
+            reloaded = json.loads(journal_path.read_text(encoding="utf-8"))
+            self.assertEqual(reloaded["status"], "rolled_back")
 
 
 if __name__ == "__main__":

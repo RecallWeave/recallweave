@@ -217,17 +217,22 @@ class ApplyPipelineTest(unittest.TestCase):
             edit["relative_path"]: (self.vault.root / edit["relative_path"]).read_bytes()
             for edit in proposal["edits"]
         }
+        real_rename = os.rename
         real_replace = os.replace
         calls = {"count": 0}
 
-        def failing_replace(src, dst):
+        def failing(src, dst, **kwargs):
+            # The atomic install is os.rename (dir_fd path) or os.replace
+            # (pathname fallback); the temp source carries the marker in both.
             if "steward-apply.tmp" in str(src):
                 calls["count"] += 1
                 if calls["count"] == 2:
                     raise OSError("injected crash")
-            return real_replace(src, dst)
+            fn = real_rename if kwargs else real_replace
+            return fn(src, dst, **kwargs)
 
-        with patch.object(steward_apply.os, "replace", side_effect=failing_replace):
+        with patch.object(steward_apply.os, "rename", side_effect=failing), \
+                patch.object(steward_apply.os, "replace", side_effect=failing):
             with self.assertRaisesRegex(ApplyError, "injected crash|Post-write"):
                 apply_latest(
                     self.registry,
@@ -254,21 +259,24 @@ class ApplyPipelineTest(unittest.TestCase):
 
     def test_failed_rollback_is_loud_and_retains_backups(self) -> None:
         proposal = self._pipeline_rename()
+        real_rename = os.rename
         real_replace = os.replace
         state = {"applied": False}
 
-        def replace_then_fail_everything(src, dst):
-            text = str(src)
-            if "steward-apply.tmp" in text:
+        def install_then_fail_everything(src, dst, **kwargs):
+            fn = real_rename if kwargs else real_replace
+            if "steward-apply.tmp" in str(src):
                 if not state["applied"]:
                     state["applied"] = True
-                    real_replace(src, dst)
+                    fn(src, dst, **kwargs)
                     raise OSError("injected post-write crash")
                 raise OSError("injected rollback failure")
-            return real_replace(src, dst)
+            return fn(src, dst, **kwargs)
 
         with patch.object(
-            steward_apply.os, "replace", side_effect=replace_then_fail_everything
+            steward_apply.os, "rename", side_effect=install_then_fail_everything
+        ), patch.object(
+            steward_apply.os, "replace", side_effect=install_then_fail_everything
         ):
             with self.assertRaisesRegex(RollbackError, "retained backups"):
                 apply_latest(

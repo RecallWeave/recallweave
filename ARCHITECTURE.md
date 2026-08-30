@@ -179,6 +179,38 @@ against the indexed snapshot (`steward-assess`), reviewable read-only
 proposals (`steward-propose`), and a one-shot sweep with a stewardship report
 (`steward-sweep`). See [docs/steward.md](docs/steward.md).
 
+### Three planes
+
+Steward is organized around three conceptual planes, and the boundaries
+between them are load-bearing. They are frozen here so no later change blurs
+them silently.
+
+- **Truth plane** — what is deterministically the case: the source registry,
+  content hashes and checkpoints, citations and provenance, authored
+  references, and the deterministic change/integrity findings
+  (`NEW`, `DELETED`, `MODIFIED`, `DUPLICATES_EXACT_BYTES`,
+  `AUTHORED_REFERENCE_TOUCHED`, `CITATION_BROKEN`). Every fact here is a
+  byte- or structure-level observation, reproducible without a model, and
+  never depends on inference.
+- **Interpretation plane** — reserved, and **not implemented in v1**. This is
+  where a future opt-in provider would assert *semantic* relations
+  (`CONFIRMS`, `EXTENDS`, `SUPERSEDES`, `CONTRADICTS`, `UNCERTAIN`). Such
+  claims are inferential and must be attributable to their asserter; they may
+  only be *added* as a layer that references Truth-plane records, and may
+  never overwrite, rewrite, or suppress a deterministic finding. No shipped
+  code path emits them; they exist in v1 only as schema reservation and this
+  documented boundary.
+- **Action plane** — what may change the estate: proposals, the write policy,
+  apply, post-apply validation, rollback, and the optional local Git
+  lifecycle. Every action is gated, hash-pinned, journaled, and reversible,
+  and authorization is always explicit — determinism in the Truth plane
+  never grants authority in the Action plane.
+
+The planes flow one way: Truth informs Interpretation and Action;
+Interpretation (when it exists) may inform Action only through reviewable
+proposals; neither Interpretation nor Action ever rewrites Truth. The rules
+below enforce these boundaries in code.
+
 Three structural rules keep Steward inside the trust model above:
 
 1. **Admission is IndexPolicy, only.** Every registered source is admitted
@@ -213,6 +245,21 @@ explicit, scoped narrowing of the no-mutation invariant that this document
 previously required of any future write capability; apply receipts count
 their mutations in `steward_vault_mutations` and never claim zero writes
 when a write occurred.
+
+Every mutation — write, create, delete, and each rollback restore — is
+anchored to a verified source-root directory descriptor and traverses to its
+target through an `O_NOFOLLOW` `openat` chain, so a parent directory swapped
+for a symlink between validation and the syscall cannot redirect the
+operation outside the admitted source. On a platform whose runtime lacks the
+required descriptor-relative primitives (`os.supports_dir_fd`) — notably
+Windows — apply falls back to pathname operations that recheck the parent
+chain immediately before each syscall and open final components
+`O_NOFOLLOW`; this is a documented, weaker best-effort boundary, not the
+descriptor-anchored guarantee. Rollback is itself hash-pinned: it restores a
+target only when the live bytes still match what the transaction wrote (or
+already match the pre-apply bytes), and refuses — retaining the backup and
+reporting — rather than overwrite content another process changed after the
+apply.
 
 ## Extension points
 

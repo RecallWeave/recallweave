@@ -41,6 +41,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -545,24 +546,154 @@ def _recheck_parent_chain(target: Path, boundary: Path | None) -> None:
             )
 
 
-def _guarded_replace(target: Path, data: bytes, boundary: Path | None = None) -> None:
-    """Write ``data`` to ``target`` via a same-directory fsync'd temp file and
-    an atomic ``os.replace``. The parent chain is re-validated at this
-    mutation boundary (not only at preflight); recovery comes from the
-    journaled state-directory backup, so no in-source backup rotation is
-    performed (a retained backup directory inside a source would be
-    re-indexed as notes)."""
+# os.rename (renameat) supports dir_fd where os.replace does not; on POSIX
+# rename already replaces the destination atomically, and the dir_fd branch
+# is POSIX-only (Windows has an empty os.supports_dir_fd and takes the
+# documented pathname fallback below).
+_DIR_FD_WRITES = (
+    os.open in os.supports_dir_fd
+    and os.rename in os.supports_dir_fd
+    and os.mkdir in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
 
+
+def _open_parent_chain(boundary: Path, target: Path, *, create_dirs: bool):
+    """Open the parent directory of ``target`` by an O_NOFOLLOW openat chain
+    anchored at ``boundary``, returning ``(parent_fd, filename, created)``.
+
+    Because every descent is dir_fd-relative and O_NOFOLLOW, a directory
+    swapped for a symlink between validation and the mutation syscall cannot
+    redirect the write: the swapped component fails to open rather than being
+    followed. ``created`` lists directories this call made (deepest last), for
+    rollback. The caller must close ``parent_fd``."""
+
+    relative = target.absolute().relative_to(boundary.absolute())
+    parts = relative.parts
+    dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    created: list[Path] = []
+    fds: list[int] = []
+    try:
+        fds.append(os.open(boundary, os.O_RDONLY | os.O_DIRECTORY))
+        made = boundary
+        for part in parts[:-1]:
+            made = made / part
+            try:
+                fds.append(os.open(part, dir_flags, dir_fd=fds[-1]))
+            except FileNotFoundError:
+                if not create_dirs:
+                    raise ApplyError(
+                        f"Edit target parent does not exist: {made}"
+                    ) from None
+                os.mkdir(part, 0o755, dir_fd=fds[-1])
+                created.append(made)
+                fds.append(os.open(part, dir_flags, dir_fd=fds[-1]))
+    except OSError as error:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if isinstance(error, ApplyError):
+            raise
+        raise ApplyError(
+            f"Refusing a write through a non-directory or symlinked parent "
+            f"of {target} ({type(error).__name__})."
+        ) from error
+    parent_fd = fds[-1]
+    # Close every ancestor fd except the immediate parent we return.
+    for fd in fds[:-1]:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    return parent_fd, parts[-1], created
+
+
+def _guarded_replace(
+    target: Path,
+    data: bytes,
+    boundary: Path,
+    *,
+    create_dirs: bool = False,
+) -> list[Path]:
+    """Write ``data`` to ``target`` via a same-directory fsync'd temp file and
+    an atomic replace, anchored by a descriptor to ``boundary`` so a
+    parent-directory swap between validation and the syscall cannot redirect
+    the write. Returns any directories this call created (for rollback).
+
+    Recovery comes from the journaled state-directory backup, so no in-source
+    backup rotation is performed."""
+
+    temp_name = f".{target.name}.steward-apply.tmp"
+    if _DIR_FD_WRITES:
+        parent_fd, filename, created = _open_parent_chain(
+            boundary, target, create_dirs=create_dirs
+        )
+        try:
+            try:
+                info = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+                if stat.S_ISLNK(info.st_mode):
+                    raise ApplyError(
+                        f"Refusing to replace a symlink or junction: {target}"
+                    )
+            except FileNotFoundError:
+                pass
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
+            try:
+                fd = os.open(temp_name, flags, 0o644, dir_fd=parent_fd)
+            except FileExistsError as error:
+                raise ApplyError(
+                    f"Refusing to apply: a file already occupies the temporary "
+                    f"path beside {target}. Remove it and retry."
+                ) from error
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.rename(
+                    temp_name, filename,
+                    src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                )
+            except BaseException:
+                try:
+                    os.unlink(temp_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
+                raise
+        finally:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+        return created
+
+    # Fallback for platforms without dir_fd primitives (e.g. Windows): the
+    # parent chain is rechecked immediately before the pathname syscalls and
+    # the final components use O_NOFOLLOW, but a swap inside the syscall
+    # window cannot be fully excluded here. This weaker boundary is documented
+    # in ARCHITECTURE.md.
+    created = []
+    if create_dirs and not target.parent.exists():
+        _recheck_parent_chain(target, boundary)
+        probe = target.parent
+        missing = []
+        while not probe.exists():
+            missing.append(probe)
+            probe = probe.parent
+        target.parent.mkdir(parents=True, exist_ok=True)
+        created = list(reversed(missing))
     _recheck_parent_chain(target, boundary)
     if is_link_like(target):
         raise ApplyError(f"Refusing to replace a symlink or junction: {target}")
-    temp = target.parent / f".{target.name}.steward-apply.tmp"
+    temp = target.parent / temp_name
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    # O_EXCL means a pre-existing file (a planted collision, a real note, or
-    # another process's temp) makes this raise rather than be destroyed: a
-    # write outside the approved edit set is never acceptable, so refuse.
     try:
         fd = os.open(temp, flags, 0o644)
     except FileExistsError as error:
@@ -582,6 +713,7 @@ def _guarded_replace(target: Path, data: bytes, boundary: Path | None = None) ->
         except OSError:
             pass
         raise
+    return created
 
 
 def _write_backup(
@@ -611,24 +743,53 @@ def _rollback(
     failures: list[str] = []
     for op in reversed(completed):
         target = Path(op["target"])
+        after = op.get("content_hash_after")
+        before = op.get("content_hash_before")
         try:
+            live = _sha256_bytes(target.read_bytes()) if target.is_file() else None
+            # Rollback is hash-pinned like every other write: only touch the
+            # target if it still holds exactly what this transaction wrote
+            # (its post-apply hash), or already holds the pre-apply bytes
+            # (nothing to undo). Anything else was changed by another writer
+            # after Steward's write, and rollback refuses rather than destroy
+            # that newer content.
             if op["had_file"]:
+                if live == before:
+                    continue  # already at pre-apply bytes; nothing to undo
+                if after is not None and live != after:
+                    failures.append(
+                        f"{op['relative_path']}: target changed after the apply "
+                        f"(drift); refusing to overwrite it, backup retained at "
+                        f"{op.get('backup_path')}"
+                    )
+                    continue
                 backup = Path(op["backup_path"])
                 data = backup.read_bytes()
-                if _sha256_bytes(data) != op["content_hash_before"]:
+                if _sha256_bytes(data) != before:
                     failures.append(
                         f"{op['relative_path']}: backup hash mismatch, backup "
                         f"retained at {backup}"
                     )
                     continue
-                _guarded_replace(target, data, boundary=boundary)
+                _guarded_replace(target, data, boundary)
                 restored = target.read_bytes()
-                if _sha256_bytes(restored) != op["content_hash_before"]:
+                if _sha256_bytes(restored) != before:
                     failures.append(
                         f"{op['relative_path']}: restore verification failed, "
                         f"backup retained at {backup}"
                     )
             else:
+                # A created file: remove it only if it still holds exactly the
+                # bytes this transaction wrote; if another writer changed it,
+                # leave it and report.
+                if live is None:
+                    continue
+                if after is not None and live != after:
+                    failures.append(
+                        f"{op['relative_path']}: created file changed after the "
+                        f"apply (drift); left in place"
+                    )
+                    continue
                 try:
                     _guarded_unlink(target, boundary)
                 except ApplyError:
@@ -901,6 +1062,7 @@ def apply_proposal(
                     "had_file": had_file,
                     "backup_path": str(backup_path) if backup_path else None,
                     "content_hash_before": op["content_hash_before"],
+                    "content_hash_after": op["content_hash_after"],
                 }
             )
             op["state"] = "in_progress"
@@ -914,19 +1076,16 @@ def apply_proposal(
                 _guarded_unlink(target, source.root)
                 op["trash_path"] = str(trash_path.relative_to(trash_root))
             else:
-                if not target.parent.exists():
-                    _recheck_parent_chain(target, source.root)
-                    # Record directories this apply creates, deepest first,
-                    # so rollback can remove them and the transaction stays
-                    # all-or-nothing.
-                    missing = []
-                    probe = target.parent
-                    while not probe.exists():
-                        missing.append(probe)
-                        probe = probe.parent
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    created_dirs.extend(missing)
-                _guarded_replace(target, plan["post"], boundary=source.root)
+                # create_new_file may need new parent dirs; append_at_eof and
+                # fix_unresolved_link never do. _guarded_replace creates them
+                # descriptor-relative and returns them for rollback.
+                made = _guarded_replace(
+                    target,
+                    plan["post"],
+                    source.root,
+                    create_dirs=(edit["mutation_class"] == "create_new_file"),
+                )
+                created_dirs.extend(made)
                 written = target.read_bytes()
                 if _sha256_bytes(written) != op["content_hash_after"]:
                     raise ApplyError(
