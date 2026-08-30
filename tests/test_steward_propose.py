@@ -633,6 +633,40 @@ class ProposeLatestTest(StewardProposeTest):
             json.dumps(assessment), encoding="utf-8"
         )
 
+    def test_reemitted_applied_proposal_does_not_poison_new_conflict(self) -> None:
+        # P applied, P re-emitted under a new assessment filename, Q touches the
+        # same referrer: Q must NOT carry the terminal P id in conflicts_with.
+        self._rename_assessment("20260101T000000Z", "Beta.md", "BetaNew.md")
+        propose_latest(self.registry, self.state_root, self.database)
+        beta_fix = [
+            p for p in self.dirs["proposals"].glob("20260101T000000Z-vault-*.json")
+            if json.loads(p.read_text())["action"] == "fix_links_after_rename"
+        ][0]
+        marked = json.loads(beta_fix.read_text())
+        marked["status"] = "applied"
+        beta_fix.write_text(json.dumps(marked), encoding="utf-8")
+        beta_id = marked["proposal_id"]
+
+        # Re-emit P's assessment (same id, applied) + a fresh Q on the same referrer.
+        for sub in ("changes", "assessments"):
+            src = self.dirs[sub] / "20260101T000000Z-vault.json"
+            dst = self.dirs[sub] / "20260102T000000Z-vault.json"
+            doc = json.loads(src.read_text())
+            if sub == "assessments":
+                doc["change_batch_ref"] = "20260102T000000Z-vault.json"
+            dst.write_text(json.dumps(doc), encoding="utf-8")
+        self._rename_assessment("20260103T000000Z", "Gamma.md", "GammaNew.md")
+        propose_latest(self.registry, self.state_root, self.database)
+
+        gamma_fix = json.loads([
+            p for p in self.dirs["proposals"].glob("20260103T000000Z-vault-*.json")
+            if json.loads(p.read_text())["action"] == "fix_links_after_rename"
+        ][0].read_text())
+        self.assertNotIn(
+            beta_id, gamma_fix["conflicts_with"],
+            "a new proposal conflicts with a re-emitted APPLIED proposal",
+        )
+
     def test_reemitted_duplicate_syncs_conflict_onto_existing(self) -> None:
         # A re-emitted proposal P (id already on disk) that newly conflicts with
         # a fresh proposal Q must sync the conflict onto the on-disk P too, so P

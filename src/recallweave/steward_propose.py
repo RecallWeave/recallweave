@@ -927,25 +927,33 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                     }
                 )
 
-        # Conflict-link across the computed set, EXCLUDING proposals already
-        # applied on disk. An applied proposal is terminal; if it were treated
-        # as a pending counterpart, a new proposal for the same path would carry
-        # the applied id in conflicts_with and _validate_proposal would reject
-        # the new work permanently against a counterpart that can never conflict.
-        def _is_applied(filename: str) -> bool:
+        # Ids of proposals already APPLIED on disk, keyed by proposal_id (NOT
+        # filename): a re-emitted assessment gives the same deterministic id a
+        # new filename, so a filename-based applied check would miss it and let
+        # the terminal proposal poison a fresh counterpart's conflicts_with.
+        applied_ids: set[str] = set()
+        for existing_path in proposals_dir.glob("*.json"):
             try:
-                existing = json.loads(
-                    (proposals_dir / filename).read_text(encoding="utf-8")
-                )
+                doc = json.loads(existing_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
-                return False
-            return isinstance(existing, dict) and existing.get("status") == "applied"
+                continue
+            if (
+                isinstance(doc, dict)
+                and doc.get("status") == "applied"
+                and isinstance(doc.get("proposal_id"), str)
+            ):
+                applied_ids.add(doc["proposal_id"])
 
+        # Conflict-link across the computed set, EXCLUDING proposals whose id is
+        # already applied on disk. An applied proposal is terminal; if it were a
+        # pending counterpart, a new proposal for the same path would carry the
+        # applied id in conflicts_with and _validate_proposal would reject the
+        # new work permanently against a counterpart that can never conflict.
         _assign_conflicts(
             [
                 proposal
-                for fn, proposal, _new in all_computed
-                if not _is_applied(fn)
+                for _fn, proposal, _new in all_computed
+                if proposal.get("proposal_id") not in applied_ids
             ]
         )
 

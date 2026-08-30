@@ -151,14 +151,20 @@ def _pinned_stat(fd: int) -> os.stat_result:
     return os.fstat(fd)
 
 
-def _read_fd(fd: int) -> bytes:
+def _read_fd(fd: int, limit: int) -> bytes:
+    # Read at most ``limit`` bytes (the policy-checked size) plus one, so a note
+    # that grows after the size check cannot drive an unbounded read; the extra
+    # byte lets the caller's after-fstat detect the growth and mark the note
+    # changed-during-observe rather than committing a partial snapshot.
     os.lseek(fd, 0, os.SEEK_SET)
     chunks: list[bytes] = []
-    while True:
-        chunk = os.read(fd, _CHUNK_SIZE)
+    remaining = max(0, limit) + 1
+    while remaining > 0:
+        chunk = os.read(fd, min(_CHUNK_SIZE, remaining))
         if not chunk:
             break
         chunks.append(chunk)
+        remaining -= len(chunk)
     return b"".join(chunks)
 
 
@@ -473,9 +479,15 @@ def observe_source(
             # re-fstat after the read detects a mid-read change.
             prior = prior_entries.get(relative)
             try:
-                data = _read_fd(fd)
+                data = _read_fd(fd, size)
                 after = _pinned_stat(fd)
             except OSError:
+                _mark_changed_during(relative)
+                continue
+            if len(data) != size:
+                # The file grew or shrank between the size check and the read;
+                # the after-fstat below also detects this, but bail now so a
+                # grown file's over-limit bytes are never hashed/committed.
                 _mark_changed_during(relative)
                 continue
 
@@ -668,6 +680,16 @@ def observe_source(
                 batch_path.unlink()
             except OSError:
                 pass
+            # Retraction must be VERIFIED. If the out-of-scope batch is somehow
+            # still on disk, do NOT return a benign error receipt -- assessment
+            # would consume the invalid snapshot. Raise a blocking error so the
+            # whole run fails closed instead.
+            if batch_path.exists():
+                raise OSError(
+                    f"Refusing to continue: the source root for {source.name!r} "
+                    "changed during observation and its out-of-scope change "
+                    f"batch {batch_path.name} could not be retracted."
+                )
             if post_write_identity is None:
                 return _source_missing_receipt(source, generated_at, registry_sha256)
             return _source_error_receipt(

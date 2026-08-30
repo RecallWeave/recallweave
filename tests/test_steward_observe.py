@@ -230,8 +230,8 @@ class ObserveSourceTest(unittest.TestCase):
         import recallweave.steward_observe as _obs
         real_read_fd = _obs._read_fd
 
-        def flaky_read(fd: int) -> bytes:
-            result = real_read_fd(fd)
+        def flaky_read(fd: int, limit: int) -> bytes:
+            result = real_read_fd(fd, limit)
             self.vault.touch_mtime("a.md", offset_seconds=5)
             return result
 
@@ -332,6 +332,44 @@ class ObserveSourceTest(unittest.TestCase):
                          "the batch was not retracted after the root swap")
         self.assertIsNone(self.checkpoint())
 
+    def test_failed_batch_retraction_raises(self) -> None:
+        # If the out-of-scope batch cannot be retracted, fail closed (raise)
+        # rather than leaving an assessable batch behind.
+        from recallweave.safe_write import path_identity
+        real_ident = path_identity(self.vault.root)
+        self.source = _source(
+            "src", self.vault.root,
+            root_dev=real_ident[0], root_ino=real_ident[1],
+        )
+        self.vault.write("a.md", "hello")
+        calls = {"n": 0}
+
+        def ident(_p):
+            calls["n"] += 1
+            if calls["n"] >= 4:  # fail the post-write check
+                return (real_ident[0], real_ident[1] + 1)
+            return real_ident
+
+        with patch("recallweave.steward_observe.path_identity", side_effect=ident), \
+                patch("pathlib.Path.unlink", side_effect=OSError("cannot delete")):
+            with self.assertRaises(OSError):
+                self.observe(now="2026-01-01T00:00:00+00:00")
+
+    def test_note_growing_during_read_is_not_committed(self) -> None:
+        import recallweave.steward_observe as _obs
+        self.vault.write("a.md", "small")
+
+        def grown(fd, limit):  # simulate the file having grown past the check
+            return b"x" * (limit + 500)
+
+        with patch.object(_obs, "_read_fd", side_effect=grown):
+            receipt = self.observe(now="2026-01-01T00:00:00+00:00")
+        self.assertIn("a.md", receipt["changed_during_observe"])
+        self.assertEqual(receipt["changes"], [])
+        # a.md's grown bytes are never committed to the checkpoint.
+        entries = {e["relative_path"] for e in (self.checkpoint() or {}).get("entries", [])}
+        self.assertNotIn("a.md", entries)
+
     def test_open_note_fd_refuses_symlinked_ancestor(self) -> None:
         import os as _os
         from recallweave.steward_observe import _open_note_fd
@@ -396,11 +434,11 @@ class ObserveSourceTest(unittest.TestCase):
         real_read_fd = _obs._read_fd
         calls = {"n": 0}
 
-        def flaky(fd):
+        def flaky(fd, limit):
             calls["n"] += 1
             if calls["n"] == 1:  # first admitted file (a.md, sorted first)
                 raise OSError("vanished mid-hash")
-            return real_read_fd(fd)
+            return real_read_fd(fd, limit)
 
         with patch("recallweave.steward_observe._read_fd", side_effect=flaky):
             receipt = self.observe(now="2026-01-01T00:00:00+00:00")
