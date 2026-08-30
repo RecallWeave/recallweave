@@ -440,15 +440,20 @@ def _assemble_report(
             return items[:REPORT_EVIDENCE_LIMIT]
         return items
 
-    broken_citations = _bound("broken_citations", broken_citations)
-    dangling_references = _bound("dangling_references", dangling_references)
-    duplicates = _bound("duplicates", duplicates)
-
     sources_missing = sorted(
         item["source"]
         for item in observe_receipt.get("sources", [])
         if isinstance(item, dict) and item.get("error") == "source_missing"
     )
+
+    # Bound EVERY integrity evidence array (not just the assessment-derived
+    # ones): a registry with very many missing or checkpoint-invalid sources
+    # must not grow the report past the ceiling either.
+    broken_citations = _bound("broken_citations", broken_citations)
+    dangling_references = _bound("dangling_references", dangling_references)
+    duplicates = _bound("duplicates", duplicates)
+    sources_missing = _bound("sources_missing", sources_missing)
+    checkpoint_invalid = _bound("checkpoint_invalid", batch_agg["checkpoint_invalid"])
 
     total_relations = sum(
         relation_summary.get(relation, 0) for relation in DETERMINISTIC_RELATIONS
@@ -477,7 +482,7 @@ def _assemble_report(
             "duplicates": duplicates,
             "rename_candidates_pending": batch_agg["rename_candidates_pending"],
             "sources_missing": sources_missing,
-            "checkpoint_invalid": batch_agg["checkpoint_invalid"],
+            "checkpoint_invalid": checkpoint_invalid,
             "evidence_truncated": evidence_truncation,
         },
         "changes": batch_agg["changes"],

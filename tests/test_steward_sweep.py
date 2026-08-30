@@ -9,6 +9,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from recallweave.cli import _parser
 from recallweave.steward_state import STEWARD_SCHEMA_VERSION
@@ -690,6 +691,33 @@ class ForeignProposalPendingTest(StewardSweepTest):
         )
         # Without a digest filter it still counts (back-compat).
         self.assertEqual(_aggregate_proposals(dirs)[0], 1)
+
+
+class EvidenceBoundingTest(StewardSweepTest):
+    def test_all_integrity_evidence_arrays_are_bounded(self) -> None:
+        import recallweave.steward_sweep as sw
+
+        self._baseline()
+        observe_receipt = {
+            "sources": [
+                {"source": f"s{i}", "error": "source_missing"} for i in range(4)
+            ]
+        }
+        with patch.object(sw, "REPORT_EVIDENCE_LIMIT", 2):
+            report = sw._assemble_report(
+                self._registry(),
+                self._dirs(),
+                self.database,
+                generated_at="2026-01-01T00:00:00+00:00",
+                observe_receipt=observe_receipt,
+                proposals_created_this_sweep=0,
+            )
+        integ = report["integrity"]
+        self.assertEqual(len(integ["sources_missing"]), 2)
+        self.assertEqual(
+            integ["evidence_truncated"]["sources_missing"],
+            {"reported": 2, "total": 4},
+        )
 
 
 class PruneTest(StewardSweepTest):
