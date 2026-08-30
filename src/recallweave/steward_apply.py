@@ -1986,10 +1986,11 @@ def recover_journal(
         raise ApplyError(
             f"Journal {journal_name} is not a JSON object."
         )
-    if journal.get("status") not in ("intent",):
+    if journal.get("status") not in ("intent", "rollback_failed"):
         raise ApplyError(
             f"Journal {journal_name} has status {journal.get('status')!r}; "
-            "only an interrupted (intent) journal can be recovered."
+            "only an interrupted (intent) or a previously failed rollback "
+            "(rollback_failed) journal can be recovered."
         )
     source = next(
         (item for item in registry.sources if item.name == journal.get("source")),

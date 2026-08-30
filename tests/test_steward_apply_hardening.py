@@ -879,6 +879,42 @@ class Round2G3RegressionTest(unittest.TestCase):
         self.assertEqual(receipt["operations_rolled_back"], 1)
         self.assertGreaterEqual(receipt["vault_writes"], 1)
 
+    def test_rollback_failed_journal_can_be_recovered(self) -> None:
+        # A rollback_failed journal blocks new applies; it MUST be recoverable
+        # (not deadlocked). Re-running recovery completes the remaining work --
+        # here removing a directory a prior failed rollback left behind -- and
+        # records rolled_back.
+        inbox = self.vault.root / "inbox"
+        inbox.mkdir(exist_ok=True)  # empty dir stranded by a failed rollback
+        journal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "apply_journal",
+            "proposal_id": "prp-rbfailedrbfail",
+            "source": "src",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "status": "rollback_failed",
+            "backup_dir": "b",
+            "operations": [
+                {
+                    "relative_path": "inbox/new.md",
+                    "mutation_class": "create_new_file",
+                    "content_hash_before": None,
+                    "content_hash_after": _sha(b"x"),
+                    "backup_name": "0-inbox__new.md",
+                    "state": "done",
+                }
+            ],
+            "created_dirs": ["inbox"],
+            "rollback_failures": ["inbox: created directory could not be removed"],
+            "registry_sha256": self.registry.registry_sha256,
+        }
+        name = "20260101T000000000000Z-rbf.json"
+        atomic_write_json(self.dirs["journal"] / name, journal, within=self.dirs["journal"])
+        recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        self.assertFalse(inbox.exists(), "recovery did not remove the stranded dir")
+        saved = json.loads((self.dirs["journal"] / name).read_text(encoding="utf-8"))
+        self.assertEqual(saved["status"], "rolled_back")
+
     def test_recovery_refuses_when_deletion_backup_is_missing(self) -> None:
         # Deletion landed (target gone) but the backup is missing: recovery must
         # refuse (not falsely claim rolled_back) and leave the journal unresolved.
