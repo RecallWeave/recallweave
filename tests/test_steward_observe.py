@@ -281,6 +281,31 @@ class ObserveSourceTest(unittest.TestCase):
         self.assertEqual(batch["kind"], CHANGE_BATCH_KIND)
         self.assertEqual(batch["changes"][0]["change_type"], "added")
 
+    def test_root_swap_before_commit_writes_nothing(self) -> None:
+        # A root swapped after enumeration but before the batch/checkpoint write
+        # must fail closed: no batch, no checkpoint advance.
+        from recallweave.safe_write import path_identity
+        real_ident = path_identity(self.vault.root)
+        self.source = _source(
+            "src", self.vault.root,
+            root_dev=real_ident[0], root_ino=real_ident[1],
+        )
+        self.vault.write("a.md", "hello")
+        calls = {"n": 0}
+
+        def ident(_p):
+            calls["n"] += 1
+            # Pass the initial + post-enumeration checks; fail the commit check.
+            if calls["n"] >= 3:
+                return (real_ident[0], real_ident[1] + 1)  # different inode
+            return real_ident
+
+        with patch("recallweave.steward_observe.path_identity", side_effect=ident):
+            receipt = self.observe(now="2026-01-01T00:00:00+00:00")
+        self.assertEqual(receipt.get("error"), "source_identity_changed")
+        self.assertEqual(list(self.dirs["changes"].glob("*.json")), [])
+        self.assertIsNone(self.checkpoint())
+
     def test_open_note_fd_refuses_symlinked_ancestor(self) -> None:
         import os as _os
         from recallweave.steward_observe import _open_note_fd

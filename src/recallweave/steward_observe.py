@@ -617,6 +617,23 @@ def observe_source(
     # and additions before assessment ever saw them. With batch-first, a crash
     # merely re-observes against the old checkpoint and re-emits the batch
     # (digest-bound assessment deduplicates), never losing a change.
+    # Final identity re-check immediately before committing. The per-note reads
+    # above use the pinned descriptor, which -- if the root was renamed away and
+    # replaced after enumeration -- now reads the renamed-away tree. That content
+    # is no longer within the REGISTERED pathname, so persisting its batch or
+    # advancing the checkpoint would commit out-of-scope data. Re-verify the
+    # registered pathname still resolves to the pinned identity right before the
+    # writes; on mismatch or disappearance, fail closed and write neither.
+    if source.root_dev is not None and source.root_ino is not None:
+        try:
+            commit_identity = path_identity(resolved_root)
+        except OSError:
+            return _source_missing_receipt(source, generated_at, registry_sha256)
+        if commit_identity != (source.root_dev, source.root_ino):
+            return _source_error_receipt(
+                source, generated_at, registry_sha256, "source_identity_changed"
+            )
+
     # Create-only, never-overwriting batch naming. Deriving the name solely
     # from the timestamp is not collision-proof (clock rollback, an injected
     # `now`, or two runs sharing a microsecond), and atomic_write_json REPLACES.
