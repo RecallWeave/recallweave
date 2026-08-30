@@ -129,6 +129,27 @@ class ForgedJournalTest(unittest.TestCase):
         with self.assertRaisesRegex(ApplyError, "different source registry"):
             recover_journal(name, registry=self.registry, state_dirs=self.dirs)
 
+    def test_revert_refuses_journal_from_a_different_registry(self) -> None:
+        # revert must bind to the registry too, before touching any backup.
+        name = self._write_journal(
+            "applied",
+            [self._forged_op(relative_path="a.md", mutation_class="append_at_eof")],
+            registry_sha256="0" * 64,
+        )
+        with self.assertRaisesRegex(ApplyError, "different source registry"):
+            revert_journal(name, registry=self.registry, state_dirs=self.dirs)
+        # The victim was never touched (refusal precedes any mutation).
+        self.assertTrue(self.victim.exists())
+
+    def test_revert_refuses_journal_without_registry_digest(self) -> None:
+        name = self._write_journal(
+            "applied",
+            [self._forged_op(relative_path="a.md", mutation_class="append_at_eof")],
+            registry_sha256=None,
+        )
+        with self.assertRaisesRegex(ApplyError, "different source registry"):
+            revert_journal(name, registry=self.registry, state_dirs=self.dirs)
+
     def test_traversal_relative_path_in_recovery_is_refused(self) -> None:
         name = self._write_journal("intent", [self._forged_op()])
         with self.assertRaisesRegex(ApplyError, "Invalid relative path"):
@@ -1483,12 +1504,19 @@ class RenamePreconditionTest(unittest.TestCase):
 
     def _proposal(self, added_hash: str) -> dict:
         return {
+            "action": "fix_links_after_rename",
+            "edits": [
+                {
+                    "mutation_class": "fix_unresolved_link",
+                    "relative_path": "ref.md",
+                }
+            ],
             "rename_preconditions": {
                 "removed_path": "old.md",
                 "removed_absent": True,
                 "added_path": "new.md",
                 "added_content_hash": added_hash,
-            }
+            },
         }
 
     def test_clean_rename_passes(self) -> None:
@@ -1496,6 +1524,30 @@ class RenamePreconditionTest(unittest.TestCase):
 
         good = _sha(b"moved bytes")
         _verify_rename_preconditions(self._proposal(good), self.source)  # no raise
+
+    def test_absent_preconditions_on_link_rewrite_is_refused(self) -> None:
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        proposal = self._proposal(_sha(b"moved bytes"))
+        del proposal["rename_preconditions"]
+        with self.assertRaisesRegex(ApplyError, "no rename_preconditions"):
+            _verify_rename_preconditions(proposal, self.source)
+
+    def test_incomplete_preconditions_on_link_rewrite_is_refused(self) -> None:
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        proposal = self._proposal(_sha(b"moved bytes"))
+        del proposal["rename_preconditions"]["added_content_hash"]
+        with self.assertRaisesRegex(ApplyError, "incomplete or malformed"):
+            _verify_rename_preconditions(proposal, self.source)
+
+    def test_non_link_rewrite_proposal_needs_no_preconditions(self) -> None:
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        # An advisory / non-link-rewrite proposal is unaffected.
+        _verify_rename_preconditions(
+            {"action": "review_duplicates", "edits": []}, self.source
+        )
 
     def test_reappeared_removed_path_is_refused(self) -> None:
         from recallweave.steward_apply import _verify_rename_preconditions

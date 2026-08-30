@@ -350,50 +350,81 @@ def _validate_proposal(proposal: Any) -> None:
 def _verify_rename_preconditions(proposal: dict, source: Any) -> None:
     """Verify BOTH sides of a rewrite-after-rename proposal at apply time.
 
-    A ``fix_links_after_rename`` proposal pins each referrer's bytes, but its
-    referrer rewrites are only sound while the renamed-from path stays gone and
-    the renamed-to path still holds the observed bytes. If the added file was
-    deleted or repurposed after observation (referrers unchanged), applying
-    would rewrite links to a missing or unrelated note -- and the L1 gate,
-    which permits a zero unresolved-link delta, would not catch it. Refuse."""
+    ``fix_unresolved_link`` edits are only ever compiled as part of a
+    rename-referrer rewrite, which pins each referrer's bytes but is sound only
+    while the renamed-from path stays gone and the renamed-to path still holds
+    the observed bytes. If the added file was deleted or repurposed after
+    observation (referrers unchanged), applying would rewrite links to a missing
+    or unrelated note -- and the L1 gate, which permits a zero unresolved-link
+    delta, would not catch it.
 
+    This FAILS CLOSED: any proposal carrying a ``fix_unresolved_link`` edit must
+    also carry a complete, well-typed ``rename_preconditions`` block. Stripping
+    or malforming the block (its absence does not change the deterministic
+    proposal id) must not bypass the check -- an absent or incomplete block is a
+    refusal, never a skip."""
+
+    has_link_rewrite = any(
+        isinstance(edit, dict)
+        and edit.get("mutation_class") == "fix_unresolved_link"
+        for edit in proposal.get("edits") or []
+    )
     pre = proposal.get("rename_preconditions")
-    if not isinstance(pre, dict):
+    if not has_link_rewrite:
+        # No rename rewrite: preconditions are not applicable. (No other edit
+        # class rewrites links, so there is nothing to fail open here.)
         return
+    if not isinstance(pre, dict):
+        raise ApplyError(
+            "A link-rewrite proposal carries no rename_preconditions block; "
+            "refusing to rewrite referrers. Re-run the pipeline."
+        )
     removed = pre.get("removed_path")
-    if isinstance(removed, str) and removed:
-        _require_clean_relative_path(removed)
-        removed_target = source.root / removed
-        if is_link_like(removed_target) or removed_target.exists():
-            raise ApplyError(
-                "Rename precondition failed: the renamed-from path "
-                f"{removed!r} exists again; the rename is stale, refusing to "
-                "rewrite referrers. Re-run the pipeline."
-            )
     added = pre.get("added_path")
-    if isinstance(added, str) and added:
-        _require_clean_relative_path(added)
-        added_target = source.root / added
-        if is_link_like(added_target):
-            raise ApplyError(
-                f"Rename precondition failed: the renamed-to path {added!r} is "
-                "a symlink; refusing to rewrite referrers to it."
-            )
-        try:
-            data = added_target.read_bytes()
-        except OSError:
-            raise ApplyError(
-                f"Rename precondition failed: the renamed-to path {added!r} is "
-                "missing or unreadable; refusing to rewrite referrers to it. "
-                "Re-run the pipeline."
-            ) from None
-        expected = pre.get("added_content_hash")
-        if expected is not None and _sha256_bytes(data) != expected:
-            raise ApplyError(
-                f"Rename precondition failed: the renamed-to path {added!r} no "
-                "longer holds the observed bytes; refusing to rewrite referrers "
-                "to it. Re-run the pipeline."
-            )
+    expected = pre.get("added_content_hash")
+    if (
+        not isinstance(removed, str)
+        or not removed
+        or not isinstance(added, str)
+        or not added
+        or not isinstance(expected, str)
+        or not expected
+    ):
+        raise ApplyError(
+            "A link-rewrite proposal has an incomplete or malformed "
+            "rename_preconditions block (removed_path, added_path, and "
+            "added_content_hash are all required); refusing to rewrite "
+            "referrers. Re-run the pipeline."
+        )
+    _require_clean_relative_path(removed)
+    removed_target = source.root / removed
+    if is_link_like(removed_target) or removed_target.exists():
+        raise ApplyError(
+            "Rename precondition failed: the renamed-from path "
+            f"{removed!r} exists again; the rename is stale, refusing to "
+            "rewrite referrers. Re-run the pipeline."
+        )
+    _require_clean_relative_path(added)
+    added_target = source.root / added
+    if is_link_like(added_target):
+        raise ApplyError(
+            f"Rename precondition failed: the renamed-to path {added!r} is "
+            "a symlink; refusing to rewrite referrers to it."
+        )
+    try:
+        data = added_target.read_bytes()
+    except OSError:
+        raise ApplyError(
+            f"Rename precondition failed: the renamed-to path {added!r} is "
+            "missing or unreadable; refusing to rewrite referrers to it. "
+            "Re-run the pipeline."
+        ) from None
+    if _sha256_bytes(data) != expected:
+        raise ApplyError(
+            f"Rename precondition failed: the renamed-to path {added!r} no "
+            "longer holds the observed bytes; refusing to rewrite referrers "
+            "to it. Re-run the pipeline."
+        )
 
 
 def _validate_edit(edit: Any) -> None:
@@ -1850,6 +1881,10 @@ def revert_journal(
             f"{journal.get('source')!r}."
         )
     _require_root_identity(source)
+    # Bind the journal to the active source registry before touching any backup,
+    # exactly as recover_journal does: a journal recorded under a different
+    # registry must never drive a mutation of the currently registered source.
+    _require_journal_registry(journal, journal_name, registry)
     candidates = _validated_journal_ops(
         journal,
         journal_name,

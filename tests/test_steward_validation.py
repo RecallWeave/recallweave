@@ -75,8 +75,8 @@ class ValidationGateTest(unittest.TestCase):
         self.vault.cleanup()
         self.temporary.cleanup()
 
-    def _proposal(self, edits: list[dict]) -> dict:
-        return {
+    def _proposal(self, edits: list[dict], **overrides) -> dict:
+        document = {
             "schema_version": STEWARD_SCHEMA_VERSION,
             "kind": "proposal",
             "proposal_id": "prp-validationtest0",
@@ -87,6 +87,8 @@ class ValidationGateTest(unittest.TestCase):
             "conflicts_with": [],
             "registry_sha256": self.registry.registry_sha256,
         }
+        document.update(overrides)
+        return document
 
     def _apply(self, proposal: dict, policy: WritePolicy) -> dict:
         return apply_proposal(
@@ -190,7 +192,15 @@ class ValidationGateTest(unittest.TestCase):
                     "replacement_text": "[[seed]]\n# Injected",
                     "predicted_post_hash": _sha(post),
                 }
-            ]
+            ],
+            rename_preconditions={
+                "removed_path": "OldSeed.md",
+                "removed_absent": True,
+                "added_path": "seed.md",
+                "added_content_hash": _sha(
+                    (self.vault.root / "seed.md").read_bytes()
+                ),
+            },
         )
         with self.assertRaisesRegex(ApplyError, "L2|L1|structure"):
             self._apply(

@@ -704,6 +704,7 @@ class ApplyUnitTest(unittest.TestCase):
     def test_anchor_ambiguity_is_refused(self) -> None:
         target = self.vault.write("dup.md", "See [[Beta]] and [[Beta]].\n")
         data = target.read_bytes()
+        added = self.vault.write("Gamma.md", "# Gamma\n")
         proposal = self._proposal(
             [
                 {
@@ -714,7 +715,13 @@ class ApplyUnitTest(unittest.TestCase):
                     "replacement_text": "[[Gamma]]",
                     "predicted_post_hash": "0" * 64,
                 }
-            ]
+            ],
+            rename_preconditions={
+                "removed_path": "Beta.md",
+                "removed_absent": True,
+                "added_path": "Gamma.md",
+                "added_content_hash": _sha(added.read_bytes()),
+            },
         )
         policy = _policy({"class_levels": {"fix_unresolved_link": "require_approval"}})
         with self.assertRaisesRegex(ApplyError, "exactly once"):
