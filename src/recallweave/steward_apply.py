@@ -1864,26 +1864,68 @@ def sweep_auto_apply(
                 mode="auto",
                 execute=True,
             )
-        except (ApplyError, RollbackError) as error:
+        except RollbackError as error:
+            # The source is only partially restored and its journal is
+            # rollback_failed. Do NOT continue to the next proposal in the same
+            # sweep -- it could mutate the same source over an unresolved
+            # rollback. Record and abort; recovery must run before any new apply.
             failures.append(
                 {
                     "proposal": document.get("proposal_id"),
                     "error": type(error).__name__,
-                    "rolled_back": not isinstance(error, RollbackError),
+                    "rolled_back": False,
+                    "aborted_sweep": True,
+                }
+            )
+            break
+        except ApplyError as error:
+            # A clean rollback restored the source fully; other proposals may
+            # still proceed this sweep.
+            failures.append(
+                {
+                    "proposal": document.get("proposal_id"),
+                    "error": type(error).__name__,
+                    "rolled_back": True,
                 }
             )
             continue
-        updated = dict(document)
-        updated["status"] = "applied"
-        updated["applied_receipt_ref"] = receipt.get("journal_ref")
-        atomic_write_json(path, updated, within=proposals_dir)
-        receipt_name = (
-            f"{_file_timestamp(receipt['generated_at'])}-"
-            f"{document['proposal_id']}.json"
-        )
-        atomic_write_json(
-            receipts_dir / receipt_name, receipt, within=receipts_dir
-        )
+        try:
+            updated = dict(document)
+            updated["status"] = "applied"
+            updated["applied_receipt_ref"] = receipt.get("journal_ref")
+            atomic_write_json(path, updated, within=proposals_dir)
+            receipt_name = (
+                f"{_file_timestamp(receipt['generated_at'])}-"
+                f"{document['proposal_id']}.json"
+            )
+            atomic_write_json(
+                receipts_dir / receipt_name, receipt, within=receipts_dir
+            )
+        except (OSError, ValueError) as error:
+            # apply_proposal already mutated the vault and wrote its applied
+            # journal; only the status/receipt persistence failed. Record the
+            # completed mutation (so vault_writes reflects it) and surface the
+            # journal reference explicitly, then abort -- the same persistence
+            # fault would likely recur, and the operator must reconcile state.
+            applied.append(
+                {
+                    "proposal": document.get("proposal_id"),
+                    "mutations": receipt.get("steward_vault_mutations", 0),
+                    "journal_ref": receipt.get("journal_ref"),
+                    "git_commit": (receipt.get("git") or {}).get("commit"),
+                    "receipt_persist_failed": True,
+                }
+            )
+            failures.append(
+                {
+                    "proposal": document.get("proposal_id"),
+                    "error": type(error).__name__,
+                    "receipt_persist_failed": True,
+                    "journal_ref": receipt.get("journal_ref"),
+                    "aborted_sweep": True,
+                }
+            )
+            break
         applied.append(
             {
                 "proposal": document.get("proposal_id"),

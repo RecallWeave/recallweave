@@ -640,6 +640,71 @@ class ApplyUnitTest(unittest.TestCase):
                 write_policy=None, proposal_id="prp-whatever0000000", execute=True,
             )
 
+    def _auto_proposal(self, pid: str, rel: str) -> None:
+        content = f"# {pid}\n\nbody.\n"
+        proposal = self._proposal(
+            [
+                {
+                    "mutation_class": "create_new_file",
+                    "relative_path": rel,
+                    "replacement_text": content,
+                    "predicted_post_hash": _sha(content.encode()),
+                }
+            ],
+            proposal_id=pid,
+        )
+        (self.dirs["proposals"] / f"20260101T000000000000Z-src-{pid}.json").write_text(
+            json.dumps(proposal), encoding="utf-8"
+        )
+
+    def test_sweep_auto_apply_aborts_after_rollback_failure(self) -> None:
+        # A RollbackError leaves the source partially restored; the sweep must
+        # NOT apply the next proposal against it.
+        self._auto_proposal("prp-aaaaaaaaaaaaaa", "inbox/a.md")
+        self._auto_proposal("prp-bbbbbbbbbbbbbb", "bulk/0.md")
+        policy = _policy({"class_levels": {"create_new_file": "auto_apply"}})
+        calls = {"n": 0}
+
+        def boom(*_a, **_k):
+            calls["n"] += 1
+            raise RollbackError("retained backups")
+
+        with patch.object(steward_apply, "apply_proposal", side_effect=boom):
+            summary = sweep_auto_apply(
+                self.registry, self.dirs, self.database, write_policy=policy
+            )
+        self.assertEqual(calls["n"], 1, "sweep kept applying after a RollbackError")
+        self.assertTrue(any(f.get("aborted_sweep") for f in summary["failures"]))
+
+    def test_sweep_auto_apply_surfaces_receipt_persistence_failure(self) -> None:
+        self._auto_proposal("prp-cccccccccccccc", "inbox/c.md")
+        policy = _policy({"class_levels": {"create_new_file": "auto_apply"}})
+        real_receipt = {
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "steward_vault_mutations": 1,
+            "journal_ref": "j.json",
+            "git": {},
+        }
+
+        def ok(*_a, **_k):
+            return real_receipt
+
+        real_write = steward_apply.atomic_write_json
+
+        def failing_write(path, payload, **kw):
+            if "receipts" in str(path) or "proposals" in str(path):
+                raise OSError("disk full")
+            return real_write(path, payload, **kw)
+
+        with patch.object(steward_apply, "apply_proposal", side_effect=ok), \
+                patch.object(steward_apply, "atomic_write_json", side_effect=failing_write):
+            summary = sweep_auto_apply(
+                self.registry, self.dirs, self.database, write_policy=policy
+            )
+        self.assertTrue(any(a.get("receipt_persist_failed") for a in summary["applied"]))
+        self.assertEqual(summary["mutations"], 1)
+        self.assertTrue(any(f.get("receipt_persist_failed") for f in summary["failures"]))
+
     def test_sweep_auto_apply_skips_foreign_registry_proposal(self) -> None:
         # A stale proposal from a prior registry revision must be SKIPPED, not
         # recorded as an apply failure (which would make every scheduled sweep

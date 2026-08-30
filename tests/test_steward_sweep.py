@@ -526,6 +526,48 @@ class ReportBacklogAggregationTest(StewardSweepTest):
         )
         self.assertEqual(dupes, [])
 
+    def test_relationless_reassessment_clears_prior_finding(self) -> None:
+        # A later batch reassesses A.md but emits no relation (e.g. restored
+        # byte-for-byte): its prior CITATION_BROKEN must be cleared.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        dirs = self._dirs()
+        digest = self._registry().registry_sha256
+        (dirs["assessments"] / "20260101T000000Z-vault.json").write_text(
+            json.dumps({
+                "schema_version": STEWARD_SCHEMA_VERSION, "kind": "assessment_batch",
+                "source": "vault", "registry_sha256": digest,
+                "summary": {"CITATION_BROKEN": 1},
+                "assessments": [{
+                    "relation": "CITATION_BROKEN", "relative_path": "A.md",
+                    "inputs": {"broken_citations": [{"citation": "A.md:1-1"}]}}],
+                "covered_paths": ["A.md"],
+            }), encoding="utf-8")
+        (dirs["assessments"] / "20260102T000000Z-vault.json").write_text(
+            json.dumps({
+                "schema_version": STEWARD_SCHEMA_VERSION, "kind": "assessment_batch",
+                "source": "vault", "registry_sha256": digest,
+                "summary": {"index_current": 1},
+                "assessments": [],           # no relation this batch
+                "covered_paths": ["A.md"],   # but A.md WAS reassessed
+            }), encoding="utf-8")
+        summary, broken, _d = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(summary["CITATION_BROKEN"], 0)
+        self.assertEqual(broken, [])
+
+    def test_newest_report_filters_by_registry_digest(self) -> None:
+        from recallweave.steward_sweep import _newest_report
+
+        dirs = self._dirs()
+        (dirs["reports"] / "20260101T000000Z-sweep.json").write_text(
+            json.dumps({"registry_sha256": "foreign", "generated_at": "t1",
+                        "result": "findings"}), encoding="utf-8")
+        self.assertIsNone(_newest_report(dirs["reports"], "active"))
+        (dirs["reports"] / "20260102T000000Z-sweep.json").write_text(
+            json.dumps({"registry_sha256": "active", "generated_at": "t2",
+                        "result": "no_change"}), encoding="utf-8")
+        self.assertEqual(_newest_report(dirs["reports"], "active")["result"], "no_change")
+
     def test_foreign_registry_assessment_is_excluded_from_report(self) -> None:
         # An assessment recorded under a different registry (same source name)
         # must not leak its paths/citations/relations into this report.
@@ -750,6 +792,26 @@ class EvidenceBoundingTest(StewardSweepTest):
             integ["evidence_truncated"]["sources_missing"],
             {"reported": 2, "total": 4},
         )
+
+
+class ObserveErrorResultTest(StewardSweepTest):
+    def test_missing_source_is_not_reported_as_no_change(self) -> None:
+        import recallweave.steward_sweep as sw
+
+        self._baseline()
+        observe_receipt = {
+            "sources": [{"source": "vault", "error": "source_missing"}]
+        }
+        report = sw._assemble_report(
+            self._registry(),
+            self._dirs(),
+            self.database,
+            generated_at="2026-01-01T00:00:00+00:00",
+            observe_receipt=observe_receipt,
+            proposals_created_this_sweep=0,
+        )
+        self.assertNotEqual(report["result"], "no_change")
+        self.assertNotEqual(sw.SWEEP_EXIT_CODES[report["result"]], 0)
 
 
 class PruneTest(StewardSweepTest):

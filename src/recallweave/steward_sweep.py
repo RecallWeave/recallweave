@@ -301,8 +301,17 @@ def _aggregate_assessments(
                 path = item.get("relative_path")
                 if isinstance(path, str):
                     by_path.setdefault(path, []).append(item)
-            for path, items in by_path.items():
-                current[(source.name, path)] = (index, items)
+            # Update state for EVERY path this batch reassessed -- both those
+            # that produced relations and those that did not (covered_paths).
+            # A covered path with no relations sets an empty item list, which
+            # CLEARS any prior finding for it (a resolved citation/deletion is
+            # no longer reported once its note is reassessed to nothing).
+            covered = set(by_path)
+            for path in assessment.get("covered_paths") or []:
+                if isinstance(path, str):
+                    covered.add(path)
+            for path in covered:
+                current[(source.name, path)] = (index, by_path.get(path, []))
 
     current_index = {key: idx for key, (idx, _items) in current.items()}
 
@@ -475,6 +484,12 @@ def _assemble_report(
             pending_total=proposals_pending_total,
             total_relations=total_relations,
         )
+    # A source that could not be observed (missing, symlinked, or identity-
+    # changed root) means this sweep did NOT inspect it. That must not read as a
+    # clean run: elevate a would-be no_change to findings (non-zero exit) so a
+    # scheduled sweep cannot report false success while a source went unchecked.
+    if sources_errored and result == "no_change":
+        result = "findings"
     assert result in SWEEP_RESULTS
 
     return {
@@ -893,18 +908,29 @@ def _lock_state(state_root: Path) -> dict[str, Any]:
     return {"present": True, "pid": pid, "acquired_at": acquired_at}
 
 
-def _newest_report(reports_dir: Path) -> dict[str, Any] | None:
-    files = sorted(reports_dir.glob("*-sweep.json"))
-    if not files:
-        return None
-    try:
-        document = _load_json(files[-1])
-    except ValueError:
-        return None
-    return {
-        "generated_at": document.get("generated_at"),
-        "result": document.get("result"),
-    }
+def _newest_report(
+    reports_dir: Path, registry_sha256: str | None = None
+) -> dict[str, Any] | None:
+    # Newest report OF THE ACTIVE REGISTRY: after an in-place registry edit the
+    # dir still holds the previous registry's reports, and returning the lex-
+    # latest one unconditionally would present a foreign result as current until
+    # a fresh sweep writes another report.
+    for path in sorted(reports_dir.glob("*-sweep.json"), reverse=True):
+        try:
+            document = _load_json(path)
+        except ValueError:
+            continue
+        if not isinstance(document, dict):
+            continue
+        if registry_sha256 is not None and (
+            document.get("registry_sha256") != registry_sha256
+        ):
+            continue
+        return {
+            "generated_at": document.get("generated_at"),
+            "result": document.get("result"),
+        }
+    return None
 
 
 def status_report(
@@ -989,7 +1015,7 @@ def status_report(
         "generated_at": generated_at,
         "subdirs": {name: dirs[name].is_dir() for name in STEWARD_SUBDIRS},
         "counts": counts,
-        "newest_report": _newest_report(dirs["reports"]),
+        "newest_report": _newest_report(dirs["reports"], registry_sha256),
         "lock": _lock_state(state_root),
         "backups_total_bytes": _dir_total_bytes(dirs["backups"]),
         "pruned": pruned,

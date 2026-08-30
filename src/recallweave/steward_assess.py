@@ -660,6 +660,19 @@ def assess_change_batch(
                 "database": database.name,
             },
             "assessments": assessments,
+            # Every path this batch reassessed, INCLUDING ones that produced no
+            # deterministic relation (e.g. a modified note restored byte-for-byte
+            # to the index -> index_current, or a never-indexed NEW note later
+            # removed). The report uses this to CLEAR a path's prior finding when
+            # a later batch reassessed it to nothing; without it a resolved
+            # finding would persist forever.
+            "covered_paths": sorted(
+                {
+                    change.get("relative_path")
+                    for change in batch.get("changes") or []
+                    if isinstance(change.get("relative_path"), str)
+                }
+            ),
             "summary": summary,
             "content_drifted": sorted(set(content_drifted)),
             "baseline_divergence": sorted(set(baseline_divergence)),

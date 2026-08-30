@@ -866,19 +866,19 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                         "proposal run."
                     )
                 recorded_sha = assessment.get("registry_sha256")
-                # A null recorded digest fails closed when the active registry
-                # has one: an edited or legacy assessment must not bypass binding
-                # to the current registry.
+                # SKIP (do not raise on) an assessment from a prior registry
+                # revision. Raising would make every steward-propose/-sweep fail
+                # as long as a stale foreign assessment lingered in the state
+                # dir -- and rerunning the pipeline never removes it -- so a
+                # single in-place registry edit would wedge the pipeline. The
+                # report, pruning, and auto-apply paths already skip foreign
+                # artifacts; proposal generation does the same. (A null digest
+                # fails closed as foreign when the active registry has one.)
                 if (
                     registry.registry_sha256 is not None
                     and recorded_sha != registry.registry_sha256
                 ):
-                    raise ValueError(
-                        f"Assessment {assessment_path.name} was recorded under a "
-                        "different source registry (registry_sha256 mismatch); "
-                        "re-run steward-observe and steward-assess with the "
-                        "current registry before proposing."
-                    )
+                    continue
 
                 batch = _load_assessment_batch(
                     assessment, assessment_path.name, changes_dir
@@ -927,9 +927,27 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                     }
                 )
 
-        # Conflict-link across the full computed set (existing + new) so a newly
-        # written proposal references every counterpart.
-        _assign_conflicts([proposal for _fn, proposal, _new in all_computed])
+        # Conflict-link across the computed set, EXCLUDING proposals already
+        # applied on disk. An applied proposal is terminal; if it were treated
+        # as a pending counterpart, a new proposal for the same path would carry
+        # the applied id in conflicts_with and _validate_proposal would reject
+        # the new work permanently against a counterpart that can never conflict.
+        def _is_applied(filename: str) -> bool:
+            try:
+                existing = json.loads(
+                    (proposals_dir / filename).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                return False
+            return isinstance(existing, dict) and existing.get("status") == "applied"
+
+        _assign_conflicts(
+            [
+                proposal
+                for fn, proposal, _new in all_computed
+                if not _is_applied(fn)
+            ]
+        )
 
         written = 0
         conflicts_synced = 0

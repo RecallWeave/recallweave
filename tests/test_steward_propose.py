@@ -21,7 +21,7 @@ from recallweave.steward_propose import (
     propose_latest,
 )
 from recallweave.steward_sources import SOURCES_SPEC_VERSION, SourceRegistry
-from recallweave.steward_state import ensure_state_layout
+from recallweave.steward_state import STEWARD_SCHEMA_VERSION, ensure_state_layout
 
 FROZEN_NOW = "2026-01-01T00:00:00+00:00"
 
@@ -633,6 +633,32 @@ class ProposeLatestTest(StewardProposeTest):
             json.dumps(assessment), encoding="utf-8"
         )
 
+    def test_applied_proposal_excluded_from_new_conflict_set(self) -> None:
+        # An APPLIED proposal for a path must not appear in a later proposal's
+        # conflicts_with (which would make _validate_proposal reject the new work
+        # against a terminal counterpart).
+        self._rename_assessment("20260101T000000Z", "Beta.md", "BetaNew.md")
+        propose_latest(self.registry, self.state_root, self.database)
+        beta_fix = [
+            p for p in self.dirs["proposals"].glob("20260101T000000Z-vault-*.json")
+            if json.loads(p.read_text())["action"] == "fix_links_after_rename"
+        ][0]
+        marked = json.loads(beta_fix.read_text())
+        marked["status"] = "applied"
+        beta_fix.write_text(json.dumps(marked), encoding="utf-8")
+        beta_id = marked["proposal_id"]
+
+        self._rename_assessment("20260102T000000Z", "Gamma.md", "GammaNew.md")
+        propose_latest(self.registry, self.state_root, self.database)
+        gamma_fix = json.loads([
+            p for p in self.dirs["proposals"].glob("20260102T000000Z-vault-*.json")
+            if json.loads(p.read_text())["action"] == "fix_links_after_rename"
+        ][0].read_text())
+        self.assertNotIn(
+            beta_id, gamma_fix["conflicts_with"],
+            "a new proposal conflicts with an already-applied one",
+        )
+
     def test_conflict_is_synced_onto_existing_pending_proposal(self) -> None:
         # Two separate assessments each rewrite the same referrer (Alpha.md,
         # which links to both Beta and Gamma). The second run must record the
@@ -661,6 +687,25 @@ class ProposeLatestTest(StewardProposeTest):
         # Both proposals now declare the conflict with each other.
         self.assertIn(gamma_doc["proposal_id"], beta_doc["conflicts_with"])
         self.assertIn(beta_doc["proposal_id"], gamma_doc["conflicts_with"])
+
+    def test_foreign_assessment_is_skipped_not_fatal(self) -> None:
+        # A stale assessment from a prior registry revision must be SKIPPED, not
+        # raise -- otherwise it would wedge every propose/sweep until removed.
+        self._write_assessment_and_batch("20260102T000000Z")  # valid current one
+        (self.dirs["assessments"] / "20260101T000000Z-vault.json").write_text(
+            json.dumps({
+                "schema_version": STEWARD_SCHEMA_VERSION,
+                "kind": "assessment_batch",
+                "source": "vault",
+                "registry_sha256": "some-foreign-digest",
+                "change_batch_ref": "20260101T000000Z-vault.json",
+                "summary": {}, "assessments": [], "covered_paths": [],
+            }),
+            encoding="utf-8",
+        )
+        # Must not raise; the current assessment still yields proposals.
+        receipt = propose_latest(self.registry, self.state_root, self.database)
+        self.assertGreaterEqual(receipt["proposals_created"], 1)
 
     def test_no_assessment_is_reported_and_skipped(self) -> None:
         receipt = propose_latest(self.registry, self.state_root, self.database)
