@@ -505,6 +505,73 @@ def atomic_write_bytes(path: Path, data: bytes, *, within: Path | None = None) -
         raise
 
 
+def read_within_bytes(path: Path, *, within: Path) -> bytes:
+    """Read ``path`` descriptor-relative, anchored inside ``within``.
+
+    The mirror of ``atomic_write_bytes``: on POSIX it descends from the state
+    root (``within.parent``) component-by-component O_DIRECTORY|O_NOFOLLOW and
+    opens the leaf O_NOFOLLOW, so a directory (or the leaf) swapped for a symlink
+    after ``guard_within`` cannot redirect the read outside the state tree -- used
+    to verify a just-written backup through the same pinned path it was written
+    to. Raises OSError/ValueError on any symlinked component or a missing leaf."""
+
+    if _DIR_FD_STATE_WRITES:
+        anchor = within.parent
+        try:
+            rel_from_anchor = path.relative_to(anchor)
+        except ValueError:
+            rel_from_anchor = None
+        if rel_from_anchor is not None:
+            descend = rel_from_anchor.parts[:-1]
+            try:
+                fds: list[int] = [
+                    os.open(
+                        str(anchor), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    )
+                ]
+            except OSError as error:
+                raise ValueError(
+                    f"Refusing to read through a symlinked or missing state root: "
+                    f"{anchor} ({type(error).__name__})"
+                ) from error
+            try:
+                for part in descend:
+                    fds.append(
+                        os.open(
+                            part,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=fds[-1],
+                        )
+                    )
+                read_flags = (
+                    os.O_RDONLY
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_BINARY", 0)
+                )
+                fd = os.open(rel_from_anchor.parts[-1], read_flags, dir_fd=fds[-1])
+                try:
+                    chunks: list[bytes] = []
+                    while True:
+                        chunk = os.read(fd, 1 << 20)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+                finally:
+                    os.close(fd)
+            finally:
+                for open_fd in fds:
+                    try:
+                        os.close(open_fd)
+                    except OSError:
+                        pass
+
+    # Pathname fallback (e.g. Windows without dir_fd): reject a symlink leaf.
+    if is_link_like(path):
+        raise ValueError(f"Refusing to read a symlink or junction: {path}")
+    return path.read_bytes()
+
+
 def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) -> None:
     data = json.dumps(
         payload, ensure_ascii=True, sort_keys=True, indent=2

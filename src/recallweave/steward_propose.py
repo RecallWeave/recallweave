@@ -54,7 +54,14 @@ from pathlib import Path
 from typing import Any
 
 from .index import connect
-from .parser import MARKDOWN_LINK_RE, WIKILINK_RE, _markdown_target, normalize_name
+from .parser import (
+    MARKDOWN_LINK_RE,
+    WIKILINK_RE,
+    _markdown_target,
+    normalize_name,
+    parse_note,
+)
+from .policy import IndexPolicy
 from .steward_assess import ASSESSMENT_KIND
 from .steward_policy import MUTATION_CLASSES_SET, PRINCIPAL_KEY_NAMES
 from .steward_sources import SourceRegistry
@@ -220,6 +227,7 @@ def _resolve_rename_edit(
     new_path: str,
     source_root: Path,
     notes_hash_by_path: dict[str, str],
+    policy: Any,
 ) -> tuple[str, Any]:
     """Try to compile one fix_unresolved_link edit for a single authored edge.
 
@@ -232,6 +240,19 @@ def _resolve_rename_edit(
         return ("skip", "referrer_not_in_index")
 
     full_path = source_root / referrer_path
+    # Admit the referrer through the SOURCE policy before reading it. The SQLite
+    # index may have been built with a broader policy than this source, so it can
+    # list referrers the source's include_paths / deny terms / size cap exclude.
+    # Check the path + size (from a stat, not a content read) first, so an
+    # excluded referrer's bytes are never read or emitted as an executable edit.
+    try:
+        referrer_size = full_path.stat().st_size
+    except OSError:
+        return ("drift", None)
+    admitted, _reason = policy.path_allowed(referrer_path, referrer_size)
+    if not admitted:
+        return ("skip", "referrer_not_admitted")
+
     try:
         data = full_path.read_bytes()
     except OSError:
@@ -240,6 +261,20 @@ def _resolve_rename_edit(
     actual_hash = hashlib.sha256(data).hexdigest()
     if actual_hash != expected_hash:
         return ("drift", None)
+
+    # Frontmatter-denied referrers are also outside the admitted corpus; a broad
+    # index can contain them, so apply the policy's frontmatter rule too before
+    # emitting an edit for one.
+    if policy.deny_frontmatter:
+        try:
+            note = parse_note(full_path, source_root)
+        except (UnicodeError, RecursionError, OSError):
+            return ("skip", "referrer_frontmatter_unverifiable")
+        allowed, _fm_reason = policy.frontmatter_allowed(
+            note.frontmatter, valid=note.frontmatter_valid
+        )
+        if not allowed:
+            return ("skip", "referrer_frontmatter_denied")
 
     try:
         raw = data.decode("utf-8-sig", errors="strict")
@@ -280,10 +315,32 @@ def _resolve_rename_edit(
             return ("skip", "target_not_filename_form")
         match = matches[0]
         new_stem = Path(new_path).stem
+        # A bare `[[New]]` only resolves unambiguously when NO OTHER note shares
+        # the new basename. If another note does (e.g. `folder/New.md` renamed
+        # while `other/New.md` exists), rewriting to the bare stem produces an
+        # AMBIGUOUS link that the pre-apply rebuild still sees as unresolved --
+        # which L1 permits at a zero delta, marking an ineffective rewrite
+        # applied. The index reflects the pre-rename vault, so the rename target
+        # itself is not in it; count same-stem notes other than the renamed-from
+        # and renamed-to paths, and emit a path-qualified wikilink when any
+        # collision exists.
+        normalized_new_stem = normalize_name(new_stem)
+        stem_collisions = sum(
+            1
+            for indexed_path in notes_hash_by_path
+            if indexed_path not in (old_path, new_path)
+            and normalize_name(Path(indexed_path).stem) == normalized_new_stem
+        )
+        if stem_collisions == 0:
+            new_link_target = new_stem
+        else:
+            new_link_target = Path(new_path).with_suffix("").as_posix()
         m_start, m_end = match.span(0)
         g1_start, g1_end = match.span(1)
         old_text = line_text[m_start:m_end]
-        replacement_text = line_text[m_start:g1_start] + new_stem + line_text[g1_end:m_end]
+        replacement_text = (
+            line_text[m_start:g1_start] + new_link_target + line_text[g1_end:m_end]
+        )
     elif kind == "markdown_link":
         matches = [
             match
@@ -383,6 +440,7 @@ def _build_rename_proposal(
     *,
     source: Any,
     source_root: Path,
+    policy: Any,
     assessment_file: Any,
     generated_at: str,
     database: Path,
@@ -423,7 +481,14 @@ def _build_rename_proposal(
         kind = str(edge_row["kind"])
         evidence = json.loads(edge_row["evidence_json"])
         status, payload = _resolve_rename_edit(
-            referrer_path, kind, evidence, old_path, new_path, source_root, notes_hash_by_path
+            referrer_path,
+            kind,
+            evidence,
+            old_path,
+            new_path,
+            source_root,
+            notes_hash_by_path,
+            policy,
         )
         if status == "ok":
             edits.append(payload)
@@ -618,6 +683,7 @@ def propose_from_assessment(
     database: Path,
     source_root: Path,
     *,
+    policy: Any = None,
     now: str | None = None,
     skipped_drifted: list[str] | None = None,
 ) -> list[dict]:
@@ -642,6 +708,11 @@ def propose_from_assessment(
     database = Path(database)
     source_root = Path(source_root)
     generated_at = now if now is not None else _utc_now()
+    # The active source policy gates which referrers a rename rewrite may read
+    # and emit. Fall back to a permissive default only when a caller does not
+    # supply one (e.g. a focused unit test); propose_latest always passes the
+    # registered source's policy so a broad index cannot leak excluded paths.
+    admission_policy = policy if policy is not None else IndexPolicy()
     source = assessment.get("source")
     assessment_file = assessment.get("change_batch_ref")
     indexed_at = (assessment.get("index") or {}).get("indexed_at")
@@ -691,6 +762,7 @@ def propose_from_assessment(
                     added_path,
                     source=source,
                     source_root=source_root,
+                    policy=admission_policy,
                     assessment_file=assessment_file,
                     generated_at=generated_at,
                     database=database,
@@ -890,6 +962,7 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                     batch,
                     database,
                     source.root,
+                    policy=source.policy,
                     now=generated_at,
                     skipped_drifted=skipped_drifted,
                 )

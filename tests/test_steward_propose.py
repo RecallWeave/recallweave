@@ -171,6 +171,56 @@ class RenameFixLinksTest(StewardProposeTest):
         self.assertEqual(proposal["blast_radius"]["files_edited"], 1)
         self.assertEqual(proposal["blast_radius"]["notes_affected"], ["Alpha.md"])
 
+    def test_ambiguous_new_stem_produces_qualified_wikilink(self) -> None:
+        # Beta.md -> sub/BetaNew.md while an unrelated other/BetaNew.md exists:
+        # the new basename "BetaNew" is not unique, so a bare [[BetaNew]] would be
+        # ambiguous. The compiled rewrite must emit the path-qualified target.
+        # Add a same-stem note and rebuild the index while Beta.md still exists,
+        # so the index (which reflects the pre-rename vault) knows both Beta.md
+        # and the colliding other/BetaNew.md. Then perform the on-disk rename.
+        self._write("other/BetaNew.md", "# Other\n\nUnrelated BetaNew note.\n")
+        build_index(
+            self.vault, self.database, policy=IndexPolicy(), minimum_candidate_score=0.0
+        )
+        beta_hash = self._index_hash("Beta.md")
+        (self.vault / "sub").mkdir()
+        (self.vault / "Beta.md").rename(self.vault / "sub" / "BetaNew.md")
+        batch = _batch(
+            changes=[
+                _change("Beta.md", "removed", previous=beta_hash),
+                _change("sub/BetaNew.md", "added", current=beta_hash),
+            ],
+            rename_candidates=[
+                {
+                    "removed_path": "Beta.md",
+                    "added_paths": ["sub/BetaNew.md"],
+                    "content_hash": beta_hash,
+                    "inode_match": True,
+                }
+            ],
+        )
+        assessment = self._assess(batch)
+        proposals = self._propose(assessment, batch)
+        fixes = self._by_action(proposals, "fix_links_after_rename")
+        self.assertEqual(len(fixes), 1)
+        edit = fixes[0]["edits"][0]
+        self.assertEqual(edit["relative_path"], "Alpha.md")
+        self.assertEqual(edit["replacement_text"], "[[sub/BetaNew]]")
+
+    def test_referrer_excluded_by_source_policy_is_not_compiled(self) -> None:
+        # The index was built with a broad policy, but a source policy whose
+        # include_paths allowlist excludes the referrer must NOT read or compile
+        # an edit for it -- the whole proposal would otherwise be rejected at
+        # apply and the excluded path leaked. It falls back to an advisory.
+        batch, assessment = self._rename_beta()
+        restrictive = IndexPolicy(
+            include_paths=["Beta.md", "BetaNew.md", "Gamma.md", "Echo.md"]
+        )
+        proposals = self._propose(assessment, batch, policy=restrictive)
+        self.assertEqual(self._by_action(proposals, "fix_links_after_rename"), [])
+        advisories = self._by_action(proposals, "review_dangling_references")
+        self.assertEqual(len(advisories), 1)
+
     def test_referrer_hash_drift_skips_edit_and_falls_back_to_advisory(self) -> None:
         batch, assessment = self._rename_beta()
         # Alpha.md changes on disk after indexing but before propose runs.

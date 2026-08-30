@@ -35,6 +35,7 @@ from typing import Any
 from .index import SCHEMA_VERSION as INDEX_SCHEMA_VERSION
 from .parser import parse_note
 from .index import connect
+from .safe_write import path_identity
 from .steward_sources import SourceRegistry
 from .steward_state import (
     STEWARD_SCHEMA_VERSION,
@@ -86,6 +87,22 @@ _REQUIRED_BATCH_KEYS = (
 )
 _CHANGE_TYPES = frozenset({"added", "modified", "removed"})
 _LINE_SPLIT_RE = re.compile(r"\r\n|\r|\n")
+
+
+def _source_identity_ok(source: Any) -> bool:
+    """Whether the source root still has the (dev, ino) observation pinned.
+
+    Returns True when the source was never identity-pinned (root_dev/root_ino
+    are None, e.g. a platform without a held descriptor). Fails closed (False)
+    if the root is now missing or its identity differs -- a rename+replace after
+    observation."""
+
+    if source.root_dev is None or source.root_ino is None:
+        return True
+    try:
+        return path_identity(source.root) == (source.root_dev, source.root_ino)
+    except OSError:
+        return False
 
 
 def _utc_now() -> str:
@@ -887,6 +904,16 @@ def assess_latest(registry: SourceRegistry, state_root: Path, database: Path) ->
         skipped_sources: list[dict[str, Any]] = []
 
         for source in registry.sources:
+            # Re-verify the source's pinned identity BEFORE reading anything for
+            # it: observation pinned (root_dev, root_ino), but a root renamed and
+            # replaced between observe and assess would otherwise let assessment
+            # read (and re-verify covered paths against) the REPLACEMENT tree, or
+            # accept an empty batch and report no_change for a changed identity.
+            if not _source_identity_ok(source):
+                skipped_sources.append(
+                    {"source": source.name, "reason": "source_identity_changed"}
+                )
+                continue
             # Match the source's batches by the EXACT recorded name, not a glob
             # suffix: `*-a.json` also matches `<ts>-x-a.json` (source "x-a"),
             # which would pull another source's batch into "a"'s assessment and,
@@ -944,6 +971,17 @@ def assess_latest(registry: SourceRegistry, state_root: Path, database: Path) ->
                     expected_registry_sha256=registry.registry_sha256,
                     source_is_file=(source.type == "file"),
                 )
+                # Re-verify identity AFTER the source reads and BEFORE persisting:
+                # a root swapped mid-assessment means the just-computed result may
+                # reflect the replacement tree, so discard it (record the source
+                # as identity-changed) rather than write a possibly-tainted
+                # assessment.
+                if not _source_identity_ok(source):
+                    skipped_sources.append(
+                        {"source": source.name, "reason": "source_identity_changed"}
+                    )
+                    all_already_assessed = False
+                    break
                 result["change_batch_ref"] = batch_path.name
                 result["change_batch_sha256"] = batch_sha256
                 atomic_write_json(assessment_path, result, within=assessments_dir)

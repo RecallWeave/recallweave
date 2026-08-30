@@ -482,7 +482,17 @@ def _assemble_report(
     total_relations = sum(
         relation_summary.get(relation, 0) for relation in DETERMINISTIC_RELATIONS
     )
-    if apply_summary is not None and apply_summary.get("failures"):
+    # Only a failure that actually crossed the mutation boundary (a completed or
+    # failed rollback, or a post-mutation persistence fault) is a
+    # validation_failed_rolled_back. A pure preflight refusal mutated nothing and
+    # rolled nothing back -- the proposal simply stays pending -- so it must not
+    # claim a rollback that never happened (which would also repeat every run).
+    mutation_failures = [
+        failure
+        for failure in (apply_summary.get("failures") or [])
+        if not failure.get("preflight_refused")
+    ] if apply_summary is not None else []
+    if mutation_failures:
         result = "validation_failed_rolled_back"
     elif apply_summary is not None and apply_summary.get("applied"):
         result = "applied" if proposals_pending_total == 0 else "approval_required"

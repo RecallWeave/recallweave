@@ -220,6 +220,29 @@ class ValidationGateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "never named.*b.md"):
             validate_l3(before, after, plans)
 
+    def test_l3_requires_created_file_present_after_apply(self) -> None:
+        # A create_new_file target removed by a concurrent writer between L0 and
+        # the post-apply manifest is absent from BOTH manifests. It must still be
+        # reported missing (the transaction promised to create it), not slip past
+        # because it was never in manifest_before.
+        before: dict[str, str] = {}
+        after: dict[str, str] = {}
+        plans = [
+            {"edit": {"relative_path": "new.md", "mutation_class": "create_new_file"}}
+        ]
+        with self.assertRaisesRegex(ValidationError, "absent from the admitted set"):
+            validate_l3(before, after, plans)
+
+    def test_l3_move_to_trash_target_absent_after_is_allowed(self) -> None:
+        # A trashed target is SUPPOSED to be gone afterward; it must not trip the
+        # new presence requirement.
+        before = {"gone.md": "1" * 64}
+        after: dict[str, str] = {}
+        plans = [
+            {"edit": {"relative_path": "gone.md", "mutation_class": "move_to_trash"}}
+        ]
+        validate_l3(before, after, plans)  # no raise
+
     def test_l1_bounds_reject_unexplained_note_loss(self) -> None:
         receipt_before = {"notes_indexed": 5, "unresolved_links": 0, "verified_edges": 2, "skipped": {}}
         receipt_after = {"notes_indexed": 4, "unresolved_links": 0, "verified_edges": 2, "skipped": {}}

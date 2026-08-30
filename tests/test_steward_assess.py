@@ -591,6 +591,30 @@ class AssessLatestTest(StewardAssessTest):
             second["skipped_sources"], [{"source": "vault", "reason": "already_assessed"}]
         )
 
+    def test_source_identity_change_skips_assessment(self) -> None:
+        # A root renamed and replaced between observe and assess changes its
+        # (dev, ino); assessment must refuse to read the replacement tree -- it
+        # records the source as identity-changed and persists nothing, rather
+        # than assessing the wrong tree or reporting a false no_change.
+        path = self._write("Newcomer.md", "# Newcomer\n\nBrand new note.\n")
+        self._write_batch_file(
+            "20260101T000000Z", [_change("Newcomer.md", "added", current=_hash(path))]
+        )
+        source = self.registry.sources[0]
+        if source.root_dev is None or source.root_ino is None:
+            self.skipTest("source identity is not pinned on this platform")
+        with patch(
+            "recallweave.steward_assess.path_identity",
+            return_value=(source.root_dev + 1, source.root_ino + 1),
+        ):
+            receipt = assess_latest(self.registry, self.state_root, self.database)
+        self.assertEqual(receipt["assessed"], [])
+        self.assertIn(
+            {"source": "vault", "reason": "source_identity_changed"},
+            receipt["skipped_sources"],
+        )
+        self.assertEqual(list(self.dirs["assessments"].glob("*.json")), [])
+
     def test_no_change_batch_is_reported_and_skipped(self) -> None:
         receipt = assess_latest(self.registry, self.state_root, self.database)
         self.assertEqual(receipt["assessed"], [])

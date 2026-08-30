@@ -234,6 +234,17 @@ class SourceRegistry:
                 "An appliable source must declare a non-empty include_paths "
                 "allowlist."
             )
+        if type_ == "file" and mode == "appliable":
+            # Apply resolves an edit target as <root>/<relative_path>, but a file
+            # source's root IS the note, so that yields <note>.md/<note>.md and
+            # every apply path (preflight read, create, git working dir) breaks.
+            # Reject the combination at validation rather than emit broken edits;
+            # use a folder source to make a single file appliable.
+            raise ValueError(
+                "A file source may not be appliable: apply resolves edit targets "
+                "under the root as a directory. Use a folder source (with an "
+                "include_paths allowlist naming the file) for appliable edits."
+            )
         open_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         if type_ != "file":
             open_flags |= getattr(os, "O_DIRECTORY", 0)

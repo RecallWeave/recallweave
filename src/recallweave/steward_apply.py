@@ -76,11 +76,13 @@ from .steward_validate import (
 )
 from .steward_state import (
     STEWARD_SCHEMA_VERSION,
+    atomic_write_bytes,
     atomic_write_json,
     ensure_state_layout,
     ensure_state_root_outside_sources,
     guard_within,
     lock_state,
+    read_within_bytes,
 )
 
 import re
@@ -146,6 +148,13 @@ class ApplyError(ValueError):
 
 class RollbackError(ApplyError):
     """Rollback itself failed; backups are retained and named."""
+
+
+class PreflightError(ApplyError):
+    """A refusal BEFORE the mutation boundary (validation, authorization, or
+    preflight). No journal was written and nothing in the vault changed, so an
+    auto sweep must classify it distinctly from a completed rollback rather than
+    claim a clean rollback that never happened."""
 
 
 def _require_clean_relative_path(path: str) -> None:
@@ -675,6 +684,14 @@ class _EditTargetTooLarge(Exception):
     """Signals an edit target that exceeds the source policy size cap."""
 
 
+class _EditTargetUnsafe(Exception):
+    """Signals an edit target that is not a plain single-link regular file."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _read_edit_target(target: Path, max_bytes: int | None) -> bytes:
     """Read an edit target, bounding the read at the source policy size cap.
 
@@ -684,13 +701,24 @@ def _read_edit_target(target: Path, max_bytes: int | None) -> bytes:
     OOM the apply). Read at most ``max_bytes + 1`` and reject anything over the
     cap BEFORE hashing or policy admission -- the same size boundary observe
     enforces before it ever reads a note. ``O_BINARY`` keeps the bytes (and thus
-    the precondition hash) identical to the observed content on Windows."""
+    the precondition hash) identical to the observed content on Windows.
+
+    The opened descriptor is also fstat-checked: a target that is not a regular
+    file, or that is hardlinked (``st_nlink > 1``), is rejected -- Steward's read
+    pipeline excludes hardlinks, so an edit target swapped for a hardlink to an
+    out-of-scope file before apply (which a pathname read would satisfy by hash)
+    must not be mutated or trashed."""
 
     flags = (
         os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     )
     fd = os.open(target, flags)
     try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise _EditTargetUnsafe("not a regular file")
+        if int(info.st_nlink) > 1:
+            raise _EditTargetUnsafe("a hardlink (st_nlink > 1)")
         if max_bytes is None:
             chunks: list[bytes] = []
             while True:
@@ -742,6 +770,11 @@ def _preflight_edit(
                 f"Edit target {edit['relative_path']} exceeds the source "
                 f"policy max_file_bytes; refusing to read or rewrite a stale "
                 "oversize target."
+            ) from None
+        except _EditTargetUnsafe as error:
+            raise ApplyError(
+                f"Edit target {edit['relative_path']} is {error.reason}; "
+                "refusing to mutate a non-regular or hardlinked target."
             ) from None
         except OSError as error:
             raise ApplyError(
@@ -1165,13 +1198,22 @@ def _write_backup(
     backup_dir: Path, name: str, data: bytes, *, within: Path
 ) -> Path:
     backup_path = backup_dir / name
-    guard_within(backup_path, within)
     backup_dir.mkdir(parents=True, exist_ok=True)
-    with open(backup_path, "wb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    if _sha256_bytes(backup_path.read_bytes()) != _sha256_bytes(data):
+    # Write AND verify the backup descriptor-relative to the pinned state tree:
+    # a pathname open/read would follow a backups/ directory swapped for a
+    # symlink after guard_within, writing (and then "verifying") the copy outside
+    # the state tree -- so recovery could later find no backup, and the apply
+    # would proceed on a misplaced copy. atomic_write_bytes anchors the write and
+    # read_within_bytes re-reads through the same pinned path.
+    atomic_write_bytes(backup_path, data, within=within)
+    try:
+        written = read_within_bytes(backup_path, within=within)
+    except (OSError, ValueError) as error:
+        raise ApplyError(
+            f"Backup verification could not read {backup_path} through the "
+            f"pinned state directory ({type(error).__name__})."
+        ) from error
+    if _sha256_bytes(written) != _sha256_bytes(data):
         raise ApplyError(f"Backup verification failed: {backup_path}")
     # Durability: flush the backup directory entry (and its parent, in case
     # the backup dir itself was just created) before the caller advances the
@@ -1430,7 +1472,7 @@ def apply_proposal(
     )
 
     if len(proposal["edits"]) > policy.max_files_per_apply:
-        raise ApplyError(
+        raise PreflightError(
             f"Proposal {proposal_id} touches {len(proposal['edits'])} files; "
             f"the write policy caps an apply at {policy.max_files_per_apply}."
         )
@@ -1449,12 +1491,12 @@ def apply_proposal(
                 try:
                     note = parse_note(target, source.root)
                 except (UnicodeError, RecursionError, OSError):
-                    raise ApplyError(
+                    raise PreflightError(
                         f"Cannot verify protected frontmatter for "
                         f"{edit['relative_path']}; refusing the edit."
                     ) from None
                 if not note.frontmatter_valid:
-                    raise ApplyError(
+                    raise PreflightError(
                         f"Target {edit['relative_path']} has unparseable "
                         "frontmatter under a protected-frontmatter policy; "
                         "refusing the edit."
@@ -1478,16 +1520,25 @@ def apply_proposal(
                 )
             )
         if not allowed:
-            raise ApplyError(
+            raise PreflightError(
                 f"Write policy resolves {edit['mutation_class']!r} on "
                 f"{edit['relative_path']!r} to {level!r} ({reason}); this "
                 "invocation cannot authorize it."
             )
 
-    plans = [
-        _preflight_edit(edit, source, database)
-        for edit in proposal["edits"]
-    ]
+    # Preflight every edit BEFORE the journal write and first mutation. A refusal
+    # here (precondition drift, unreadable/oversize/unsafe target, non-admission)
+    # crosses no mutation boundary, so surface it as a PreflightError the sweep
+    # can classify apart from a completed rollback.
+    try:
+        plans = [
+            _preflight_edit(edit, source, database)
+            for edit in proposal["edits"]
+        ]
+    except PreflightError:
+        raise
+    except ApplyError as error:
+        raise PreflightError(str(error)) from error
 
     stamp = _file_timestamp(generated_at)
     receipt_ref = f"{stamp}-{proposal_id}.json"
@@ -1992,6 +2043,20 @@ def sweep_auto_apply(
                 }
             )
             break
+        except PreflightError as error:
+            # The proposal was refused BEFORE any mutation or journal (e.g. its
+            # target hash drifted during preflight). Nothing was written and no
+            # rollback occurred, so record it distinctly -- not as a clean
+            # rollback -- and let other proposals proceed this sweep.
+            failures.append(
+                {
+                    "proposal": document.get("proposal_id"),
+                    "error": type(error).__name__,
+                    "rolled_back": False,
+                    "preflight_refused": True,
+                }
+            )
+            continue
         except ApplyError as error:
             # A clean rollback restored the source fully; other proposals may
             # still proceed this sweep.

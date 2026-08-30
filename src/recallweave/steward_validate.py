@@ -189,11 +189,17 @@ def validate_l3(
         for relative in [plan["edit"]["relative_path"]]
         if plan["edit"]["mutation_class"] != "move_to_trash"
         and relative not in manifest_after
-        and relative in manifest_before
     )
     if missing:
+        # Every non-trash edit target must be present in the admitted set after
+        # apply, INCLUDING a create_new_file target that did not exist before: a
+        # concurrent writer removing it between L0 and the post-apply manifest
+        # would otherwise leave it absent from both manifests, so the earlier
+        # `relative in manifest_before` guard let a create be marked applied
+        # while the promised file no longer exists.
         raise ValidationError(
-            f"L3: edited files vanished from the admitted set: {missing}."
+            f"L3: edited files are absent from the admitted set after apply: "
+            f"{missing}."
         )
 
 

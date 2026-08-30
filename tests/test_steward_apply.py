@@ -16,6 +16,7 @@ from recallweave.policy import IndexPolicy
 from recallweave import steward_apply
 from recallweave.steward_apply import (
     ApplyError,
+    PreflightError,
     RollbackError,
     apply_latest,
     apply_proposal,
@@ -688,6 +689,24 @@ class ApplyUnitTest(unittest.TestCase):
         self.assertEqual(summary["applied"], [])
         self.assertEqual(summary["failures"], [])
         self.assertTrue(any(s.get("reason") == "not_auto_apply" for s in summary["skipped"]))
+
+    def test_sweep_auto_apply_records_preflight_refusal_not_rollback(self) -> None:
+        # An auto create_new_file whose target already exists fails at preflight,
+        # before any mutation or journal. The sweep must record it distinctly as
+        # a preflight refusal (rolled_back False), NOT claim a clean rollback,
+        # and must not abort -- and no journal is written.
+        self._auto_proposal("prp-preflightexist0", "seed.md")  # seed.md exists
+        policy = _policy({"class_levels": {"create_new_file": "auto_apply"}})
+        summary = sweep_auto_apply(
+            self.registry, self.dirs, self.database, write_policy=policy
+        )
+        self.assertEqual(summary["applied"], [])
+        self.assertTrue(summary["failures"])
+        failure = summary["failures"][0]
+        self.assertTrue(failure.get("preflight_refused"))
+        self.assertFalse(failure.get("rolled_back"))
+        self.assertFalse(failure.get("aborted_sweep"))
+        self.assertEqual(list(self.dirs["journal"].glob("*.json")), [])
 
     def test_sweep_auto_apply_aborts_after_rollback_failure(self) -> None:
         # A RollbackError leaves the source partially restored; the sweep must

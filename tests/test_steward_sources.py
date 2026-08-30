@@ -108,6 +108,23 @@ class StewardSourcesTest(unittest.TestCase):
             f"file source descriptor opened without O_BINARY: {captured!r}",
         )
 
+    def test_appliable_file_source_rejected(self) -> None:
+        # apply resolves <root>/<relative_path>; a file source's root IS the note,
+        # so the combination is broken and must be rejected at validation.
+        note = self.root / "note.md"
+        note.write_text("content", encoding="utf-8")
+        payload = _registry(
+            _source(
+                "note",
+                str(note),
+                type_="file",
+                mode="appliable",
+                policy={"include_paths": ["note.md"]},
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "file source may not be appliable"):
+            SourceRegistry.from_payload(payload, base_dir=self.root)
+
     def test_policy_parsed_and_defaults_applied(self) -> None:
         payload = _registry(
             _source(

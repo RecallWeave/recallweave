@@ -19,10 +19,12 @@ from recallweave.steward_apply import (
     ApplyError,
     RollbackError,
     _EditTargetTooLarge,
+    _EditTargetUnsafe,
     _guarded_replace,
     _read_edit_target,
     _recheck_parent_chain,
     _rollback,
+    _write_backup,
     recover_journal,
     revert_journal,
 )
@@ -319,6 +321,31 @@ class MutationBoundaryTest(unittest.TestCase):
             )
 
 
+class BackupAnchorTest(unittest.TestCase):
+    def test_write_backup_refuses_symlinked_state_root(self) -> None:
+        # The backup writer must be descriptor-relative to the pinned state tree:
+        # a backups/ directory reached through a symlinked state root must be
+        # refused, not followed, so a backup can never be written (or "verified")
+        # outside the state tree. Regression for the pathname open/read backup.
+        import recallweave.steward_state as _st
+
+        if not _st._DIR_FD_STATE_WRITES:
+            self.skipTest("descriptor-relative writes unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            real_root = base / "state_real"
+            (real_root / "backups").mkdir(parents=True)
+            link_root = base / "state"
+            try:
+                link_root.symlink_to(real_root, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            within = link_root / "backups"  # reached through the symlinked root
+            with self.assertRaisesRegex(ValueError, "symlinked or missing state root"):
+                _write_backup(within, "0-note.md", b"backup data", within=within)
+            self.assertEqual(list((real_root / "backups").iterdir()), [])
+
+
 class RollbackPinnedReadTest(unittest.TestCase):
     def test_rollback_reads_live_target_through_pinned_root(self) -> None:
         # Rollback must classify the live target through the identity-pinned
@@ -446,6 +473,27 @@ class BoundedEditReadTest(unittest.TestCase):
                 _read_edit_target(over, 1000)
             # No cap configured: the full file is returned.
             self.assertEqual(_read_edit_target(big, None), b"x" * 5000)
+
+    def test_read_edit_target_rejects_hardlink_and_non_regular(self) -> None:
+        # Steward's read pipeline excludes hardlinks and non-regular files; the
+        # edit-target read must too, off the opened descriptor, so a target
+        # swapped for a hardlink (or a directory) before apply is refused rather
+        # than mutated/trashed.
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            original = base / "a.md"
+            original.write_bytes(b"content")
+            linked = base / "b.md"
+            try:
+                os.link(original, linked)
+            except OSError:
+                self.skipTest("hardlink creation unavailable")
+            with self.assertRaises(_EditTargetUnsafe):
+                _read_edit_target(linked, 1000)
+            directory = base / "d"
+            directory.mkdir()
+            with self.assertRaises(_EditTargetUnsafe):
+                _read_edit_target(directory, 1000)
 
 
 @unittest.skipUnless(git_available(), "git is not installed")
