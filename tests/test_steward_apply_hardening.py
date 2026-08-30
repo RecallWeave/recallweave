@@ -200,6 +200,31 @@ class ForgedJournalTest(unittest.TestCase):
         self.assertEqual(target.read_bytes(), before)
 
 
+    def test_recover_refuses_modification_whose_backup_is_missing(self) -> None:
+        # A modification whose replacement landed (live == content_hash_after)
+        # but crashed while still in_progress, with its backup now missing, is
+        # unrecoverable: it must be refused, NOT silently skipped and marked
+        # rolled_back while the note stays modified and cannot be restored.
+        original = b"hello"
+        modified = b"hello\nappended line\n"
+        (self.vault.root / "a.md").write_bytes(modified)  # the landed replacement
+        name = self._write_journal(
+            "intent",
+            [
+                self._forged_op(
+                    relative_path="a.md",
+                    mutation_class="append_at_eof",
+                    content_hash_before=_sha(original),
+                    content_hash_after=_sha(modified),
+                    backup_name="0-a.md",  # never created: backup is missing
+                    state="in_progress",
+                )
+            ],
+        )
+        with self.assertRaisesRegex(ApplyError, "cannot be restored"):
+            recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        self.assertEqual((self.vault.root / "a.md").read_bytes(), modified)
+
     def test_recovery_refuses_when_crashed_target_was_edited(self) -> None:
         # A done op whose live bytes match neither the pre- nor post-apply
         # hash means someone edited the file after the crash: recovery must

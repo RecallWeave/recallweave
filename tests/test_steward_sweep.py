@@ -22,6 +22,7 @@ from recallweave.steward_propose import propose_latest
 from recallweave.steward_sources import SOURCES_SPEC_VERSION, SourceRegistry
 from recallweave.steward_state import ensure_state_layout
 from recallweave.steward_sweep import (
+    REPORT_EVIDENCE_LIMIT,
     REPORT_KIND,
     STATUS_KIND,
     SWEEP_EXIT_CODES,
@@ -31,6 +32,36 @@ from recallweave.steward_sweep import (
     status_report,
     sweep_registry,
 )
+
+
+class PruneAnchorTest(unittest.TestCase):
+    def test_prune_open_refuses_swapped_dir_even_if_precheck_bypassed(self) -> None:
+        # The prune must open the directory once O_NOFOLLOW and delete relative to
+        # that descriptor, so a directory swapped for a symlink AFTER the
+        # is_link_like precheck cannot make it enumerate and unlink files in the
+        # symlink target (a vault). Forcing the precheck to pass proves the
+        # descriptor-relative open still refuses the symlink. Regression for the
+        # pathname iterdir/unlink race.
+        import recallweave.steward_sweep as _sw
+
+        if not _sw._DIR_FD_PRUNE:
+            self.skipTest("descriptor-relative pruning unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            external = base / "external"
+            external.mkdir()
+            victim = external / "old-victim.md"
+            victim.write_text("x", encoding="utf-8")
+            os.utime(victim, (0, 0))  # ancient mtime: would be prunable
+            link = base / "reports"
+            try:
+                link.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            with patch("recallweave.steward_sweep.is_link_like", return_value=False):
+                with self.assertRaises(ValueError):
+                    _sw._prune_dir(link, cutoff_epoch=1e18)
+            self.assertTrue(victim.exists(), "prune deleted a file through a symlink")
 
 
 class MarkdownReportAnchorTest(unittest.TestCase):
@@ -252,6 +283,41 @@ class RenameApprovalRequiredTest(StewardSweepTest):
         payload = _decode_single_json(stdout)
         self.assertEqual(payload["kind"], REPORT_KIND)
         self.assertEqual(payload["result"], "approval_required")
+
+
+class ApplyDetailsBoundTest(StewardSweepTest):
+    def test_apply_details_are_bounded_in_report(self) -> None:
+        # sweep_auto_apply records one skipped entry per non-auto proposal and
+        # per proposal beyond the apply cap; a large backlog must not embed an
+        # unbounded list in the report. The apply detail lists get the same
+        # count/char budget and truncation flag as the integrity arrays.
+        from recallweave.steward_state import ensure_state_layout
+
+        registry = self._registry()
+        dirs = ensure_state_layout(self.state_root)
+        apply_summary = {
+            "applied": [],
+            "skipped": [
+                {"proposal": f"prp-{i:016d}", "reason": "not_auto_apply"}
+                for i in range(REPORT_EVIDENCE_LIMIT + 5)
+            ],
+            "failures": [],
+            "mutations": 0,
+        }
+        report = _assemble_report(
+            registry,
+            dirs,
+            self.database,
+            generated_at="2026-01-01T00:00:00+00:00",
+            observe_receipt={"sources": []},
+            proposals_created_this_sweep=0,
+            apply_summary=apply_summary,
+        )
+        self.assertEqual(len(report["apply"]["skipped"]), REPORT_EVIDENCE_LIMIT)
+        truncated = report["integrity"]["evidence_truncated"]
+        self.assertIn("apply.skipped", truncated)
+        self.assertEqual(truncated["apply.skipped"]["total"], REPORT_EVIDENCE_LIMIT + 5)
+        self.assertEqual(truncated["apply.skipped"]["reported"], REPORT_EVIDENCE_LIMIT)
 
 
 class PendingCarryoverTest(StewardSweepTest):

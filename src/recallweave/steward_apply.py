@@ -2260,20 +2260,25 @@ def recover_journal(
         if target.is_file():
             live = _sha256_bytes(target.read_bytes())
 
-        # A had-a-file operation whose target is now absent but whose backup is
-        # also missing is unrecoverable: proceeding would mark the journal
-        # rolled_back while the note stays gone (a false success that unblocks
-        # later applies). This covers both a move_to_trash whose deletion landed
-        # and a modification (append/rewrite) whose target vanished. Refuse the
+        # A had-a-file operation that no longer holds its pre-apply bytes but
+        # whose backup is missing is unrecoverable: a restore is needed yet
+        # impossible, so proceeding would mark the journal rolled_back while the
+        # note stays modified/gone (a false success that unblocks later applies).
+        # This covers a move_to_trash or modification whose target vanished AND a
+        # modification whose replacement already landed (live == content_hash_
+        # after) but crashed while still `in_progress` before the backup could be
+        # relied on. A target already at the pre-apply bytes (live ==
+        # content_hash_before) needs no backup and is not caught here. Refuse the
         # whole recovery and leave the journal unresolved.
         if (
             item["content_hash_before"] is not None
-            and live is None
+            and live != item["content_hash_before"]
             and not backup_exists
         ):
             drifted.append(
-                f"{item['relative_path']} (target absent and its backup is "
-                f"missing at {item['backup_path']}; the note cannot be restored)"
+                f"{item['relative_path']} (needs restore to its pre-apply bytes "
+                f"but the backup is missing at {item['backup_path']}; the note "
+                f"cannot be restored)"
             )
             continue
 

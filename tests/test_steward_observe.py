@@ -172,6 +172,20 @@ class ObserveSourceTest(unittest.TestCase):
         self.assertEqual(candidate["added_paths"], ["x.md", "y.md"])
         self.assertNotIn("inode_match", candidate)
 
+    def test_two_removed_one_added_same_hash_no_rename_candidate(self) -> None:
+        # Two removed notes with identical bytes and one added note with those
+        # bytes: the rename mapping is ambiguous. No compilable candidate may be
+        # emitted (each removal would otherwise be paired with the same addition
+        # and both compiled as clean renames).
+        self.vault.write("a.md", "same content")
+        self.vault.write("b.md", "same content")
+        self.observe()
+        self.vault.remove("a.md")
+        self.vault.remove("b.md")
+        self.vault.write("c.md", "same content")
+        receipt = self.observe()
+        self.assertEqual(receipt["rename_candidates"], [])
+
     def test_symlink_skipped(self) -> None:
         self.vault.write("target.md", "real content")
         if not make_symlink(self.vault.root / "target.md", self.vault.root / "link.md"):

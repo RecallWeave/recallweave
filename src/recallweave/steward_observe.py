@@ -611,10 +611,23 @@ def observe_source(
     added_by_hash: dict[str, list[dict]] = defaultdict(list)
     for record in added_records:
         added_by_hash[record["current_content_hash"]].append(record)
+    removed_by_hash: dict[str, list[dict]] = defaultdict(list)
+    for record in removed_records:
+        previous = record["previous_content_hash"]
+        if previous is not None:
+            removed_by_hash[previous].append(record)
     rename_candidates: list[dict] = []
     for record in removed_records:
         previous = record["previous_content_hash"]
         if previous is None or previous not in added_by_hash:
+            continue
+        # The removal must be UNIQUE for its content hash. If two or more removed
+        # notes share these bytes, the rename mapping is ambiguous: each would
+        # otherwise be paired with the same addition and BOTH compiled as clean
+        # renames (propose only checks len(added_paths) == 1). Emit no candidate
+        # for such a hash -- the deleted notes fall back to dangling-reference
+        # advisories instead.
+        if len(removed_by_hash[previous]) != 1:
             continue
         matches = added_by_hash[previous]
         # Rename candidacy is content-hash based only. Inode identity is NOT

@@ -57,6 +57,7 @@ exist and how many files they hold.
 
 import json
 import os
+import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -509,6 +510,21 @@ def _assemble_report(
         result = "findings"
     assert result in SWEEP_RESULTS
 
+    # Bound the embedded apply detail lists the same way as the integrity
+    # arrays: sweep_auto_apply records one `skipped` entry per non-auto proposal
+    # and per proposal beyond the apply cap, so a large pending backlog could
+    # otherwise grow the report unbounded with no truncation flag. Bound a COPY
+    # for the report only -- result classification and vault_writes above used
+    # the FULL summary, so truncating the display can never hide a mutation
+    # failure or undercount mutations.
+    apply_for_report = apply_summary
+    if apply_summary is not None:
+        apply_for_report = dict(apply_summary)
+        for detail_key in ("applied", "skipped", "failures"):
+            apply_for_report[detail_key] = _bound(
+                f"apply.{detail_key}", apply_summary.get(detail_key) or []
+            )
+
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": REPORT_KIND,
@@ -532,7 +548,7 @@ def _assemble_report(
             "pending_total": proposals_pending_total,
             "by_action": proposals_by_action,
         },
-        "apply": apply_summary,
+        "apply": apply_for_report,
         "observe": {
             "skipped_total": batch_agg["skipped_total"],
             "changed_during_observe": batch_agg["changed_during_observe"],
@@ -807,24 +823,73 @@ def _dir_total_bytes(directory: Path) -> int:
     return total
 
 
+_DIR_FD_PRUNE = (
+    os.open in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.listdir in getattr(os, "supports_fd", set())
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
+
+
 def _prune_dir(
     directory: Path,
     cutoff_epoch: float,
     prunable_names: set[str] | None = None,
 ) -> int:
+    # When an allow-set is given, only artifacts whose downstream stage is
+    # durably complete may be pruned -- so an unassessed change batch, or an
+    # assessed-but-unproposed batch/assessment, is never deleted (which would
+    # permanently lose changes the checkpoint has already advanced past).
     if is_link_like(directory):
         raise ValueError(
             f"Refusing to prune through a symlinked directory: {directory}"
         )
+
+    if _DIR_FD_PRUNE:
+        # Open the directory ONCE O_NOFOLLOW and do every stat/unlink relative to
+        # that held descriptor. A pathname iterdir/stat/unlink after a single
+        # is_link_like check races: if the directory is swapped for a symlink
+        # between the check and the deletions, pruning would enumerate and unlink
+        # files in the symlink target (a vault, say). The held fd pins the real
+        # inode, and O_NOFOLLOW refuses a directory already swapped for a symlink.
+        try:
+            dir_fd = os.open(
+                directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+        except OSError as error:
+            raise ValueError(
+                f"Refusing to prune a symlinked or missing directory: "
+                f"{directory} ({type(error).__name__})"
+            ) from error
+        try:
+            deleted = 0
+            for name in os.listdir(dir_fd):
+                if prunable_names is not None and name not in prunable_names:
+                    continue
+                try:
+                    info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue  # skip symlinks, directories, and special files
+                if info.st_mtime < cutoff_epoch:
+                    try:
+                        os.unlink(name, dir_fd=dir_fd)
+                        deleted += 1
+                    except OSError:
+                        pass
+            return deleted
+        finally:
+            os.close(dir_fd)
+
+    # Pathname fallback (e.g. Windows without dir_fd): the check-to-unlink window
+    # cannot be fully excluded here, matching the module's documented fallbacks.
     deleted = 0
     for entry in directory.iterdir():
         if is_link_like(entry) or not entry.is_file():
             continue
-        # When an allow-set is given, only artifacts whose downstream stage is
-        # durably complete may be pruned -- so an unassessed change batch, or an
-        # assessed-but-unproposed batch/assessment, is never deleted (which
-        # would permanently lose changes the checkpoint has already advanced
-        # past).
         if prunable_names is not None and entry.name not in prunable_names:
             continue
         try:
