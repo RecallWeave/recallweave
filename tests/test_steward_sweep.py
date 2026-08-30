@@ -97,6 +97,83 @@ class PruneAnchorTest(unittest.TestCase):
                 _sw._prune_dir(state_root / "reports", cutoff_epoch=1e18)
             self.assertTrue(victim.exists(), "prune deleted through a swapped state root")
 
+    def test_prune_operates_on_pinned_inode_after_pathname_swap(self) -> None:
+        # The prune holds ONE state-root/directory descriptor: once opened, every
+        # operation targets that pinned inode. A directory renamed away and
+        # replaced by ANOTHER REAL directory (not a symlink) at the same pathname
+        # cannot redirect deletions onto the replacement. Regression for
+        # per-operation pathname reopening.
+        import recallweave.steward_sweep as _sw
+
+        if not _sw._DIR_FD_PRUNE:
+            self.skipTest("descriptor-relative pruning unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            real = base / "reports"
+            real.mkdir()
+            original_file = real / "old.json"
+            original_file.write_text("{}", encoding="utf-8")
+            os.utime(original_file, (0, 0))
+            dir_fd = os.open(real, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.rename(real, base / "reports-moved")  # original inode moves
+                replacement = base / "reports"
+                replacement.mkdir()  # a DIFFERENT real directory at the same path
+                replacement_file = replacement / "old.json"
+                replacement_file.write_text("{}", encoding="utf-8")
+                os.utime(replacement_file, (0, 0))
+                deleted = _sw._prune_in_dir(dir_fd, 1e18, None)
+            finally:
+                os.close(dir_fd)
+            self.assertEqual(deleted, 1)
+            self.assertFalse(
+                (base / "reports-moved" / "old.json").exists(),
+                "prune did not delete from the pinned inode",
+            )
+            self.assertTrue(
+                replacement_file.exists(),
+                "prune deleted from a replacement directory at the same pathname",
+            )
+
+    def test_prune_leaf_swap_between_stat_and_unlink_preserves_replacement(
+        self,
+    ) -> None:
+        # If a prunable entry is replaced with a DIFFERENT inode between the stat
+        # that admitted it and the deletion, the replacement must survive: the
+        # deletion is inode-verified (quarantine-and-verify), not a bare unlink of
+        # the name. Regression for the stat-to-unlink leaf race.
+        import recallweave.steward_sweep as _sw
+
+        if not _sw._DIR_FD_PRUNE:
+            self.skipTest("descriptor-relative pruning unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            directory = base / "reports"
+            directory.mkdir()
+            target = directory / "x.json"
+            target.write_bytes(b"OLD")
+            os.utime(target, (0, 0))  # old: admitted by the stat pre-check
+            real_rename = os.rename
+            state = {"swapped": False}
+
+            def swapping_rename(src, dst, *args, **kwargs):
+                # Just before the FIRST quarantine rename, repoint the name to a
+                # brand-new inode (a would-be unprocessed file).
+                if not state["swapped"]:
+                    state["swapped"] = True
+                    replacement = directory / "x.json.new"
+                    replacement.write_bytes(b"NEW-UNPROCESSED")
+                    real_rename(str(replacement), str(target))
+                return real_rename(src, dst, *args, **kwargs)
+
+            with patch(
+                "recallweave.steward_sweep.os.rename", side_effect=swapping_rename
+            ):
+                deleted = _sw._prune_dir(directory, 1e18)
+            self.assertEqual(deleted, 0, "inode-swapped replacement was deleted")
+            self.assertTrue(target.exists())
+            self.assertEqual(target.read_bytes(), b"NEW-UNPROCESSED")
+
     def test_prune_fails_closed_without_dir_fd_support(self) -> None:
         # On a platform without descriptor-relative deletion, pruning must refuse
         # (delete nothing) rather than fall back to a pathname race, since a prune

@@ -827,10 +827,107 @@ _DIR_FD_PRUNE = (
     os.open in os.supports_dir_fd
     and os.unlink in os.supports_dir_fd
     and os.stat in os.supports_dir_fd
+    and os.rename in os.supports_dir_fd
     and os.listdir in getattr(os, "supports_fd", set())
     and hasattr(os, "O_NOFOLLOW")
     and hasattr(os, "O_DIRECTORY")
 )
+
+
+def _delete_prunable_entry(
+    dir_fd: int, name: str, expected: os.stat_result, cutoff_epoch: float
+) -> bool:
+    """Delete ``name`` in ``dir_fd`` ONLY if it still identifies the exact old,
+    regular file we inspected -- closing the stat-to-unlink leaf race.
+
+    POSIX cannot unlink by inode, so quarantine-and-verify: atomically rename the
+    current target of ``name`` aside, fstat the moved inode, and unlink it only
+    when its (dev, ino) still matches what we stat'd AND it is still a regular
+    file older than the cutoff. If the name was repointed to a different inode
+    between the stat and the rename, restore it (rename back, overwriting any
+    plant -- pruning holds the exclusive StateLock, so the only writer that could
+    have repointed it is not a legitimate one) and delete nothing."""
+
+    quarantine = f".steward-prune-quarantine.{expected.st_dev}.{expected.st_ino}"
+    try:
+        os.rename(name, quarantine, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except OSError:
+        return False
+    try:
+        moved = os.stat(quarantine, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    if (
+        moved.st_dev == expected.st_dev
+        and moved.st_ino == expected.st_ino
+        and stat.S_ISREG(moved.st_mode)
+        and moved.st_mtime < cutoff_epoch
+    ):
+        try:
+            os.unlink(quarantine, dir_fd=dir_fd)
+            return True
+        except OSError:
+            return False
+    # Not the inode we verified as prunable: put it back and delete nothing.
+    try:
+        os.rename(quarantine, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except OSError:
+        pass
+    return False
+
+
+def _prune_in_dir(
+    dir_fd: int, cutoff_epoch: float, prunable_names: set[str] | None
+) -> int:
+    """Prune old regular files in an ALREADY-OPEN directory descriptor. Every
+    stat/rename/unlink is relative to ``dir_fd`` (which the caller pinned
+    O_NOFOLLOW), and each deletion is inode-verified (see
+    ``_delete_prunable_entry``)."""
+
+    deleted = 0
+    for name in os.listdir(dir_fd):
+        if name.startswith(".steward-prune-quarantine."):
+            continue  # never re-process a stale quarantine temp as an artifact
+        if prunable_names is not None and name not in prunable_names:
+            continue
+        try:
+            info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue  # skip symlinks, directories, and special files
+        if info.st_mtime >= cutoff_epoch:
+            continue
+        if _delete_prunable_entry(dir_fd, name, info, cutoff_epoch):
+            deleted += 1
+    return deleted
+
+
+def _prune_child_fd(
+    state_root_fd: int,
+    name: str,
+    cutoff_epoch: float,
+    prunable_names: set[str] | None = None,
+) -> int:
+    """Prune one state subdirectory RELATIVE to a held state-root descriptor, so
+    the whole destructive prune operates on one pinned state-root identity."""
+    try:
+        dir_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=state_root_fd,
+        )
+    except FileNotFoundError:
+        return 0
+    except OSError as error:
+        raise ValueError(
+            f"Refusing to prune a symlinked or missing state subdirectory "
+            f"{name} ({type(error).__name__})"
+        ) from error
+    try:
+        return _prune_in_dir(dir_fd, cutoff_epoch, prunable_names)
+    finally:
+        os.close(dir_fd)
 
 
 def _prune_dir(
@@ -854,8 +951,9 @@ def _prune_dir(
         # parent) swapped for a symlink would still be followed, letting pruning
         # enumerate and unlink files in an external target (a vault, say). Opening
         # the parent O_NOFOLLOW refuses a swapped state root, and the target is
-        # then opened relative to that pinned inode; every stat/unlink is relative
-        # to the held target descriptor.
+        # then opened relative to that pinned inode. (status_report's prune holds
+        # ONE state-root descriptor across the whole operation via _prune_child_fd;
+        # this path serves direct/standalone callers.)
         parent = directory.parent
         try:
             parent_fd = os.open(
@@ -867,37 +965,7 @@ def _prune_dir(
                 f"{parent} ({type(error).__name__})"
             ) from error
         try:
-            try:
-                dir_fd = os.open(
-                    directory.name,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=parent_fd,
-                )
-            except OSError as error:
-                raise ValueError(
-                    f"Refusing to prune a symlinked or missing directory: "
-                    f"{directory} ({type(error).__name__})"
-                ) from error
-            try:
-                deleted = 0
-                for name in os.listdir(dir_fd):
-                    if prunable_names is not None and name not in prunable_names:
-                        continue
-                    try:
-                        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                    except OSError:
-                        continue
-                    if not stat.S_ISREG(info.st_mode):
-                        continue  # skip symlinks, directories, and special files
-                    if info.st_mtime < cutoff_epoch:
-                        try:
-                            os.unlink(name, dir_fd=dir_fd)
-                            deleted += 1
-                        except OSError:
-                            pass
-                return deleted
-            finally:
-                os.close(dir_fd)
+            return _prune_child_fd(parent_fd, directory.name, cutoff_epoch, prunable_names)
         finally:
             os.close(parent_fd)
 
@@ -962,6 +1030,88 @@ def _read_json_at(dir_fd: int, name: str) -> Any:
         return None
 
 
+def _open_state_root_fd(state_root: Path) -> int:
+    """Open the state root O_NOFOLLOW, refusing a symlinked root. The returned
+    descriptor PINS the state-root inode: every read/deletion done relative to it
+    targets that one inode for the whole prune, so a state root renamed away and
+    replaced by another (even non-symlink) directory between operations cannot
+    redirect them."""
+    try:
+        return os.open(
+            state_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+    except OSError as error:
+        raise ValueError(
+            f"Refusing to prune through a symlinked or missing state root "
+            f"{state_root} ({type(error).__name__})"
+        ) from error
+
+
+def _marked_assessment_names(docs: list[Any], registry_sha256: str | None) -> set[str]:
+    marked: set[str] = set()
+    for document in docs:
+        if not isinstance(document, dict):
+            continue
+        if document.get("kind") != "propose_marker":
+            continue
+        if registry_sha256 is not None and (
+            document.get("registry_sha256") != registry_sha256
+        ):
+            continue
+        name = document.get("assessment")
+        if isinstance(name, str):
+            marked.add(name)
+    return marked
+
+
+def _classify_complete(
+    marked: set[str],
+    assessment_docs: list[tuple[str, Any]],
+    registry_sha256: str | None,
+) -> set[str]:
+    complete: set[str] = set()
+    for name, document in assessment_docs:
+        if not isinstance(document, dict):
+            continue
+        if registry_sha256 is not None and (
+            document.get("registry_sha256") != registry_sha256
+        ):
+            continue
+        summary = document.get("summary") or {}
+        eligible = any(
+            int(summary.get(rel, 0) or 0) > 0 for rel in _PROPOSAL_ELIGIBLE_RELATIONS
+        )
+        if not eligible or name in marked:
+            complete.add(name)
+    return complete
+
+
+def _allow_set_fd(state_root_fd: int, registry_sha256: str | None) -> set[str]:
+    """Compute the pruning allow-set RELATIVE to a held state-root descriptor, so
+    it is read from the same pinned identity the deletions operate on."""
+    proposed_fd = _open_state_child_fd(state_root_fd, "proposed")
+    marker_docs: list[Any] = []
+    if proposed_fd is not None:
+        try:
+            for name in os.listdir(proposed_fd):
+                if name.endswith(".json"):
+                    marker_docs.append(_read_json_at(proposed_fd, name))
+        finally:
+            os.close(proposed_fd)
+    marked = _marked_assessment_names(marker_docs, registry_sha256)
+
+    assessments_fd = _open_state_child_fd(state_root_fd, "assessments")
+    assessment_docs: list[tuple[str, Any]] = []
+    if assessments_fd is not None:
+        try:
+            for name in os.listdir(assessments_fd):
+                if name.endswith(".json"):
+                    assessment_docs.append((name, _read_json_at(assessments_fd, name)))
+        finally:
+            os.close(assessments_fd)
+    return _classify_complete(marked, assessment_docs, registry_sha256)
+
+
 def _fully_processed_artifact_names(
     dirs: dict[str, Path], registry_sha256: str | None = None
 ) -> set[str]:
@@ -980,87 +1130,22 @@ def _fully_processed_artifact_names(
     The marker must be a genuine current-registry marker; a foreign or malformed
     one does not authorize pruning.
 
-    Reads are anchored to the pinned state root (the same O_NOFOLLOW-refused
-    identity pruning deletes through) so a swapped state root cannot feed a
-    forged allow-set: the whole destructive prune uses one state-root identity."""
+    Reads are anchored to the pinned state root so a swapped state root cannot
+    feed a forged allow-set."""
 
     assessments_dir = dirs["assessments"]
     state_root = assessments_dir.parent
 
-    def _classify(marked: set[str], assessment_docs: list[tuple[str, Any]]) -> set[str]:
-        complete: set[str] = set()
-        for name, document in assessment_docs:
-            if not isinstance(document, dict):
-                continue
-            if registry_sha256 is not None and (
-                document.get("registry_sha256") != registry_sha256
-            ):
-                continue
-            summary = document.get("summary") or {}
-            eligible = any(
-                int(summary.get(rel, 0) or 0) > 0
-                for rel in _PROPOSAL_ELIGIBLE_RELATIONS
-            )
-            if not eligible or name in marked:
-                complete.add(name)
-        return complete
-
-    def _marked_from(docs: list[Any]) -> set[str]:
-        marked: set[str] = set()
-        for document in docs:
-            if not isinstance(document, dict):
-                continue
-            if document.get("kind") != "propose_marker":
-                continue
-            if registry_sha256 is not None and (
-                document.get("registry_sha256") != registry_sha256
-            ):
-                continue
-            name = document.get("assessment")
-            if isinstance(name, str):
-                marked.add(name)
-        return marked
-
     if _DIR_FD_PRUNE:
+        state_root_fd = _open_state_root_fd(state_root)
         try:
-            state_root_fd = os.open(
-                state_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            )
-        except OSError as error:
-            raise ValueError(
-                f"Refusing to read prune authorization through a symlinked or "
-                f"missing state root {state_root} ({type(error).__name__})"
-            ) from error
-        try:
-            proposed_fd = _open_state_child_fd(state_root_fd, "proposed")
-            marker_docs: list[Any] = []
-            if proposed_fd is not None:
-                try:
-                    for name in os.listdir(proposed_fd):
-                        if name.endswith(".json"):
-                            marker_docs.append(_read_json_at(proposed_fd, name))
-                finally:
-                    os.close(proposed_fd)
-            marked = _marked_from(marker_docs)
-
-            assessments_fd = _open_state_child_fd(state_root_fd, "assessments")
-            assessment_docs: list[tuple[str, Any]] = []
-            if assessments_fd is not None:
-                try:
-                    for name in os.listdir(assessments_fd):
-                        if name.endswith(".json"):
-                            assessment_docs.append(
-                                (name, _read_json_at(assessments_fd, name))
-                            )
-                finally:
-                    os.close(assessments_fd)
-            return _classify(marked, assessment_docs)
+            return _allow_set_fd(state_root_fd, registry_sha256)
         finally:
             os.close(state_root_fd)
 
     # Pathname fallback (no dir_fd): pruning itself fails closed on this platform,
     # so a pathname-read allow-set can never authorize an actual deletion.
-    marker_docs = []
+    marker_docs: list[Any] = []
     proposed_dir = dirs.get("proposed")
     if proposed_dir is not None and proposed_dir.is_dir():
         for path in proposed_dir.glob("*.json"):
@@ -1068,56 +1153,72 @@ def _fully_processed_artifact_names(
                 marker_docs.append(_load_json(path))
             except ValueError:
                 continue
-    marked = _marked_from(marker_docs)
-    assessment_docs = []
+    marked = _marked_assessment_names(marker_docs, registry_sha256)
+    assessment_docs: list[tuple[str, Any]] = []
     for path in assessments_dir.glob("*.json"):
         try:
             assessment_docs.append((path.name, _load_json(path)))
         except ValueError:
             continue
-    return _classify(marked, assessment_docs)
+    return _classify_complete(marked, assessment_docs, registry_sha256)
 
 
-def _prune_orphan_markers(state_root: Path) -> None:
-    """Remove propose_marker files whose assessment is gone, descriptor-relative
-    to the pinned state root. Deletion must never escape via a swapped ancestor,
-    so the state root is opened O_NOFOLLOW and markers are unlinked relative to
-    the held proposed/ descriptor. Only reached on descriptor-relative platforms
-    (pruning fails closed otherwise)."""
+def _prune_orphan_markers_fd(state_root_fd: int) -> None:
+    """Remove propose_marker files whose assessment is gone, relative to a held
+    state-root descriptor (each unlink inode-verified via _delete_prunable_entry
+    is unnecessary here -- markers carry no age criterion -- but the delete is
+    still relative to the pinned proposed/ descriptor)."""
+    proposed_fd = _open_state_child_fd(state_root_fd, "proposed")
+    if proposed_fd is None:
+        return
     try:
-        state_root_fd = os.open(
-            state_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        )
-    except OSError as error:
-        raise ValueError(
-            f"Refusing to prune markers through a symlinked or missing state "
-            f"root {state_root} ({type(error).__name__})"
-        ) from error
-    try:
-        proposed_fd = _open_state_child_fd(state_root_fd, "proposed")
-        if proposed_fd is None:
-            return
+        assessments_fd = _open_state_child_fd(state_root_fd, "assessments")
         try:
-            assessments_fd = _open_state_child_fd(state_root_fd, "assessments")
-            try:
-                assessment_names = (
-                    set(os.listdir(assessments_fd))
-                    if assessments_fd is not None
-                    else set()
-                )
-            finally:
-                if assessments_fd is not None:
-                    os.close(assessments_fd)
-            for name in os.listdir(proposed_fd):
-                if not name.endswith(".json"):
-                    continue
-                if name not in assessment_names:
-                    try:
-                        os.unlink(name, dir_fd=proposed_fd)
-                    except OSError:
-                        pass
+            assessment_names = (
+                set(os.listdir(assessments_fd))
+                if assessments_fd is not None
+                else set()
+            )
         finally:
-            os.close(proposed_fd)
+            if assessments_fd is not None:
+                os.close(assessments_fd)
+        for name in os.listdir(proposed_fd):
+            if not name.endswith(".json"):
+                continue
+            if name not in assessment_names:
+                try:
+                    os.unlink(name, dir_fd=proposed_fd)
+                except OSError:
+                    pass
+    finally:
+        os.close(proposed_fd)
+
+
+def _prune_state(
+    state_root: Path, cutoff_epoch: float, registry_sha256: str | None
+) -> dict[str, int]:
+    """Run the ENTIRE destructive prune under ONE pinned state-root descriptor:
+    the allow-set, all three subdirectory prunes, and marker cleanup share the
+    same O_NOFOLLOW-pinned inode, so no window exists for a state-root swap
+    between authorization and deletion. Each deletion is additionally
+    inode-verified against a stat-to-unlink leaf swap."""
+    state_root_fd = _open_state_root_fd(state_root)
+    try:
+        complete = _allow_set_fd(state_root_fd, registry_sha256)
+        pruned = {
+            "reports": _prune_child_fd(state_root_fd, "reports", cutoff_epoch),
+            "changes": _prune_child_fd(
+                state_root_fd, "changes", cutoff_epoch, complete
+            ),
+            "assessments": _prune_child_fd(
+                state_root_fd, "assessments", cutoff_epoch, complete
+            ),
+        }
+        _prune_orphan_markers_fd(state_root_fd)
+        pruned["total"] = (
+            pruned["reports"] + pruned["changes"] + pruned["assessments"]
+        )
+        return pruned
     finally:
         os.close(state_root_fd)
 
@@ -1209,31 +1310,15 @@ def status_report(
                 "total": 0,
             }
         else:
-            pruned = {}
             # Destructive pruning is serialized by the same lock the pipeline
-            # stages use, so a concurrent run cannot lose its selected inputs.
+            # stages use, so no legitimate concurrent run can write an artifact
+            # while pruning selects and deletes. The whole prune -- allow-set,
+            # every subdirectory deletion, and marker cleanup -- runs under ONE
+            # O_NOFOLLOW-pinned state-root descriptor (see _prune_state), so a
+            # state-root swap between any two of those steps cannot redirect them,
+            # and each deletion is inode-verified against a leaf swap.
             with lock_state(state_root):
-                # Reports are terminal output: prune purely by age. Change
-                # batches and assessments are pipeline inputs: prune only those
-                # whose downstream stage is durably complete, so an unprocessed
-                # backlog is never deleted after the checkpoint advanced past it.
-                complete = _fully_processed_artifact_names(dirs, registry_sha256)
-                pruned["reports"] = _prune_dir(dirs["reports"], cutoff_epoch)
-                pruned["changes"] = _prune_dir(
-                    dirs["changes"], cutoff_epoch, prunable_names=complete
-                )
-                pruned["assessments"] = _prune_dir(
-                    dirs["assessments"], cutoff_epoch, prunable_names=complete
-                )
-                # Drop completion markers whose assessment has been pruned, so
-                # the proposed/ marker store stays bounded (descriptor-relative,
-                # like the pruning above). A marker is removed only once its
-                # assessment is gone, never while the assessment it authorizes is
-                # still present.
-                _prune_orphan_markers(state_root)
-            pruned["total"] = (
-                pruned["reports"] + pruned["changes"] + pruned["assessments"]
-            )
+                pruned = _prune_state(state_root, cutoff_epoch, registry_sha256)
 
     counts = {
         "change_batches": _dir_file_count(dirs["changes"]),
