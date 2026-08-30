@@ -172,6 +172,65 @@ def _read_fd(fd: int, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+_DIR_FD_RETRACT = (
+    os.unlink in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
+
+
+def _retract_change_batch(changes_dir: Path, filename: str) -> bool:
+    """Delete a just-written change batch and VERIFY it is gone, descriptor-
+    relative to the pinned state root so a changes/ directory swapped for a
+    symlink cannot redirect the unlink (or its existence check) outside the state
+    tree. Returns True only when the batch is confirmed absent from the real
+    changes directory."""
+
+    state_root = changes_dir.parent
+    if _DIR_FD_RETRACT:
+        try:
+            root_fd = os.open(
+                state_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+        except OSError:
+            return False
+        try:
+            try:
+                changes_fd = os.open(
+                    changes_dir.name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=root_fd,
+                )
+            except OSError:
+                return False
+            try:
+                try:
+                    os.unlink(filename, dir_fd=changes_fd)
+                except FileNotFoundError:
+                    return True
+                except OSError:
+                    pass
+                try:
+                    os.stat(filename, dir_fd=changes_fd, follow_symlinks=False)
+                    return False  # still present after the unlink attempt
+                except FileNotFoundError:
+                    return True
+                except OSError:
+                    return False
+            finally:
+                os.close(changes_fd)
+        finally:
+            os.close(root_fd)
+
+    # Pathname fallback (e.g. Windows without dir_fd).
+    try:
+        (changes_dir / filename).unlink()
+    except OSError:
+        pass
+    return not (changes_dir / filename).exists()
+
+
 def _frontmatter_from_bytes(data: bytes) -> tuple[dict, bool]:
     """Frontmatter + validity from a note's raw bytes, matching parse_note's
     decoding, so the frontmatter-denial check uses exactly the hashed bytes."""
@@ -722,15 +781,18 @@ def observe_source(
         except OSError:
             post_write_identity = None
         if post_write_identity != (source.root_dev, source.root_ino):
-            try:
-                batch_path.unlink()
-            except OSError:
-                pass
+            # Retract descriptor-relative to the pinned state root: a pathname
+            # unlink (and the pathname existence check) could be redirected if
+            # changes/ were swapped for a symlink, deleting a same-named file
+            # outside the state tree and then accepting that as a successful
+            # retraction. Anchoring the unlink+verify to the state root's
+            # O_NOFOLLOW descriptor keeps the deletion inside the state tree.
+            retracted = _retract_change_batch(state_dirs["changes"], filename)
             # Retraction must be VERIFIED. If the out-of-scope batch is somehow
             # still on disk, do NOT return a benign error receipt -- assessment
             # would consume the invalid snapshot. Raise a blocking error so the
             # whole run fails closed instead.
-            if batch_path.exists():
+            if not retracted:
                 raise OSError(
                     f"Refusing to continue: the source root for {source.name!r} "
                     "changed during observation and its out-of-scope change "

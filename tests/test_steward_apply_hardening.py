@@ -21,6 +21,7 @@ from recallweave.steward_apply import (
     _EditTargetTooLarge,
     _EditTargetUnsafe,
     _guarded_replace,
+    _preflight_edit,
     _read_edit_target,
     _recheck_parent_chain,
     _rollback,
@@ -421,6 +422,46 @@ class BackupAnchorTest(unittest.TestCase):
                 _write_backup(backup_dir, "0-note.md", b"backup data", within=backups_link)
             # Nothing was created inside the external directory the symlink points at.
             self.assertEqual(list(external.iterdir()), [])
+
+
+class FrontmatterAdmissionBytesTest(unittest.TestCase):
+    def test_preflight_frontmatter_uses_current_bytes_not_a_reread(self) -> None:
+        # Frontmatter admission must be evaluated from the already-read `current`
+        # bytes (the precondition incarnation), never a second parse_note() read
+        # a concurrent writer could swap for a policy-allowed one. Proven by
+        # asserting parse_note is not called: the denied frontmatter in `current`
+        # still refuses the edit.
+        import types
+
+        import recallweave.steward_apply as _ap
+
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            note = root / "n.md"
+            content = "---\nsensitivity: sealed\n---\nbody\n"
+            note.write_bytes(content.encode("utf-8"))
+            policy = IndexPolicy(
+                include_paths=["n.md"],
+                deny_frontmatter={"sensitivity": ["sealed"]},
+            )
+            source = types.SimpleNamespace(
+                name="src", type="folder", root=root, policy=policy
+            )
+            edit = {
+                "mutation_class": "append_at_eof",
+                "relative_path": "n.md",
+                "precondition_content_hash": _sha(content.encode("utf-8")),
+                "replacement_text": "x",
+                "predicted_post_hash": _sha(content.encode("utf-8") + b"x"),
+            }
+            database = root / "index.sqlite"  # need not exist
+            with patch.object(
+                _ap,
+                "parse_note",
+                side_effect=AssertionError("parse_note must not be re-read"),
+            ):
+                with self.assertRaisesRegex(ApplyError, "frontmatter-denied"):
+                    _preflight_edit(edit, source, database)
 
 
 class RollbackPinnedReadTest(unittest.TestCase):

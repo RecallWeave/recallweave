@@ -450,9 +450,35 @@ class ObserveSourceTest(unittest.TestCase):
             return real_ident
 
         with patch("recallweave.steward_observe.path_identity", side_effect=ident), \
+                patch("recallweave.steward_observe.os.unlink", side_effect=OSError("cannot delete")), \
                 patch("pathlib.Path.unlink", side_effect=OSError("cannot delete")):
             with self.assertRaises(OSError):
                 self.observe(now="2026-01-01T00:00:00+00:00")
+
+    def test_retract_change_batch_refuses_symlinked_changes_dir(self) -> None:
+        # Batch retraction must be descriptor-relative to the pinned state root:
+        # a changes/ directory swapped for a symlink must not let the unlink
+        # delete a same-named file in the symlink target, and the retraction must
+        # not be reported as successful.
+        import recallweave.steward_observe as _obs
+
+        if not _obs._DIR_FD_RETRACT:
+            self.skipTest("descriptor-relative retraction unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            state = base / "state"
+            state.mkdir()
+            external = base / "external"
+            external.mkdir()
+            victim = external / "batch.json"
+            victim.write_text("{}", encoding="utf-8")
+            changes_link = state / "changes"
+            try:
+                changes_link.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            self.assertFalse(_obs._retract_change_batch(changes_link, "batch.json"))
+            self.assertTrue(victim.exists(), "retraction deleted through a symlink")
 
     def test_note_growing_during_read_is_not_committed(self) -> None:
         import recallweave.steward_observe as _obs

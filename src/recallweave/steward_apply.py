@@ -54,7 +54,7 @@ from typing import Any
 # comparison treats it as drift and refuses rather than trusting external bytes.
 _ROLLBACK_UNREADABLE = object()
 
-from .parser import parse_note
+from .parser import parse_frontmatter, parse_note
 from .policy import RESERVED_DIRECTORY_NAMES
 from .safe_write import is_link_like
 from .steward_git import GitError, check_apply_preconditions, commit_applied
@@ -155,6 +155,19 @@ class PreflightError(ApplyError):
     preflight). No journal was written and nothing in the vault changed, so an
     auto sweep must classify it distinctly from a completed rollback rather than
     claim a clean rollback that never happened."""
+
+
+def _frontmatter_from_bytes(data: bytes) -> tuple[dict, bool]:
+    """Frontmatter + validity from a note's already-read bytes, decoded exactly
+    as parse_note does, so an admission check is bound to the SAME incarnation
+    the precondition hash and replacement plan use (never a second pathname read
+    a concurrent writer could swap)."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raise UnicodeError("UTF-16 Markdown is not supported.")
+    raw = data.decode("utf-8-sig", errors="strict")
+    lines = re.split(r"\r\n|\r|\n", raw)
+    frontmatter, _body_start, frontmatter_valid, _error = parse_frontmatter(lines)
+    return frontmatter, frontmatter_valid
 
 
 def _require_clean_relative_path(path: str) -> None:
@@ -808,15 +821,21 @@ def _preflight_edit(
             "admitted corpus."
         )
     if current is not None and source.policy.deny_frontmatter:
+        # Evaluate frontmatter admission from the ALREADY-READ `current` bytes --
+        # the exact incarnation the precondition hash and replacement plan use --
+        # not a second pathname read. A concurrent writer could otherwise swap in
+        # a policy-allowed incarnation for parse_note() and restore the denied
+        # bytes before the hash recheck, mutating a note the source policy
+        # excludes.
         try:
-            note = parse_note(target, source_root)
-        except (UnicodeError, RecursionError, OSError):
+            frontmatter, frontmatter_valid = _frontmatter_from_bytes(current)
+        except (UnicodeError, RecursionError):
             raise ApplyError(
                 f"Cannot verify admission frontmatter for "
                 f"{edit['relative_path']}; refusing the edit."
             ) from None
         allowed, reason = source.policy.frontmatter_allowed(
-            note.frontmatter, valid=note.frontmatter_valid
+            frontmatter, valid=frontmatter_valid
         )
         if not allowed:
             raise ApplyError(
