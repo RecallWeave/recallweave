@@ -107,21 +107,31 @@ def _has_content_rewriting_hooks(root: Path) -> bool:
         return False
 
 
-def _parse_porcelain_paths(output: str) -> list[str]:
+def _parse_porcelain_z_paths(output: str) -> list[str]:
+    """Parse `git status --porcelain=v1 -z` output.
+
+    NUL-delimited records: "XY <path>\0" ordinarily, and for renames/copies
+    "XY <new>\0<old>\0". No C-style quoting is applied in -z mode, so paths
+    with quotes, backslashes, newlines, or " -> " arrive as literal bytes."""
+
     paths: list[str] = []
-    for line in output.splitlines():
-        if not line:
+    records = output.split("\0")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
             continue
-        # Porcelain v1: two status letters, one space, then the path (or,
-        # for a rename/copy, "old -> new").
-        entry = line[3:] if len(line) > 3 else line[2:].strip()
-        entry = entry.strip('"')
-        if " -> " in entry:
-            old_path, new_path = entry.split(" -> ", 1)
-            paths.append(old_path.strip('"'))
-            paths.append(new_path.strip('"'))
-        else:
-            paths.append(entry)
+        if len(record) < 4:
+            continue
+        status = record[:2]
+        paths.append(record[3:])
+        if status and status[0] in ("R", "C") and index < len(records):
+            # The old path follows as its own NUL-delimited record.
+            old_path = records[index]
+            index += 1
+            if old_path:
+                paths.append(old_path)
     return paths
 
 
@@ -155,9 +165,9 @@ def repo_status(root: Path) -> dict[str, Any] | None:
     head = head_result.stdout.strip() if head_result.returncode == 0 else None
 
     status_result = _run_git(
-        ["-c", "status.relativePaths=false", "status", "--porcelain"], root
+        ["-c", "status.relativePaths=false", "status", "--porcelain=v1", "-z"], root
     )
-    dirty_paths = _parse_porcelain_paths(status_result.stdout)
+    dirty_paths = _parse_porcelain_z_paths(status_result.stdout)
 
     return {
         "head": head,

@@ -68,7 +68,11 @@ infrastructure.
 
 ## Invariants to preserve
 
-1. **No note mutation** — the vault is read-only; the index is disposable output.
+1. **No implicit note mutation** — the vault is read-only for the engine and
+   every read stage (provably: no engine module can import the apply module);
+   the only writer is `steward-apply`, which requires an explicit write
+   policy, operator approval, and `--execute`, and journals verified
+   backups with rollback. The index stays disposable output.
 2. **No network calls** in the default core.
 3. **Evidence-class separation** — keep authored (verified), discovery-candidate,
    and supporting (tag) signals visibly distinct; a candidate never becomes a fact.

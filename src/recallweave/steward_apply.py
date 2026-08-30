@@ -346,17 +346,67 @@ def _preflight_edit(
     }
 
 
-def _guarded_replace(target: Path, data: bytes) -> None:
-    """Write ``data`` to ``target`` via a same-directory fsync'd temp file and
-    an atomic ``os.replace``. The symlink and containment refusals ran in
-    preflight; recovery comes from the journaled state-directory backup, so no
-    in-source backup rotation is performed (a retained backup directory inside
-    a source would be re-indexed as notes)."""
+def _recheck_parent_chain(target: Path, boundary: Path | None) -> None:
+    """Re-run the parent symlink/containment check at the mutation boundary.
 
+    Preflight already validated the chain, but a directory can be swapped for
+    a symlink between preflight and the write; this recheck immediately
+    before each mutation shrinks that race to the syscall window, and the
+    temp file itself is created with O_NOFOLLOW|O_EXCL so a planted symlink
+    at the temp name cannot redirect the write either."""
+
+    if boundary is None:
+        return
+    resolved_boundary = boundary.resolve()
+    try:
+        relative = target.absolute().relative_to(boundary.absolute())
+    except ValueError:
+        raise ApplyError(
+            f"Mutation target escaped its boundary: {target}"
+        ) from None
+    current = boundary
+    for part in relative.parts[:-1]:
+        current = current / part
+        if is_link_like(current):
+            raise ApplyError(
+                f"Refusing a write through a symlinked directory: {current}"
+            )
+    parent = target.parent
+    if parent.exists():
+        resolved_parent = parent.resolve()
+        if not (
+            resolved_parent == resolved_boundary
+            or resolved_boundary in resolved_parent.parents
+        ):
+            raise ApplyError(
+                f"Mutation target's parent escaped its boundary: {target}"
+            )
+
+
+def _guarded_replace(target: Path, data: bytes, boundary: Path | None = None) -> None:
+    """Write ``data`` to ``target`` via a same-directory fsync'd temp file and
+    an atomic ``os.replace``. The parent chain is re-validated at this
+    mutation boundary (not only at preflight); recovery comes from the
+    journaled state-directory backup, so no in-source backup rotation is
+    performed (a retained backup directory inside a source would be
+    re-indexed as notes)."""
+
+    _recheck_parent_chain(target, boundary)
     if is_link_like(target):
         raise ApplyError(f"Refusing to replace a symlink or junction: {target}")
     temp = target.parent / f".{target.name}.steward-apply.tmp"
-    with open(temp, "wb") as handle:
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(temp, flags, 0o644)
+    except FileExistsError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        fd = os.open(temp, flags, 0o644)
+    with os.fdopen(fd, "wb") as handle:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
@@ -390,6 +440,7 @@ def _rollback(
     journal_path: Path,
     journal: dict[str, Any],
     journal_dir: Path,
+    boundary: Path | None = None,
 ) -> None:
     """Reverse-order verified restore of every completed operation."""
 
@@ -406,7 +457,7 @@ def _rollback(
                         f"retained at {backup}"
                     )
                     continue
-                _guarded_replace(target, data)
+                _guarded_replace(target, data, boundary=boundary)
                 restored = target.read_bytes()
                 if _sha256_bytes(restored) != op["content_hash_before"]:
                     failures.append(
@@ -414,6 +465,8 @@ def _rollback(
                         f"backup retained at {backup}"
                     )
             else:
+                if boundary is not None:
+                    _recheck_parent_chain(target, boundary)
                 target.unlink(missing_ok=True)
         except OSError as error:
             failures.append(
@@ -683,10 +736,9 @@ def apply_proposal(
                 op["trash_path"] = str(trash_path.relative_to(trash_root))
             else:
                 if not target.parent.exists():
-                    # Parent chain was link-checked at preflight; creating it
-                    # here keeps create_new_file usable for new subfolders.
+                    _recheck_parent_chain(target, source.root)
                     target.parent.mkdir(parents=True, exist_ok=True)
-                _guarded_replace(target, plan["post"])
+                _guarded_replace(target, plan["post"], boundary=source.root)
                 written = target.read_bytes()
                 if _sha256_bytes(written) != op["content_hash_after"]:
                     raise ApplyError(
@@ -706,15 +758,15 @@ def apply_proposal(
         receipt_after = rebuild_receipt(source, state_root_dir)
         index_deltas = validate_l1(receipt_before, receipt_after, plans)
     except ApplyError:
-        _rollback(completed, journal_path, journal, journal_dir)
+        _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
         raise
     except ValidationError as error:
-        _rollback(completed, journal_path, journal, journal_dir)
+        _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
         raise ApplyError(
             f"Validation failed and the apply was rolled back: {error}"
         ) from error
     except Exception as error:
-        _rollback(completed, journal_path, journal, journal_dir)
+        _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
         raise ApplyError(
             f"Apply failed and was rolled back: {type(error).__name__}: {error}"
         ) from error
@@ -770,6 +822,118 @@ def apply_proposal(
     }
 
 
+def _validated_journal_ops(
+    journal: dict,
+    journal_name: str,
+    *,
+    source: Any,
+    state_dirs: dict[str, Path],
+    states: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Validate a journal document before any mutation it could drive.
+
+    Journals are steward-authored, but they are on-disk state an operator or
+    another tool can edit; every path they carry is re-validated for shape,
+    containment, and symlink-safety before recovery or revert acts on it."""
+
+    backup_dir_name = journal.get("backup_dir")
+    if (
+        not isinstance(backup_dir_name, str)
+        or "/" in backup_dir_name
+        or "\\" in backup_dir_name
+        or backup_dir_name in ("", ".", "..")
+    ):
+        raise ApplyError(
+            f"Journal {journal_name} carries an invalid backup_dir."
+        )
+    backups_root = state_dirs["backups"]
+    backup_dir = backups_root / backup_dir_name
+    resolved_source = source.root.resolve()
+
+    completed: list[dict[str, Any]] = []
+    for op in journal.get("operations", []):
+        if not isinstance(op, dict):
+            raise ApplyError(f"Journal {journal_name} carries a malformed operation.")
+        state = op.get("state")
+        if state not in ("planned", "in_progress", "done"):
+            raise ApplyError(
+                f"Journal {journal_name} operation has invalid state {state!r}."
+            )
+        relative = op.get("relative_path")
+        if not isinstance(relative, str):
+            raise ApplyError(f"Journal {journal_name} operation has no path.")
+        _require_clean_relative_path(relative)
+        if op.get("mutation_class") not in _EXECUTABLE_CLASSES:
+            raise ApplyError(
+                f"Journal {journal_name} operation has an invalid class."
+            )
+        backup_name = op.get("backup_name")
+        if (
+            not isinstance(backup_name, str)
+            or "/" in backup_name
+            or "\\" in backup_name
+            or backup_name in ("", ".", "..")
+        ):
+            raise ApplyError(
+                f"Journal {journal_name} operation has an invalid backup name."
+            )
+        for hash_key in ("content_hash_before", "content_hash_after"):
+            value = op.get(hash_key)
+            if value is not None and (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(ch not in "0123456789abcdef" for ch in value)
+            ):
+                raise ApplyError(
+                    f"Journal {journal_name} operation has an invalid {hash_key}."
+                )
+
+        target = source.root / relative
+        # Symlink-safe containment of the restore target.
+        current = source.root
+        for part in Path(relative).parts[:-1]:
+            current = current / part
+            if is_link_like(current):
+                raise ApplyError(
+                    f"Journal {journal_name}: restore path passes through a "
+                    f"symlinked directory: {current}"
+                )
+        if is_link_like(target):
+            raise ApplyError(
+                f"Journal {journal_name}: restore target is a symlink: {target}"
+            )
+        if target.exists():
+            resolved_target = target.resolve()
+            if not (
+                resolved_target == resolved_source
+                or resolved_source in resolved_target.parents
+            ):
+                raise ApplyError(
+                    f"Journal {journal_name}: restore target escapes the "
+                    f"source root: {relative}"
+                )
+
+        backup_path = backup_dir / backup_name
+        if backup_path.exists():
+            guard_within(backup_path, backups_root)
+
+        if state not in states:
+            continue
+        completed.append(
+            {
+                "relative_path": relative,
+                "target": str(target),
+                "had_file": op.get("content_hash_before") is not None,
+                "backup_path": str(backup_path),
+                "content_hash_before": op.get("content_hash_before"),
+                "content_hash_after": op.get("content_hash_after"),
+                "state": state,
+                "_op": op,
+            }
+        )
+    return completed
+
+
 def _incomplete_journals(journal_dir: Path) -> list[Path]:
     incomplete: list[Path] = []
     for path in sorted(journal_dir.glob("*.json")):
@@ -812,35 +976,34 @@ def recover_journal(
             f"Journal {journal_name} names an unknown source "
             f"{journal.get('source')!r}."
         )
-    backup_dir = state_dirs["backups"] / str(journal.get("backup_dir"))
+    candidates = _validated_journal_ops(
+        journal,
+        journal_name,
+        source=source,
+        state_dirs=state_dirs,
+        states=("done", "in_progress"),
+    )
     completed = []
-    for op in journal.get("operations", []):
-        state = op.get("state")
-        backup_path = backup_dir / op["backup_name"]
+    for item in candidates:
+        state = item.pop("state")
+        item.pop("_op", None)
+        content_hash_after = item.pop("content_hash_after", None)
+        backup_exists = Path(item["backup_path"]).exists()
         # "done" ops definitely mutated; an "in_progress" op may have (a
         # crash can land between the mutation and the journal update), so any
         # op whose backup exists is restored -- a verified byte-identical
         # restore of an unmutated file is harmless.
-        if state == "done" or (state == "in_progress" and backup_path.exists()):
-            completed.append(
-                {
-                    "relative_path": op["relative_path"],
-                    "target": str(source.root / op["relative_path"]),
-                    "had_file": op.get("content_hash_before") is not None,
-                    "backup_path": str(backup_path),
-                    "content_hash_before": op.get("content_hash_before"),
-                }
-            )
-        elif state == "in_progress" and op.get("content_hash_before") is None:
-            # A create that may have landed: remove the target if it matches
-            # the planned post-state; leave anything else untouched.
-            target = source.root / op["relative_path"]
-            if target.is_file():
-                if _sha256_bytes(target.read_bytes()) == op.get(
-                    "content_hash_after"
-                ):
+        if state == "done" or (state == "in_progress" and backup_exists):
+            completed.append(item)
+        elif state == "in_progress" and item["content_hash_before"] is None:
+            # A create that may have landed: remove the target ONLY when it
+            # matches the planned post-state exactly; anything else is left
+            # untouched.
+            target = Path(item["target"])
+            if target.is_file() and content_hash_after is not None:
+                if _sha256_bytes(target.read_bytes()) == content_hash_after:
                     target.unlink()
-    _rollback(completed, journal_path, journal, journal_dir)
+    _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": "apply_recovery_receipt",
@@ -887,21 +1050,21 @@ def revert_journal(
             f"Journal {journal_name} names an unknown source "
             f"{journal.get('source')!r}."
         )
-    backup_dir = state_dirs["backups"] / str(journal.get("backup_dir"))
-    completed = []
-    for op in journal.get("operations", []):
-        if op.get("state") != "done":
-            continue
-        completed.append(
-            {
-                "relative_path": op["relative_path"],
-                "target": str(source.root / op["relative_path"]),
-                "had_file": op.get("content_hash_before") is not None,
-                "backup_path": str(backup_dir / op["backup_name"]),
-                "content_hash_before": op.get("content_hash_before"),
-            }
+    completed = [
+        {
+            key: value
+            for key, value in item.items()
+            if key not in ("state", "_op", "content_hash_after")
+        }
+        for item in _validated_journal_ops(
+            journal,
+            journal_name,
+            source=source,
+            state_dirs=state_dirs,
+            states=("done",),
         )
-    _rollback(completed, journal_path, journal, journal_dir)
+    ]
+    _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
     journal["status"] = "reverted"
     atomic_write_json(journal_path, journal, within=journal_dir)
     return {

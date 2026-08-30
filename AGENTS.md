@@ -40,7 +40,9 @@ rm -rf directory         # not: rm -r directory
 
 ## Invariants to preserve
 
-1. No note mutation — the vault is read-only.
+1. No implicit note mutation — the vault is read-only for the engine and
+   every read stage; only the policy-gated, operator-approved
+   `steward-apply` may write, with journaled verified backups and rollback.
 2. No network calls in the default core.
 3. Evidence-class separation — authored (verified), discovery-candidate, and
    supporting (tag) signals stay visibly distinct; a candidate never becomes a fact.

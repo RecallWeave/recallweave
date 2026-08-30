@@ -1,11 +1,23 @@
-# Steward — local knowledge stewardship (v1: read-only integrity sweep)
+# Steward — local knowledge stewardship
 
 Steward watches the local sources you register, detects what changed since the
 last sweep, assesses those changes against the RecallWeave index with
 **deterministic, byte- and structure-level checks only**, and produces
-reviewable reports and proposals. In v1 it is **entirely read-only**: no
-Steward command writes to a vault or source file, and every Steward receipt
-reports `vault_writes: 0` and `network_calls: 0`.
+reviewable reports and proposals. The pipeline stages — observe, assess,
+propose, sweep, status — are **read-only**: they never write to a vault or
+source file and every one of their receipts reports `vault_writes: 0` and
+`network_calls: 0`.
+
+**Recorded narrowing of the no-mutation invariant.** `steward-apply` is the
+single, deliberate exception: a policy-gated, operator-approved executor for
+compiled proposals, added as an explicit, scoped narrowing of the project's
+"never edits a note" rule — not a silent exception. The engine keeps no write
+path into notes (no engine module can even import the apply module; a test
+proves it), writes exist only for a source registered `appliable`, only under
+an explicit `--write-policy`, only with `--execute`, and only through
+hash-pinned edits with journaled, verified rollback. Apply receipts report
+their mutations honestly in `steward_vault_mutations`; `vault_writes: 0`
+remains literally true for every other command.
 
 ## What Steward v1 is not
 
@@ -21,9 +33,10 @@ reports `vault_writes: 0` and `network_calls: 0`.
 - It does not edit notes. The standing rulings remain in force: candidates
   cannot establish truth, settle a contradiction, authorize an action, or
   change canonical notes; contradiction detection requires a model or human
-  review and an explicit trust design. Any future write capability must be
-  recorded in these documents as an explicit, scoped narrowing of the
-  no-mutation invariant — never introduced silently.
+  review and an explicit trust design. The write capability that now exists
+  (`steward-apply`, above) is exactly the explicit, scoped, documented
+  narrowing those rulings demanded — nothing else may write, and nothing may
+  write silently.
 - It is not a scheduler. `steward-sweep` is a one-shot local command with
   machine-readable results; recurring runs belong to your operating system's
   own scheduler (launchd, cron, Task Scheduler). No daemon, watch, or interval
@@ -37,6 +50,8 @@ recallweave steward-assess  <sources.json>   # classify changes vs the index
 recallweave steward-propose <sources.json>   # compile reviewable proposals
 recallweave steward-sweep   <sources.json>   # observe -> assess -> propose -> report
 recallweave steward-status  <sources.json>   # state-dir summary; optional pruning
+recallweave steward-apply   <sources.json> --write-policy <p.json> \
+    (--proposal-id ID | --approve-class CLASS | --recover J | --revert J) [--execute]
 ```
 
 All commands accept `--state-dir`; the assess/propose/sweep stages accept the
@@ -53,8 +68,8 @@ returns the matching exit code. The enum is frozen:
 | `no_change` | 0 | nothing changed; nothing awaits review |
 | `findings` | 3 | assessments were recorded; no proposals await review |
 | `approval_required` | 4 | proposals exist and await operator review |
-| `applied` | 5 | reserved; unreachable in v1 (no write capability) |
-| `validation_failed_rolled_back` | 6 | reserved; unreachable in v1 |
+| `applied` | 5 | reserved for sweep-integrated apply (not yet emitted) |
+| `validation_failed_rolled_back` | 6 | reserved for sweep-integrated apply |
 | `error` | 2 | hard error (standard JSON error envelope on stderr) |
 
 ## Source registry
@@ -114,8 +129,9 @@ and `auto_apply` — and enforces structurally, at load time, that **technical
 determinism never implies authorization**: only append-only mutation classes
 can ever be configured `auto_apply`, protected paths always resolve to
 `disabled`, and no principal-naming or confidence-gating key can exist in a
-policy file. Until an apply stage ships, the policy file only documents
-intent; nothing in v1 can write.
+policy file. `steward-apply` enforces the resolved level per edit at apply
+time — including protected frontmatter against the file's current state —
+and refuses anything this invocation cannot authorize.
 
 ## State, privacy, locality
 

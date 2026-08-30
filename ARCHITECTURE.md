@@ -196,12 +196,23 @@ Three structural rules keep Steward inside the trust model above:
    notes remain binding, and any future change to that posture must be
    recorded here explicitly.
 3. **Determinism never implies authorization.** Proposals are read-only
-   documents (`policy_level: "propose_only"` throughout v1); the write policy
-   assigns every mutation class an explicit level with non-auto defaults, and
-   only append-only classes are structurally eligible for `auto_apply`.
+   documents; the write policy assigns every mutation class an explicit
+   level with non-auto defaults, only append-only classes are structurally
+   eligible for `auto_apply`, and the apply stage re-resolves the policy per
+   edit at execution time.
 
-Steward stages are read-only over sources and index alike; every receipt
-reports `network_calls: 0` and `vault_writes: 0`.
+The pipeline stages are read-only over sources and index alike; every one
+of their receipts reports `network_calls: 0` and `vault_writes: 0`. The
+single sanctioned writer is `steward-apply` — a pure executor over
+operator-approved, hash-pinned edit scripts, import-isolated from the engine
+(no engine module can reach it, pinned by test), gated by an explicit write
+policy and `--execute`, journaled with verified backups and rollback, and
+validated post-write (parse, admissibility, structure, whole-source
+manifest, index-rebuild bounds) inside the same transaction. This is the
+explicit, scoped narrowing of the no-mutation invariant that this document
+previously required of any future write capability; apply receipts count
+their mutations in `steward_vault_mutations` and never claim zero writes
+when a write occurred.
 
 ## Extension points
 

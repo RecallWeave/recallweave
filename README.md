@@ -9,7 +9,9 @@ It helps people and assistants answer three questions:
 
 The vault remains the source of truth. RecallWeave creates a disposable SQLite
 index in an external application-data directory by default and never edits a
-note.
+note on its own: the one write path is `steward-apply`, an explicitly
+policy-gated, operator-approved executor documented in
+[docs/steward.md](docs/steward.md).
 
 ## Why this is different
 
@@ -164,17 +166,21 @@ links through `doctor`.
 | `steward-propose` | Compile reviewable, hash-pinned read-only proposals |
 | `steward-sweep` | One-shot observe/assess/propose run with an integrity report |
 | `steward-status` | Summarize steward state; optional explicit pruning |
+| `steward-apply` | Execute an approved, hash-pinned proposal under an explicit write policy |
 
 Candidate edges are excluded from `query` and `path` unless explicitly
 requested. `connections` includes candidates by default so a person can inspect
 new possibilities.
 
-The `steward-*` commands are the read-only stewardship pipeline: they detect
-what changed in the local sources you register, re-verify the citations and
-authored links the index relies on, and produce reviewable reports and
-proposals. They never edit a note and never make a network call; semantic
-judgments (does this confirm or contradict that?) are deliberately out of
-scope. See [docs/steward.md](docs/steward.md).
+The steward pipeline commands (observe/assess/propose/sweep/status) are
+read-only: they detect what changed in the local sources you register,
+re-verify the citations and authored links the index relies on, and produce
+reviewable reports and proposals — never editing a note, never making a
+network call. `steward-apply` is the one deliberate, documented exception: it
+executes an operator-approved proposal under an explicit write policy, with
+journaled verified backups and rollback, and reports every mutation it makes.
+Semantic judgments (does this confirm or contradict that?) remain
+deliberately out of scope. See [docs/steward.md](docs/steward.md).
 
 ## Atlas visual explorer
 
