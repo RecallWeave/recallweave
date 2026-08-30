@@ -88,13 +88,13 @@ class PolicyProjectionTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_duplicate_of_redacts_paths_outside_source_policy(self) -> None:
-        secret_text = "the very same bytes"
-        self.vault.write("Public/New.md", secret_text)
-        self.vault.write("Restricted/Patient.md", secret_text)
+        shared_bytes = "the very same bytes"
+        self.vault.write("Public/New.md", shared_bytes)
+        self.vault.write("Restricted/Patient.md", shared_bytes)
         build_index(self.vault.root, self.database, policy=IndexPolicy())
 
         narrow = IndexPolicy.from_payload({"include_paths": ["Public/New.md"]})
-        current_hash = hashlib.sha256(secret_text.encode()).hexdigest()
+        current_hash = hashlib.sha256(shared_bytes.encode()).hexdigest()
         batch = _batch(
             "src",
             [

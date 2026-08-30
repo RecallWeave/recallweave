@@ -140,10 +140,10 @@ class StewardCliErrorBoundaryTest(unittest.TestCase):
     # --- structural CLI catch-all for an unexpected internal exception ---
 
     def test_unexpected_exception_is_redacted_by_cli_catch_all(self) -> None:
-        secret = "/Users/josh/secret/vault/private.md"
+        sensitive_path = "/Users/josh/hidden/vault/private.md"
 
         def boom(*_args, **_kwargs):
-            raise RuntimeError(f"unexpected failure touching {secret}")
+            raise RuntimeError(f"unexpected failure touching {sensitive_path}")
 
         with patch.object(cli, "load_registry", side_effect=boom):
             code, out, err = self._run_apply(
@@ -155,7 +155,7 @@ class StewardCliErrorBoundaryTest(unittest.TestCase):
         payload = json.loads(err)
         self.assertEqual(payload["error"], "RuntimeError")
         self.assertEqual(payload["operation"], "steward-apply")
-        self.assertNotIn(secret, err)
+        self.assertNotIn(sensitive_path, err)
         self.assertNotIn("/Users/", err)
 
     def test_control_flow_exceptions_are_not_swallowed(self) -> None:
