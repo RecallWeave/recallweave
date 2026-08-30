@@ -397,6 +397,22 @@ def observe_source(
         source, resolved_root, skipped, traversal_failures
     )
 
+    # Re-verify the root's pinned identity AFTER enumeration. Directory walking
+    # is by pathname, so a root renamed-and-replaced (e.g. by an empty dir)
+    # during the walk would return the wrong file set and manufacture false
+    # removals -- and then advance the checkpoint past them. Enumeration is only
+    # trustworthy if the root is still the identity the registry pinned; if not,
+    # emit a source_identity_changed error and touch nothing.
+    if source.root_dev is not None and source.root_ino is not None:
+        try:
+            post_identity = path_identity(resolved_root)
+        except OSError:
+            return _source_missing_receipt(source, generated_at, registry_sha256)
+        if post_identity != (source.root_dev, source.root_ino):
+            return _source_error_receipt(
+                source, generated_at, registry_sha256, "source_identity_changed"
+            )
+
     changes: dict[str, dict] = {}
     new_entries: dict[str, CheckpointEntry] = {}
     changed_during_observe: list[str] = []
