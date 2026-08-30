@@ -187,6 +187,29 @@ class NewModifiedDeletedTest(StewardAssessTest):
         # so the report never treats it as a resolution of a prior finding.
         self.assertEqual(document["covered_paths"], [])
 
+    def test_covered_paths_excludes_symlinked_ancestor(self) -> None:
+        # A parent swapped for a symlink to an external dir (whose file matches
+        # the observed hash) must NOT be accepted as covered -- the verifier must
+        # refuse to follow the symlink out of the source.
+        import os as _os
+        external = self.root / "external"
+        external.mkdir()
+        (external / "note.md").write_text("outside content\n", encoding="utf-8")
+        ext_hash = _hash(external / "note.md")
+        try:
+            _os.symlink(external, self.vault / "folder", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unsupported")
+        batch = _batch(
+            changes=[_change("folder/note.md", "modified",
+                             previous="deadbeef", current=ext_hash)]
+        )
+        document = assess_change_batch(batch, self.database, self.vault, now=FROZEN_NOW)
+        self.assertEqual(
+            document["covered_paths"], [],
+            "a symlinked ancestor was followed out of the source to clear a path",
+        )
+
     def test_covered_paths_excludes_reappeared_removed_path(self) -> None:
         # A removed change whose file has reappeared on disk before assessment
         # must NOT be treated as covered (it is not genuinely resolved).

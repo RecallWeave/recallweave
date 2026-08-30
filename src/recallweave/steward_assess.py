@@ -27,6 +27,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -155,6 +156,95 @@ def _record(relation: str, relative_path: str, inputs: dict[str, Any]) -> dict[s
     }
 
 
+def _covered_leaf_state(path_base: Path, relative: str) -> str | None:
+    """Terminal state of ``relative`` under ``path_base``, resolved WITHOUT
+    following symlinks at any component.
+
+    Returns ``"absent"``, ``"present:<sha256>"``, or ``None`` when the state
+    cannot be safely verified (a symlinked/non-directory ancestor, a symlink or
+    non-regular leaf, or a read error). Descriptor-relative with ``O_NOFOLLOW``
+    on POSIX; a per-component islink-checked pathname walk elsewhere. This keeps
+    covered-path re-verification inside the source: a parent swapped for a
+    symlink after observation is refused (``None``) rather than followed
+    outside, so it can never clear a finding using an out-of-source file."""
+
+    parts = Path(relative).parts
+    if not parts:
+        return None
+    use_dir_fd = (
+        os.open in os.supports_dir_fd
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+    if use_dir_fd:
+        fds: list[int] = []
+        try:
+            try:
+                fds.append(
+                    os.open(path_base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                )
+            except OSError:
+                return None
+            for part in parts[:-1]:
+                try:
+                    fds.append(
+                        os.open(
+                            part,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=fds[-1],
+                        )
+                    )
+                except FileNotFoundError:
+                    return "absent"  # an ancestor is gone -> leaf cannot exist
+                except OSError:
+                    return None  # symlinked or non-directory ancestor
+            try:
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[-1])
+            except FileNotFoundError:
+                return "absent"
+            except OSError:
+                return None  # symlink leaf or unreadable
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    return None
+                digest = hashlib.sha256()
+                while True:
+                    chunk = os.read(fd, 1 << 20)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                return "present:" + digest.hexdigest()
+            finally:
+                os.close(fd)
+        finally:
+            for fd in fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    # Pathname fallback (e.g. Windows): reject a symlink at any component.
+    current = path_base
+    for part in parts[:-1]:
+        current = current / part
+        if os.path.islink(current):
+            return None
+        if not os.path.isdir(current):
+            return "absent" if not os.path.exists(current) else None
+    full = path_base / relative
+    if os.path.islink(full):
+        return None
+    if not os.path.exists(full):
+        return "absent"
+    if not os.path.isfile(full):
+        return None
+    try:
+        with open(full, "rb") as handle:
+            return "present:" + hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return None
+
+
 def _verified_covered_paths(
     assessed_paths: set[str],
     assessments: list[dict[str, Any]],
@@ -189,21 +279,16 @@ def _verified_covered_paths(
         change = changes_by_path.get(path)
         if change is None:
             continue
-        full = path_base / path
-        try:
-            if os.path.islink(full):
-                continue  # a symlink at the path: do not treat as resolved
-            if change.get("change_type") == "removed":
-                if not os.path.exists(full):
-                    covered.append(path)  # verified still absent
-            else:  # added / modified -- must still hold observation's bytes
-                if os.path.isfile(full):
-                    with open(full, "rb") as handle:
-                        live = hashlib.sha256(handle.read()).hexdigest()
-                    if live == change.get("current_content_hash"):
-                        covered.append(path)  # verified unchanged since observe
-        except OSError:
-            continue  # cannot verify -> do not clear
+        # Re-verify the terminal state through a symlink-free, descriptor-
+        # relative traversal from the source root -- never following a swapped
+        # ancestor outside the source.
+        state = _covered_leaf_state(path_base, path)
+        if change.get("change_type") == "removed":
+            if state == "absent":
+                covered.append(path)  # verified still absent
+        else:  # added / modified -- must still hold observation's bytes
+            if state == "present:" + str(change.get("current_content_hash")):
+                covered.append(path)  # verified unchanged since observe
     return covered
 
 
