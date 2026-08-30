@@ -14,6 +14,10 @@ from .contract_spec import TaskSpec
 from .index import SCHEMA_VERSION, build_index, default_database_for_vault
 from .policy import IndexPolicy
 from .query import connections, context_packet, doctor, path_between, resurface, stats
+from .steward_assess import assess_latest
+from .steward_observe import observe_registry
+from .steward_sources import load_registry
+from .steward_state import steward_state_root
 from .viewer import export_viewer_graph
 
 
@@ -178,6 +182,37 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace an existing contract artifact.",
     )
+
+    steward_observe = subparsers.add_parser(
+        "steward-observe",
+        help="Detect changes in steward sources and record a change batch.",
+    )
+    steward_observe.add_argument(
+        "sources",
+        type=_path,
+        help="Path to the sources registry JSON.",
+    )
+    steward_observe.add_argument(
+        "--state-dir",
+        type=_path,
+        help="Explicit steward state root. Defaults to the platform state root for this registry.",
+    )
+
+    steward_assess_parser = subparsers.add_parser(
+        "steward-assess",
+        help=(
+            "Classify observed source changes against the index "
+            "(deterministic only; no vault or index writes)."
+        ),
+    )
+    steward_assess_parser.add_argument("sources", type=_path)
+    _add_database_locator(steward_assess_parser)
+    steward_assess_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
     return parser
 
 
@@ -233,6 +268,14 @@ def main(argv: list[str] | None = None) -> int:
             return receipt
 
         action: Callable[[], dict[str, Any]] = run_index
+    elif args.command == "steward-observe":
+
+        def run_observe() -> dict[str, Any]:
+            registry = load_registry(args.sources)
+            state_root = args.state_dir or steward_state_root(args.sources)
+            return observe_registry(registry, state_root)
+
+        action = run_observe
     else:
         database = _query_database(args)
         commands: dict[str, Callable[[], dict[str, Any]]] = {
@@ -283,6 +326,11 @@ def main(argv: list[str] | None = None) -> int:
                 # in-vault destination is refused rather than silently making
                 # `vault_writes: 0` false.
                 vault=args.vault or Path.cwd(),
+            ),
+            "steward-assess": lambda: assess_latest(
+                load_registry(args.sources),
+                args.state_dir or steward_state_root(args.sources),
+                database,
             ),
         }
         action = commands[args.command]

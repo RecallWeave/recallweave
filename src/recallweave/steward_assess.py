@@ -1,0 +1,612 @@
+from __future__ import annotations
+
+"""Steward stage B1: deterministic change assessment.
+
+``assess_change_batch`` classifies each observed change (a ``change_batch``
+document, produced by a future ``steward_observe`` stage) against the current
+RecallWeave index. Every relation it can emit is a byte- or structure-level
+fact about the vault and the index: a path is new, a path's bytes changed, a
+path disappeared, two paths share identical bytes, a verified (authored) edge
+touches a changed note, or a recorded citation no longer matches the text it
+once pointed at. None of that is interpretation -- it says nothing about
+whether a change confirms, extends, supersedes, or contradicts anything.
+
+INTERPRETIVE_RELATIONS is reserved for a future opt-in InterpretationProvider.
+No code path in this module may emit a value from that set. A provider may
+only ADD proposal-layer records that reference these deterministic
+assessments (by relative_path and relation) -- it may never rewrite, remove,
+or reinterpret a deterministic assessment record produced here.
+
+This module never writes to any source or vault file, and it opens the
+RecallWeave index read-only (``connect(database, readonly=True)``). Its only
+writes are into the steward state directory's ``assessments/`` subdirectory,
+via ``atomic_write_json``.
+"""
+
+import hashlib
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .index import SCHEMA_VERSION as INDEX_SCHEMA_VERSION
+from .index import connect
+from .steward_sources import SourceRegistry
+from .steward_state import (
+    STEWARD_SCHEMA_VERSION,
+    atomic_write_json,
+    ensure_state_layout,
+    lock_state,
+)
+
+ASSESS_ASSERTER = "recallweave.steward.assess.v1"
+ASSESSMENT_KIND = "assessment_batch"
+STANDING_CAVEAT = (
+    "Deterministic byte- and structure-level relations only; they do not "
+    "judge meaning, support, or truth."
+)
+DETERMINISTIC_RELATIONS = frozenset(
+    {
+        "NEW",
+        "DELETED",
+        "MODIFIED",
+        "DUPLICATES_EXACT_BYTES",
+        "AUTHORED_REFERENCE_TOUCHED",
+        "CITATION_BROKEN",
+    }
+)
+# Reserved for a future opt-in InterpretationProvider. NO code path in this
+# module may emit these; a provider may only ADD proposal-layer records that
+# reference deterministic assessments, never rewrite them.
+INTERPRETIVE_RELATIONS = frozenset(
+    {"CONFIRMS", "EXTENDS", "SUPERSEDES", "CONTRADICTS", "UNCERTAIN"}
+)
+
+_BATCH_SCHEMA_VERSION = "recallweave.steward.v1"
+_BATCH_KIND = "change_batch"
+_REQUIRED_BATCH_KEYS = (
+    "schema_version",
+    "kind",
+    "operation",
+    "generated_at",
+    "source",
+    "registry_sha256",
+    "changes",
+    "rename_candidates",
+    "change_summary",
+    "skipped",
+    "changed_during_observe",
+    "network_calls",
+    "vault_writes",
+)
+_CHANGE_TYPES = frozenset({"added", "modified", "removed"})
+_LINE_SPLIT_RE = re.compile(r"\r\n|\r|\n")
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _split_lines(raw: str) -> list[str]:
+    """Split physical lines exactly like parser.parse_note: CRLF, CR, or LF."""
+
+    return _LINE_SPLIT_RE.split(raw)
+
+
+def _validate_batch(batch: Any) -> None:
+    if not isinstance(batch, dict):
+        raise ValueError("change_batch must be a JSON object.")
+    missing = [key for key in _REQUIRED_BATCH_KEYS if key not in batch]
+    if missing:
+        raise ValueError(
+            f"change_batch is missing required key(s): {', '.join(missing)}"
+        )
+    if batch["schema_version"] != _BATCH_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported change_batch schema_version {batch['schema_version']!r}; "
+            f"expected {_BATCH_SCHEMA_VERSION!r}."
+        )
+    if batch["kind"] != _BATCH_KIND:
+        raise ValueError(
+            f"Unsupported change_batch kind {batch['kind']!r}; expected {_BATCH_KIND!r}."
+        )
+    if not isinstance(batch["changes"], list):
+        raise ValueError("change_batch 'changes' must be a list.")
+
+
+def _extract_paths(items: Any) -> set[str]:
+    result: set[str] = set()
+    if not isinstance(items, list):
+        return result
+    for item in items:
+        if isinstance(item, str):
+            result.add(item)
+        elif isinstance(item, dict) and isinstance(item.get("relative_path"), str):
+            result.add(item["relative_path"])
+    return result
+
+
+def _record(relation: str, relative_path: str, inputs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "relation": relation,
+        "decidability": "deterministic",
+        "asserter": ASSESS_ASSERTER,
+        "reproducible": True,
+        "relative_path": relative_path,
+        "inputs": inputs,
+        "standing_caveat": STANDING_CAVEAT,
+    }
+
+
+def assess_change_batch(
+    batch: dict,
+    database: Path,
+    source_root: Path,
+    *,
+    now: str | None = None,
+) -> dict:
+    """Classify one change_batch document against the RecallWeave index.
+
+    Deterministic only: every relation emitted comes from comparing content
+    hashes, section text/line ranges, and verified edges already on record.
+    Opens the index read-only; re-reads changed source files under
+    ``source_root`` for citation checking, but never writes to them.
+    """
+
+    _validate_batch(batch)
+    database = Path(database)
+    source_root = Path(source_root)
+    generated_at = now if now is not None else _utc_now()
+
+    connection = connect(database, readonly=True)
+    try:
+        meta = {
+            str(row["key"]): str(row["value"])
+            for row in connection.execute("SELECT key, value FROM meta")
+        }
+        index_schema_version = meta.get("schema_version")
+        if index_schema_version != INDEX_SCHEMA_VERSION:
+            raise ValueError(
+                f"Index schema_version {index_schema_version!r} is not "
+                f"{INDEX_SCHEMA_VERSION!r}; re-index the vault with "
+                "'recallweave index' before running steward-assess."
+            )
+        indexed_at = meta.get("indexed_at")
+
+        notes_by_path: dict[str, dict[str, Any]] = {}
+        notes_by_id: dict[int, str] = {}
+        for row in connection.execute("SELECT id, relative_path, content_hash FROM notes"):
+            note_id = int(row["id"])
+            path = str(row["relative_path"])
+            notes_by_path[path] = {
+                "id": note_id,
+                "content_hash": str(row["content_hash"]),
+            }
+            notes_by_id[note_id] = path
+
+        skip_paths = _extract_paths(batch.get("changed_during_observe"))
+
+        assessments: list[dict[str, Any]] = []
+        summary: dict[str, int] = {
+            "index_current": 0,
+            "never_indexed": 0,
+            "skipped_changed_during_observe": 0,
+        }
+        for relation in DETERMINISTIC_RELATIONS:
+            summary[relation] = 0
+
+        content_drifted: list[str] = []
+        baseline_divergence: list[str] = []
+        added_or_modified: list[dict[str, Any]] = []
+        touched_note_ids: dict[str, int] = {}
+
+        for change in batch["changes"]:
+            path = change.get("relative_path")
+            change_type = change.get("change_type")
+            if not isinstance(path, str) or change_type not in _CHANGE_TYPES:
+                raise ValueError(f"Invalid change record: {change!r}")
+            if path in skip_paths:
+                summary["skipped_changed_during_observe"] += 1
+                continue
+
+            current_hash = change.get("current_content_hash")
+            previous_hash = change.get("previous_content_hash")
+            index_row = notes_by_path.get(path)
+
+            if change_type in ("added", "modified"):
+                added_or_modified.append(change)
+                if index_row is None:
+                    assessments.append(
+                        _record(
+                            "NEW",
+                            path,
+                            {
+                                "current_content_hash": current_hash,
+                                "previous_content_hash": previous_hash,
+                                "index_content_hash": None,
+                                "index_indexed_at": indexed_at,
+                            },
+                        )
+                    )
+                elif current_hash == index_row["content_hash"]:
+                    summary["index_current"] += 1
+                else:
+                    if previous_hash != index_row["content_hash"]:
+                        baseline_divergence.append(path)
+                    assessments.append(
+                        _record(
+                            "MODIFIED",
+                            path,
+                            {
+                                "current_content_hash": current_hash,
+                                "previous_content_hash": previous_hash,
+                                "index_content_hash": index_row["content_hash"],
+                                "index_indexed_at": indexed_at,
+                            },
+                        )
+                    )
+                    touched_note_ids[path] = index_row["id"]
+            else:  # removed
+                if index_row is None:
+                    summary["never_indexed"] += 1
+                else:
+                    assessments.append(
+                        _record(
+                            "DELETED",
+                            path,
+                            {
+                                "current_content_hash": None,
+                                "previous_content_hash": previous_hash,
+                                "index_content_hash": index_row["content_hash"],
+                                "index_indexed_at": indexed_at,
+                            },
+                        )
+                    )
+                    touched_note_ids[path] = index_row["id"]
+
+        # DUPLICATES_EXACT_BYTES: compared across every added/modified change
+        # in this batch, regardless of whether it produced a NEW/MODIFIED
+        # relation above (an index-current path can still coincide in bytes
+        # with a different indexed path, which is worth flagging).
+        added_hashes: dict[str, list[str]] = {}
+        for change in added_or_modified:
+            if change.get("change_type") == "added":
+                current_hash = change.get("current_content_hash")
+                if current_hash is not None:
+                    added_hashes.setdefault(current_hash, []).append(
+                        change["relative_path"]
+                    )
+
+        for change in added_or_modified:
+            path = change["relative_path"]
+            current_hash = change.get("current_content_hash")
+            if current_hash is None:
+                continue
+            duplicate_of = sorted(
+                other_path
+                for other_path, info in notes_by_path.items()
+                if other_path != path and info["content_hash"] == current_hash
+            )
+            duplicate_in_batch = sorted(
+                {
+                    other_path
+                    for other_path in added_hashes.get(current_hash, [])
+                    if other_path != path
+                }
+            )
+            if duplicate_of or duplicate_in_batch:
+                index_row = notes_by_path.get(path)
+                assessments.append(
+                    _record(
+                        "DUPLICATES_EXACT_BYTES",
+                        path,
+                        {
+                            "current_content_hash": current_hash,
+                            "previous_content_hash": change.get("previous_content_hash"),
+                            "index_content_hash": index_row["content_hash"]
+                            if index_row is not None
+                            else None,
+                            "index_indexed_at": indexed_at,
+                            "duplicate_of": duplicate_of,
+                            "duplicate_in_batch": duplicate_in_batch,
+                        },
+                    )
+                )
+
+        # AUTHORED_REFERENCE_TOUCHED: verified edges touching a deleted or
+        # modified note, exposed only as the other note's path.
+        for path, note_id in sorted(touched_note_ids.items()):
+            rows = connection.execute(
+                """
+                SELECT source_note_id, target_note_id, kind
+                FROM edges
+                WHERE is_verified = 1 AND (source_note_id = ? OR target_note_id = ?)
+                """,
+                (note_id, note_id),
+            ).fetchall()
+            authored_edges: list[dict[str, str]] = []
+            for row in rows:
+                source_id = int(row["source_note_id"])
+                target_id = int(row["target_note_id"])
+                if source_id == note_id:
+                    other_id, direction = target_id, "outbound"
+                else:
+                    other_id, direction = source_id, "inbound"
+                other_path = notes_by_id.get(other_id)
+                if other_path is None:
+                    continue
+                authored_edges.append(
+                    {
+                        "other_path": other_path,
+                        "direction": direction,
+                        "kind": str(row["kind"]),
+                    }
+                )
+            authored_edges.sort(
+                key=lambda item: (item["other_path"], item["direction"], item["kind"])
+            )
+            if authored_edges:
+                index_row = notes_by_path.get(path)
+                assessments.append(
+                    _record(
+                        "AUTHORED_REFERENCE_TOUCHED",
+                        path,
+                        {
+                            "index_content_hash": index_row["content_hash"]
+                            if index_row is not None
+                            else None,
+                            "index_indexed_at": indexed_at,
+                            "authored_edges": authored_edges,
+                        },
+                    )
+                )
+
+        # CITATION_BROKEN
+        for change in batch["changes"]:
+            path = change.get("relative_path")
+            if not isinstance(path, str) or path in skip_paths:
+                continue
+            change_type = change.get("change_type")
+            index_row = notes_by_path.get(path)
+            if index_row is None:
+                continue
+
+            if change_type == "removed":
+                sections = connection.execute(
+                    "SELECT heading, line_start, line_end, text FROM sections "
+                    "WHERE note_id = ? ORDER BY line_start",
+                    (index_row["id"],),
+                ).fetchall()
+                broken = [
+                    {
+                        "citation": f"{path}:{row['line_start']}-{row['line_end']}",
+                        "heading": str(row["heading"]),
+                        "reason": "note_deleted",
+                    }
+                    for row in sections
+                ]
+                if broken:
+                    assessments.append(
+                        _record(
+                            "CITATION_BROKEN",
+                            path,
+                            {
+                                "current_content_hash": None,
+                                "previous_content_hash": change.get(
+                                    "previous_content_hash"
+                                ),
+                                "index_content_hash": index_row["content_hash"],
+                                "index_indexed_at": indexed_at,
+                                "broken_citations": broken,
+                            },
+                        )
+                    )
+                continue
+
+            if change_type != "modified":
+                continue
+            current_hash = change.get("current_content_hash")
+            if current_hash == index_row["content_hash"]:
+                continue  # index-current: nothing changed to check
+            sections = connection.execute(
+                "SELECT heading, line_start, line_end, text FROM sections "
+                "WHERE note_id = ? ORDER BY line_start",
+                (index_row["id"],),
+            ).fetchall()
+            if not sections:
+                continue
+
+            full_path = source_root / path
+            try:
+                data = full_path.read_bytes()
+            except OSError as error:
+                broken = [
+                    {
+                        "citation": f"{path}:{row['line_start']}-{row['line_end']}",
+                        "heading": str(row["heading"]),
+                        "reason": "unreadable",
+                        "error_type": type(error).__name__,
+                    }
+                    for row in sections
+                ]
+                assessments.append(
+                    _record(
+                        "CITATION_BROKEN",
+                        path,
+                        {
+                            "current_content_hash": current_hash,
+                            "previous_content_hash": change.get("previous_content_hash"),
+                            "index_content_hash": index_row["content_hash"],
+                            "index_indexed_at": indexed_at,
+                            "broken_citations": broken,
+                        },
+                    )
+                )
+                continue
+
+            actual_hash = hashlib.sha256(data).hexdigest()
+            if actual_hash != current_hash:
+                # Fail closed: the batch's claimed current bytes no longer
+                # match what is on disk. Do not assess citations; the operator
+                # must re-observe.
+                content_drifted.append(path)
+                continue
+
+            try:
+                raw = data.decode("utf-8-sig", errors="strict")
+            except UnicodeDecodeError as error:
+                broken = [
+                    {
+                        "citation": f"{path}:{row['line_start']}-{row['line_end']}",
+                        "heading": str(row["heading"]),
+                        "reason": "unreadable",
+                        "error_type": type(error).__name__,
+                    }
+                    for row in sections
+                ]
+                assessments.append(
+                    _record(
+                        "CITATION_BROKEN",
+                        path,
+                        {
+                            "current_content_hash": current_hash,
+                            "previous_content_hash": change.get("previous_content_hash"),
+                            "index_content_hash": index_row["content_hash"],
+                            "index_indexed_at": indexed_at,
+                            "broken_citations": broken,
+                        },
+                    )
+                )
+                continue
+
+            lines = _split_lines(raw)
+            broken = []
+            for row in sections:
+                line_start = int(row["line_start"])
+                line_end = int(row["line_end"])
+                if line_start < 1 or line_end > len(lines) or line_start > line_end:
+                    broken.append(
+                        {
+                            "citation": f"{path}:{line_start}-{line_end}",
+                            "heading": str(row["heading"]),
+                            "reason": "range_mismatch",
+                        }
+                    )
+                    continue
+                span = "\n".join(lines[line_start - 1 : line_end])
+                if span != str(row["text"]):
+                    broken.append(
+                        {
+                            "citation": f"{path}:{line_start}-{line_end}",
+                            "heading": str(row["heading"]),
+                            "reason": "range_mismatch",
+                        }
+                    )
+            if broken:
+                assessments.append(
+                    _record(
+                        "CITATION_BROKEN",
+                        path,
+                        {
+                            "current_content_hash": current_hash,
+                            "previous_content_hash": change.get("previous_content_hash"),
+                            "index_content_hash": index_row["content_hash"],
+                            "index_indexed_at": indexed_at,
+                            "broken_citations": broken,
+                        },
+                    )
+                )
+
+        assessments.sort(key=lambda item: (item["relative_path"], item["relation"]))
+        for item in assessments:
+            summary[item["relation"]] = summary.get(item["relation"], 0) + 1
+
+        return {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": ASSESSMENT_KIND,
+            "operation": "steward_assess",
+            "generated_at": generated_at,
+            "source": batch.get("source"),
+            "change_batch_ref": None,
+            "index": {
+                "indexed_at": indexed_at,
+                "schema_version": index_schema_version,
+                "database": str(database),
+            },
+            "assessments": assessments,
+            "summary": summary,
+            "content_drifted": sorted(set(content_drifted)),
+            "baseline_divergence": sorted(set(baseline_divergence)),
+            "network_calls": 0,
+            "vault_writes": 0,
+        }
+    finally:
+        connection.close()
+
+
+def assess_latest(registry: SourceRegistry, state_root: Path, database: Path) -> dict:
+    """For each registered source, assess its newest not-yet-assessed batch.
+
+    "Not yet assessed" uses the simplest rule available: for a source, take
+    the newest ``changes/<ts>-<source>.json`` batch file (by filename sort)
+    and check whether ``assessments/<ts>-<source>.json`` already exists. If it
+    does, that source is left alone this run -- rerunning is then a no-op.
+    Runs under the steward state lock, since it both reads and writes the
+    steward state directory.
+    """
+
+    state_root = Path(state_root)
+    database = Path(database)
+    generated_at = _utc_now()
+
+    with lock_state(state_root):
+        dirs = ensure_state_layout(state_root)
+        changes_dir = dirs["changes"]
+        assessments_dir = dirs["assessments"]
+
+        assessed: list[dict[str, Any]] = []
+        skipped_sources: list[dict[str, Any]] = []
+
+        for source in registry.sources:
+            batches = sorted(changes_dir.glob(f"*-{source.name}.json"))
+            if not batches:
+                skipped_sources.append(
+                    {"source": source.name, "reason": "no_change_batch"}
+                )
+                continue
+            latest = batches[-1]
+            assessment_path = assessments_dir / latest.name
+            if assessment_path.exists():
+                skipped_sources.append(
+                    {"source": source.name, "reason": "already_assessed"}
+                )
+                continue
+            try:
+                batch = json.loads(latest.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                raise ValueError(
+                    f"Change batch {latest} is not valid JSON: {error}"
+                ) from error
+            result = assess_change_batch(batch, database, source.root)
+            result["change_batch_ref"] = latest.name
+            atomic_write_json(assessment_path, result)
+            assessed.append(
+                {
+                    "source": source.name,
+                    "change_batch_ref": latest.name,
+                    "assessment_path": str(assessment_path),
+                    "summary": result["summary"],
+                }
+            )
+
+        return {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "steward_assess_receipt",
+            "operation": "steward_assess",
+            "generated_at": generated_at,
+            "assessed": assessed,
+            "skipped_sources": skipped_sources,
+            "network_calls": 0,
+            "vault_writes": 0,
+        }
