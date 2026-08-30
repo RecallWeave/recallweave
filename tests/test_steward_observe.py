@@ -286,6 +286,37 @@ class ObserveSourceTest(unittest.TestCase):
         checkpoint = self.checkpoint()
         self.assertEqual(checkpoint["entries"][0]["content_hash"], original_hash)
 
+    def test_hash_time_read_failure_counts_unreadable_and_retains_prior(
+        self,
+    ) -> None:
+        # A read/post-read-stat failure at hash time counts as unreadable_path
+        # (consistent with the open/stat branches) and retains the prior entry
+        # instead of false-removing it.
+        self.vault.write("a.md", "note a")
+        self.vault.write("b.md", "note b")
+        self.observe(now="2026-01-01T00:00:00+00:00")
+        import recallweave.steward_observe as _obs
+
+        real_read_fd = _obs._read_fd
+        calls = {"n": 0}
+
+        def flaky_read(fd, limit):
+            calls["n"] += 1
+            if calls["n"] == 1:  # a.md (sorted first): its hash-time read fails
+                raise OSError("read failed at hash time")
+            return real_read_fd(fd, limit)
+
+        with patch("recallweave.steward_observe._read_fd", side_effect=flaky_read):
+            receipt = self.observe(now="2026-01-01T00:00:01+00:00")
+        self.assertGreaterEqual(receipt["skipped"].get("unreadable_path", 0), 1)
+        self.assertIn("a.md", receipt["changed_during_observe"])
+        removed = {
+            c["relative_path"]
+            for c in receipt["changes"]
+            if c["change_type"] == "removed"
+        }
+        self.assertNotIn("a.md", removed)
+
     def test_missing_root_source_missing_checkpoint_untouched(self) -> None:
         missing = Path(self.temporary.name) / "does-not-exist"
         self.source = _source("src", missing)

@@ -305,32 +305,38 @@ def commit_applied(
     root = Path(root)
     _run_git(["add", "--"] + list(touched_relative_paths), root)
 
-    # Git needs BOTH user.name and user.email to commit; with
-    # user.useConfigOnly=true it will not synthesize either. Supply a fallback
-    # for whichever field is absent (checking each independently) so a repo that
-    # has only one configured still gets a commit -- and a configured field is
-    # preserved rather than overwritten by the fallback.
-    identity_args: list[str] = []
-    name_result = _run_git(["config", "user.name"], root, check=False)
-    if name_result.returncode != 0 or not name_result.stdout.strip():
-        identity_args += ["-c", "user.name=RecallWeave Steward"]
-    email_result = _run_git(["config", "user.email"], root, check=False)
-    if email_result.returncode != 0 or not email_result.stdout.strip():
-        identity_args += ["-c", "user.email=steward@localhost"]
+    # Every step after `git add` -- the identity queries, the temp hooks dir, the
+    # commit itself, and the final rev-parse -- can fail (a git timeout, a temp
+    # dir that cannot be created, a non-zero commit). ANY such failure must unstage
+    # the touched paths, so steward's staging never leaks into the operator's
+    # index, matching this function's documented guarantee.
+    try:
+        # Git needs BOTH user.name and user.email to commit; with
+        # user.useConfigOnly=true it will not synthesize either. Supply a
+        # fallback for whichever field is absent (checking each independently) so
+        # a repo that has only one configured still gets a commit -- and a
+        # configured field is preserved rather than overwritten by the fallback.
+        identity_args: list[str] = []
+        name_result = _run_git(["config", "user.name"], root, check=False)
+        if name_result.returncode != 0 or not name_result.stdout.strip():
+            identity_args += ["-c", "user.name=RecallWeave Steward"]
+        email_result = _run_git(["config", "user.email"], root, check=False)
+        if email_result.returncode != 0 or not email_result.stdout.strip():
+            identity_args += ["-c", "user.email=steward@localhost"]
 
-    message = (
-        f"steward-apply {proposal_id}\n\n"
-        f"Journal: {journal_ref}\n"
-        "Automated, operator-approved steward apply."
-    )
-    # An empty hooks directory disables every commit-lifecycle hook (pre-commit,
-    # prepare-commit-msg, commit-msg, AND post-commit) for this one commit, so
-    # no hook can mutate the validated notes regardless of --no-verify's limits.
-    with tempfile.TemporaryDirectory(prefix="steward-nohooks-") as empty_hooks:
-        hooks_args = ["-c", f"core.hooksPath={empty_hooks}"]
-        # Pathspec-limited commit: only the touched paths enter this commit,
-        # even if unrelated content was already staged before the apply ran.
-        try:
+        message = (
+            f"steward-apply {proposal_id}\n\n"
+            f"Journal: {journal_ref}\n"
+            "Automated, operator-approved steward apply."
+        )
+        # An empty hooks directory disables every commit-lifecycle hook
+        # (pre-commit, prepare-commit-msg, commit-msg, AND post-commit) for this
+        # one commit, so no hook can mutate the validated notes regardless of
+        # --no-verify's limits.
+        with tempfile.TemporaryDirectory(prefix="steward-nohooks-") as empty_hooks:
+            hooks_args = ["-c", f"core.hooksPath={empty_hooks}"]
+            # Pathspec-limited commit: only the touched paths enter this commit,
+            # even if unrelated content was already staged before the apply ran.
             _run_git(
                 hooks_args
                 + identity_args
@@ -338,9 +344,8 @@ def commit_applied(
                 + list(touched_relative_paths),
                 root,
             )
-        except GitError:
-            _unstage_paths(root, list(touched_relative_paths))
-            raise
-
-    sha_result = _run_git(["rev-parse", "HEAD"], root)
+        sha_result = _run_git(["rev-parse", "HEAD"], root)
+    except BaseException:
+        _unstage_paths(root, list(touched_relative_paths))
+        raise
     return {"committed": True, "commit": sha_result.stdout.strip()}

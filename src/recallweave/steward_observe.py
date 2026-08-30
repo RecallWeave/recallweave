@@ -511,6 +511,10 @@ def observe_source(
                 data = _read_fd(fd, size)
                 after = _pinned_stat(fd)
             except OSError:
+                # A read or post-read stat failure at hash time is an unreadable
+                # note, counted like the open/stat failures above, and its prior
+                # entry is retained rather than false-removed.
+                skipped["unreadable_path"] += 1
                 _mark_changed_during(relative)
                 continue
             if len(data) != size:

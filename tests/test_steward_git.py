@@ -232,6 +232,29 @@ class CommitAppliedTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_staging_is_cleaned_up_when_commit_setup_fails(self) -> None:
+        # commit_applied promises to unstage the touched paths on ANY failure,
+        # not only a failing commit. A failure between `git add` and the commit
+        # (here, temp hooks-dir creation) must still leave nothing staged.
+        _init_repo(self.root)
+        (self.root / "seed.md").write_text("seed", encoding="utf-8")
+        _git(["add", "seed.md"], self.root)
+        _git(["commit", "-m", "initial"], self.root)
+        (self.root / "a.md").write_text("new note", encoding="utf-8")
+        with patch(
+            "recallweave.steward_git.tempfile.TemporaryDirectory",
+            side_effect=OSError("injected temp-dir failure"),
+        ):
+            with self.assertRaises(OSError):
+                commit_applied(
+                    self.root,
+                    ["a.md"],
+                    proposal_id="prp-cleanuptesttest0",
+                    journal_ref="20260101T000000000000Z-prp-cleanuptesttest0.json",
+                )
+        staged = _git(["diff", "--cached", "--name-only"], self.root).stdout
+        self.assertNotIn("a.md", staged)
+
     def test_commit_succeeds_when_user_name_is_missing(self) -> None:
         # user.email configured, user.name absent, user.useConfigOnly=true so
         # git will not synthesize a name: the apply commit must still land, with
