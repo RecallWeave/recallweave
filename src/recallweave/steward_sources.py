@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .policy import IndexPolicy
-from .safe_write import is_link_like
+from .safe_write import is_link_like, path_identity
 
 SOURCES_SPEC_VERSION = "recallweave.steward.sources.v1"
 SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
@@ -39,6 +39,12 @@ class StewardSource:
     root: Path
     mode: str
     policy: IndexPolicy
+    # Filesystem identity of the root at registry-load time. Observation
+    # re-verifies it so a root swapped for a symlink (or any other object)
+    # after loading cannot rebind the source boundary. None only for direct
+    # library/test construction.
+    root_dev: int | None = None
+    root_ino: int | None = None
 
 
 @dataclass(slots=True)
@@ -160,8 +166,15 @@ class SourceRegistry:
                 "An appliable source must declare a non-empty include_paths "
                 "allowlist."
             )
+        root_dev, root_ino = path_identity(resolved)
         return StewardSource(
-            name=name, type=type_, root=resolved, mode=mode, policy=policy
+            name=name,
+            type=type_,
+            root=resolved,
+            mode=mode,
+            policy=policy,
+            root_dev=root_dev,
+            root_ino=root_ino,
         )
 
     @classmethod

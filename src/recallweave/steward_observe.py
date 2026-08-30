@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .parser import parse_note
+from .safe_write import is_link_like, path_identity
 from .policy import RESERVED_DIRECTORY_NAMES
 from .steward_checkpoint import (
     CheckpointEntry,
@@ -161,6 +162,17 @@ def _source_missing_receipt(
     generated_at: str,
     registry_sha256: str | None,
 ) -> dict:
+    return _source_error_receipt(
+        source, generated_at, registry_sha256, "source_missing"
+    )
+
+
+def _source_error_receipt(
+    source: StewardSource,
+    generated_at: str,
+    registry_sha256: str | None,
+    error: str,
+) -> dict:
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": CHANGE_BATCH_KIND,
@@ -168,7 +180,7 @@ def _source_missing_receipt(
         "generated_at": generated_at,
         "source": source.name,
         "registry_sha256": registry_sha256,
-        "error": "source_missing",
+        "error": error,
         "changes": [],
         "rename_candidates": [],
         "change_summary": {"added": 0, "modified": 0, "removed": 0},
@@ -193,6 +205,13 @@ def observe_source(
     is written."""
     generated_at = now if now is not None else _utc_now()
 
+    # Re-verify the root at observation time: a root replaced by a symlink
+    # (or by any other filesystem object) after the registry was loaded must
+    # not rebind the source boundary.
+    if is_link_like(source.root):
+        return _source_error_receipt(
+            source, generated_at, registry_sha256, "source_root_symlinked"
+        )
     try:
         resolved_root = source.root.resolve(strict=True)
     except OSError:
@@ -202,6 +221,15 @@ def observe_source(
             return _source_missing_receipt(source, generated_at, registry_sha256)
     elif not resolved_root.is_dir():
         return _source_missing_receipt(source, generated_at, registry_sha256)
+    if source.root_dev is not None and source.root_ino is not None:
+        try:
+            identity = path_identity(resolved_root)
+        except OSError:
+            return _source_missing_receipt(source, generated_at, registry_sha256)
+        if identity != (source.root_dev, source.root_ino):
+            return _source_error_receipt(
+                source, generated_at, registry_sha256, "source_identity_changed"
+            )
 
     checkpoint_invalid = False
     prior_entries: dict[str, dict] = {}
@@ -395,7 +423,7 @@ def observe_registry(registry: SourceRegistry, state_root: Path) -> dict:
                 registry_sha256=registry.registry_sha256,
                 now=generated_at,
             )
-            if batch.get("error") == "source_missing":
+            if batch.get("error") is not None:
                 receipts.append(batch)
                 continue
             filename = f"{_file_timestamp(generated_at)}-{source.name}.json"

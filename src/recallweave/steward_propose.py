@@ -696,8 +696,8 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
         state_root, [source.root for source in registry.sources]
     )
 
+    dirs = ensure_state_layout(state_root)
     with lock_state(state_root):
-        dirs = ensure_state_layout(state_root)
         assessments_dir = dirs["assessments"]
         changes_dir = dirs["changes"]
         proposals_dir = dirs["proposals"]

@@ -54,8 +54,11 @@ def ensure_state_root_outside_sources(root: Path, source_roots: list[Path]) -> N
     resolved_root = root.expanduser().resolve()
     for source_root in source_roots:
         resolved_source = Path(source_root).expanduser().resolve()
+        # A file source's boundary is its containing directory; a folder
+        # source's boundary is itself -- including when it is currently
+        # missing (a deleted root must not widen the boundary to its parent).
         candidates = (
-            resolved_source if resolved_source.is_dir() else resolved_source.parent
+            resolved_source.parent if resolved_source.is_file() else resolved_source
         )
         if (
             resolved_root == candidates
@@ -136,6 +139,10 @@ class StateLock:
 
     def acquire(self) -> None:
         root = self.root
+        if is_link_like(root):
+            raise ValueError(
+                f"Refusing a symlinked steward state root: {root}"
+            )
         root.mkdir(parents=True, exist_ok=True)
         payload = {
             "pid": os.getpid(),

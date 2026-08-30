@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -37,6 +38,16 @@ def _path(value: str) -> Path:
 
 def _emit(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=True))
+
+
+_ABSOLUTE_PATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][^\s'\",;]+)+")
+
+
+def _redact_local_paths(message: str) -> str:
+    """Steward failure envelopes are machine-forwardable; strip absolute
+    local paths so an error receipt cannot disclose filesystem layout."""
+
+    return _ABSOLUTE_PATH_RE.sub("<local-path>", message)
 
 
 def _add_database_locator(parser: argparse.ArgumentParser) -> None:
@@ -425,12 +436,15 @@ def main(argv: list[str] | None = None) -> int:
             return SWEEP_EXIT_CODES[payload["result"]]
         return 0
     except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as error:
+        message = str(error)
+        if args.command.startswith("steward-"):
+            message = _redact_local_paths(message)
         print(
             json.dumps(
                 {
                     "schema_version": SCHEMA_VERSION,
                     "error": type(error).__name__,
-                    "message": str(error),
+                    "message": message,
                     "operation": args.command,
                 },
                 ensure_ascii=True,

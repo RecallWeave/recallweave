@@ -728,5 +728,195 @@ class ProposalBatchPinningTest(unittest.TestCase):
             propose_latest(self.registry, self.state_root, self.database)
 
 
+
+
+class RootRebindingTest(unittest.TestCase):
+    """A source root replaced after registry load must not rebind the boundary."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_root_swapped_for_symlink_is_refused_without_observation(self) -> None:
+        real_root = self.base / "vault"
+        real_root.mkdir()
+        (real_root / "a.md").write_text("hello", encoding="utf-8")
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "secret.md").write_text("secret bytes", encoding="utf-8")
+
+        registry_path = self.base / "sources.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": "recallweave.steward.sources.v1",
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(real_root),
+                            "mode": "read_only",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        from recallweave.steward_sources import load_registry
+
+        registry = load_registry(registry_path)
+        self.assertIsNotNone(registry.sources[0].root_dev)
+
+        import shutil
+
+        shutil.rmtree(real_root)
+        if not make_symlink(outside, real_root):
+            self.skipTest("symlinks unsupported")
+
+        state_root = self.base / "state"
+        receipt = observe_registry(registry, state_root)
+        source_receipt = receipt["sources"][0]
+        self.assertIn(
+            source_receipt.get("error"),
+            ("source_root_symlinked", "source_identity_changed"),
+        )
+        strings: list[str] = []
+        _walk_strings(receipt, strings)
+        self.assertFalse(any("secret" in item for item in strings))
+        self.assertEqual(list((state_root / "changes").glob("*.json")), [])
+        self.assertEqual(list((state_root / "checkpoints").glob("*.json")), [])
+
+    def test_root_replaced_by_new_directory_is_refused(self) -> None:
+        real_root = self.base / "vault"
+        real_root.mkdir()
+        registry_path = self.base / "sources.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": "recallweave.steward.sources.v1",
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(real_root),
+                            "mode": "read_only",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        from recallweave.steward_sources import load_registry
+
+        registry = load_registry(registry_path)
+        import shutil
+
+        shutil.rmtree(real_root)
+        real_root.mkdir()
+        (real_root / "planted.md").write_text("planted", encoding="utf-8")
+        receipt = observe_registry(registry, self.base / "state")
+        self.assertEqual(
+            receipt["sources"][0].get("error"), "source_identity_changed"
+        )
+
+
+class SymlinkedStateRootLockTest(unittest.TestCase):
+    """assess/propose must not create a lock through a symlinked state root."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.vault = TempVault(dir=self.base)
+        self.vault.write("a.md", "hello")
+        self.database = self.base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.registry = SourceRegistry(
+            sources=[_source("src", self.vault.root)], registry_sha256=None
+        )
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def test_assess_and_propose_refuse_symlinked_state_root(self) -> None:
+        target = self.base / "target"
+        target.mkdir()
+        link_root = self.base / "link-state"
+        if not make_symlink(target, link_root):
+            self.skipTest("symlinks unsupported")
+        for call in (
+            lambda: assess_latest(self.registry, link_root, self.database),
+            lambda: propose_latest(self.registry, link_root, self.database),
+        ):
+            with self.assertRaisesRegex(ValueError, "symlinked steward state root"):
+                call()
+            self.assertFalse(
+                (target / "steward.lock").exists(),
+                "a lock write escaped through the symlinked state root",
+            )
+
+
+class ErrorEnvelopeRedactionTest(unittest.TestCase):
+    def test_steward_cli_errors_redact_absolute_paths(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from recallweave.cli import main as cli_main
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            missing = base / "does-not-exist" / "sources.json"
+            out, err = StringIO(), StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                exit_code = cli_main(["steward-observe", str(missing)])
+            self.assertEqual(exit_code, 2)
+            payload = json.loads(err.getvalue())
+            self.assertNotIn(str(base), payload["message"])
+            self.assertNotIn(str(base), out.getvalue())
+
+
+class MissingSourceStalenessTest(unittest.TestCase):
+    def test_missing_source_contributes_no_historical_data(self) -> None:
+        import shutil
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            root = base / "vault"
+            root.mkdir()
+            (root / "a.md").write_text("# A\n\nBody.\n", encoding="utf-8")
+            database = base / "index.sqlite"
+            build_index(root, database, policy=IndexPolicy())
+            registry = SourceRegistry(
+                sources=[_source("src", root)], registry_sha256=None
+            )
+            state_root = base / "state"
+            first = sweep_registry(registry, state_root, database)
+            self.assertGreaterEqual(first["changes"]["src"]["added"], 1)
+
+            shutil.rmtree(root)
+            second = sweep_registry(registry, state_root, database)
+            self.assertIn("src", second["integrity"]["sources_missing"])
+            self.assertEqual(
+                second["changes"]["src"],
+                {"added": 0, "modified": 0, "removed": 0},
+                "historical batch data masqueraded as current-run data",
+            )
+            total_relations = sum(
+                second["assessments"].get(rel, 0)
+                for rel in (
+                    "NEW",
+                    "DELETED",
+                    "MODIFIED",
+                    "DUPLICATES_EXACT_BYTES",
+                    "AUTHORED_REFERENCE_TOUCHED",
+                    "CITATION_BROKEN",
+                )
+            )
+            self.assertEqual(total_relations, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

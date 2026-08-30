@@ -171,7 +171,9 @@ def _latest_file(directory: Path, source_name: str) -> Path | None:
 
 
 def _aggregate_from_batches(
-    dirs: dict[str, Path], registry: SourceRegistry
+    dirs: dict[str, Path],
+    registry: SourceRegistry,
+    exclude_sources: set[str] | None = None,
 ) -> dict[str, Any]:
     changes: dict[str, dict[str, int]] = {}
     skipped_total: dict[str, int] = {}
@@ -180,6 +182,11 @@ def _aggregate_from_batches(
     checkpoint_invalid: list[str] = []
 
     for source in registry.sources:
+        if exclude_sources and source.name in exclude_sources:
+            # A source that errored this run contributes nothing current; its
+            # historical batches must not masquerade as this sweep's data.
+            changes[source.name] = {"added": 0, "modified": 0, "removed": 0}
+            continue
         latest = _latest_file(dirs["changes"], source.name)
         if latest is None:
             changes[source.name] = {"added": 0, "modified": 0, "removed": 0}
@@ -208,7 +215,9 @@ def _aggregate_from_batches(
 
 
 def _aggregate_assessments(
-    dirs: dict[str, Path], registry: SourceRegistry
+    dirs: dict[str, Path],
+    registry: SourceRegistry,
+    exclude_sources: set[str] | None = None,
 ) -> tuple[dict[str, int], list[str], list[str]]:
     summary: dict[str, int] = {
         "index_current": 0,
@@ -222,6 +231,8 @@ def _aggregate_assessments(
     duplicates: list[str] = []
 
     for source in registry.sources:
+        if exclude_sources and source.name in exclude_sources:
+            continue
         latest = _latest_file(dirs["assessments"], source.name)
         if latest is None:
             continue
@@ -296,8 +307,15 @@ def _assemble_report(
     observe_receipt: dict[str, Any],
     proposals_created_this_sweep: int,
 ) -> dict[str, Any]:
-    batch_agg = _aggregate_from_batches(dirs, registry)
-    relation_summary, broken_citations, duplicates = _aggregate_assessments(dirs, registry)
+    sources_errored = {
+        item["source"]
+        for item in observe_receipt.get("sources", [])
+        if isinstance(item, dict) and item.get("error") is not None
+    }
+    batch_agg = _aggregate_from_batches(dirs, registry, sources_errored)
+    relation_summary, broken_citations, duplicates = _aggregate_assessments(
+        dirs, registry, sources_errored
+    )
     proposals_pending_total, proposals_by_action, dangling_references = _aggregate_proposals(dirs)
 
     sources_missing = sorted(
