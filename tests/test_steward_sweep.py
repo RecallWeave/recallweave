@@ -498,6 +498,75 @@ class ReportBacklogAggregationTest(StewardSweepTest):
             "same-named findings in disjoint sources were merged into one",
         )
 
+    def test_later_assessment_supersedes_earlier_finding(self) -> None:
+        # DELETED in an earlier assessment, then NEW for the same path later:
+        # the report must reflect the current state (NEW), not both.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        dirs = self._dirs()
+
+        def _assessment(name: str, relation: str) -> None:
+            (dirs["assessments"] / name).write_text(
+                json.dumps(
+                    {
+                        "schema_version": STEWARD_SCHEMA_VERSION,
+                        "kind": "assessment_batch",
+                        "source": "vault",
+                        "summary": {relation: 1},
+                        "assessments": [{"relation": relation, "relative_path": "Gone.md"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        _assessment("20260101T000000Z-vault.json", "DELETED")
+        _assessment("20260102T000000Z-vault.json", "NEW")
+        summary, _b, _d = _aggregate_assessments(dirs, self._registry())
+        self.assertEqual(summary["NEW"], 1)
+        self.assertEqual(
+            summary["DELETED"], 0,
+            "a superseded DELETED finding was still reported as current",
+        )
+
+    def test_repaired_citation_does_not_persist(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        dirs = self._dirs()
+        (dirs["assessments"] / "20260101T000000Z-vault.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "assessment_batch",
+                    "source": "vault",
+                    "summary": {"CITATION_BROKEN": 1},
+                    "assessments": [
+                        {
+                            "relation": "CITATION_BROKEN",
+                            "relative_path": "Note.md",
+                            "inputs": {"broken_citations": [{"citation": "Note.md:1-2"}]},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        # A later assessment shows the same note MODIFIED (citation repaired).
+        (dirs["assessments"] / "20260102T000000Z-vault.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "assessment_batch",
+                    "source": "vault",
+                    "summary": {"MODIFIED": 1},
+                    "assessments": [{"relation": "MODIFIED", "relative_path": "Note.md"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary, broken, _d = _aggregate_assessments(dirs, self._registry())
+        self.assertEqual(summary["CITATION_BROKEN"], 0)
+        self.assertEqual(broken, [], "a repaired citation persisted in the report")
+
     def test_report_does_not_double_count_recurring_finding(self) -> None:
         from recallweave.steward_sweep import _aggregate_assessments
 

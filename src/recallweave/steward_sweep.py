@@ -258,48 +258,58 @@ def _aggregate_assessments(
 
     broken_citations: list[str] = []
     duplicates: list[str] = []
-    # Count deterministic relations by DISTINCT finding identity, keyed on
-    # (source, relative_path), not by summing per-assessment counters. Summing
-    # would double-count a finding that recurs across retained assessments and
-    # drift when processed assessments are pruned; keying on the path alone would
-    # merge a same-named finding in two disjoint sources into one. A distinct
-    # (source, path) count reflects the current integrity state and matches the
-    # deduplicated evidence arrays below.
-    distinct_relations: dict[str, set[tuple[str, str]]] = {
-        relation: set() for relation in DETERMINISTIC_RELATIONS
-    }
+    # Reconcile to CURRENT state, not a union of history. assess_latest processes
+    # every unassessed batch, so several retained assessments can describe the
+    # same path at different times; unioning them would report contradictory,
+    # stale findings (e.g. a DELETED that a later NEW already superseded) and
+    # make the report depend on retention rather than the source's current
+    # state. For each (source, relative_path), the LATEST assessment that
+    # mentions it wins; a path only an older assessment mentions is preserved
+    # (nothing newer changed it). Counts and evidence are then derived from that
+    # reconciled current state, so they are consistent with each other.
+    current_items: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     for source in registry.sources:
         if exclude_sources and source.name in exclude_sources:
             continue
-        # Aggregate EVERY assessment for the source, not just the lexically
-        # newest: assess_latest processes every unassessed batch, so a deletion
-        # recorded in an earlier batch would otherwise be missing from the
-        # report (zero DELETED) even though propose created a proposal for it.
+        # _source_files returns ascending (oldest-first) filename/timestamp
+        # order, so later assessments overwrite earlier per-path state below.
         for assessment_path in _source_files(dirs["assessments"], source.name):
             assessment = _load_json(assessment_path)
             for key, value in (assessment.get("summary") or {}).items():
-                # Relation counts are recomputed from distinct findings below;
+                # Relation counts are recomputed from the reconciled state below;
                 # only the non-relation bookkeeping stats are carried here.
                 if key in DETERMINISTIC_RELATIONS:
                     continue
                 if isinstance(value, int) and not isinstance(value, bool):
                     summary[key] = summary.get(key, 0) + value
+            this_assessment: dict[str, list[dict[str, Any]]] = {}
             for item in assessment.get("assessments") or []:
-                relation = item.get("relation")
                 path = item.get("relative_path")
-                if relation in distinct_relations and isinstance(path, str):
-                    distinct_relations[relation].add((source.name, path))
-                if relation == "CITATION_BROKEN":
-                    for citation in (item.get("inputs") or {}).get("broken_citations") or []:
-                        text = citation.get("citation") if isinstance(citation, dict) else None
-                        if isinstance(text, str):
-                            broken_citations.append(text)
-                elif relation == "DUPLICATES_EXACT_BYTES" and isinstance(path, str):
-                    duplicates.append(path)
+                if isinstance(path, str):
+                    this_assessment.setdefault(path, []).append(item)
+            for path, items in this_assessment.items():
+                # Latest assessment mentioning this path supersedes earlier state.
+                current_items[(source.name, path)] = items
 
-    for relation, paths in distinct_relations.items():
-        summary[relation] = len(paths)
+    distinct_relations: dict[str, set[tuple[str, str]]] = {
+        relation: set() for relation in DETERMINISTIC_RELATIONS
+    }
+    for (source_name, path), items in current_items.items():
+        for item in items:
+            relation = item.get("relation")
+            if relation in distinct_relations:
+                distinct_relations[relation].add((source_name, path))
+            if relation == "CITATION_BROKEN":
+                for citation in (item.get("inputs") or {}).get("broken_citations") or []:
+                    text = citation.get("citation") if isinstance(citation, dict) else None
+                    if isinstance(text, str):
+                        broken_citations.append(text)
+            elif relation == "DUPLICATES_EXACT_BYTES":
+                duplicates.append(path)
+
+    for relation, keys in distinct_relations.items():
+        summary[relation] = len(keys)
 
     return summary, sorted(set(broken_citations)), sorted(set(duplicates))
 
@@ -317,6 +327,12 @@ def _aggregate_proposals(
     total = 0
     for path in sorted(dirs["proposals"].glob("*.json")):
         proposal = _load_json(path)
+        if not isinstance(proposal, dict):
+            # Valid JSON that is not an object is a malformed proposal; count it
+            # as pending (it needs operator attention) rather than calling .get()
+            # on a non-dict.
+            total += 1
+            continue
         if proposal.get("status") == "applied":
             continue
         if registry_sha256 is not None and (
