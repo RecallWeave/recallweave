@@ -8,7 +8,6 @@ import {
   formatExportHistoryDetail,
   importDiagnosticMessage,
   normalizeGraph,
-  obsidianOpenHref,
   safeCitation,
   safeContentHash,
   safeIdentifier,
@@ -1056,14 +1055,6 @@ test("citationPath extracts the note path from validated citations", () => {
   assert.equal(safeContentHash("not-a-hash"), null);
   assert.equal(safeContentHash("A".repeat(64)), "a".repeat(64));
   assert.equal(safeVaultLabel("obsidian vault"), "");
-  assert.equal(
-    obsidianOpenHref("Research Vault", "Projects/Note.md"),
-    "obsidian://open?vault=Research%20Vault&file=Projects%2FNote.md",
-  );
-  assert.equal(obsidianOpenHref("../secrets", "Projects/Note.md"), "");
-  assert.equal(obsidianOpenHref("Research Vault", "../escape.md"), "");
-  assert.equal(obsidianOpenHref("Research Vault", "https://evil.example/x.md"), "");
-  assert.equal(obsidianOpenHref("", "Projects/Note.md"), "");
 });
 
 test("rejects non-UTC and malformed graph generated_at instead of preserving labels", () => {

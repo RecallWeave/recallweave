@@ -77,8 +77,9 @@ already paid for.
     refused by GitHub. Lineage lives on the retired branch and in the PR.
 16. **`recallweave.viewer.v2` is frozen** in `docs/json-output.md`. Emitters and
     Atlas consume it; Cold Trails v1 (including timestamp trail types) is shipped.
-    Do not invent `vault_name` labels or reopen the Obsidian-open gate without
-    aligning `docs/cold-trails.md`.
+    Do not invent `vault_name` labels. Vault navigation / Obsidian open is
+    deferred (`recallweave-fkd`); Atlas copies relative paths only until a
+    reviewed redesign lands.
 
 ## 4. Open blockers
 
@@ -118,8 +119,9 @@ non-PASS review.
   (`shared_tags`, dismiss persistence, handoff/sample v2).
 - Closed epic **`recallweave-iyd`** — viewer.v2 schema, emitter, Atlas consume,
   Cold Trails v1.
-- Follow-ups shipped: filesystem birth `created_at` fallback; `vault_name`-gated
-  Obsidian open (cold-trails.md aligned). No optional later items remain queued.
+- Follow-up shipped: filesystem birth `created_at` fallback.
+- Deferred redesign: **`recallweave-fkd`** (vault navigation / Obsidian open).
+  Atlas continues to copy relative paths only.
 
 ## 7. Known failure modes and traps
 

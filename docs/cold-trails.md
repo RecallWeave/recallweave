@@ -211,9 +211,8 @@ candidate styling because the weaker trust class wins.
 - **Save** adds a citation-rich item to a local session list.
 - **Dismiss** affects future ranking only.
 - **Explain** reveals all signals and the exact score.
-- **Open source** opens `obsidian://open` when the loaded graph carries an
-  explicit `vault_name` label claim; otherwise it copies the relative note path
-  (Atlas never invents a vault label).
+- **Open source** copies the relative note path. Atlas does not emit direct
+  vault navigation links; a reviewed Obsidian-open design is deferred.
 - **Show me another** deterministically excludes already shown trails.
 - **Show on map** frames both endpoints on the canvas.
 - **End tour** offers a local Markdown export of saved trails.

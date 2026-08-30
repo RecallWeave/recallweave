@@ -340,7 +340,7 @@ index**, not as live filesystem facts, unless the consumer recomputes them.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `vault_name` | no | Optional vault label for constructing `obsidian://open` links. Never a filesystem path. Absent when the operator did not supply one. |
+| `vault_name` | no | Optional vault label claim for provenance chrome. Never a filesystem path. Absent when the operator did not supply one. Direct Obsidian open navigation from this field is deferred pending a separate redesign. |
 | `policy_config_sha256` | no | SHA-256 of the exact policy-file bytes applied at index time when `policy_mode` was `config`. MUST NOT include the policy path or policy contents. Absent for `--no-policy` indexes. |
 | `export_history` | yes | Object describing this export relative to prior exports of the same graph destination. |
 

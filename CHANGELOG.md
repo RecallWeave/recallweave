@@ -146,9 +146,6 @@
   with timestamps, export history, and evidence signals;
 - indexer records filesystem birth time for `created_at` when frontmatter omits
   `created` and the platform exposes birth/creation time (never invents a clock);
-- Atlas Open source / Open in Obsidian uses `obsidian://open` only when the
-  graph carries an explicit `vault_name` label claim; otherwise it copies the
-  relative path;
 - local, atomic SQLite indexing for Markdown and Obsidian vaults;
 - safe data-only frontmatter parsing;
 - verified authored wikilink and Markdown-link edges;

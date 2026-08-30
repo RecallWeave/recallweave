@@ -18,7 +18,6 @@ import {
   citationPath,
   importDiagnosticMessage,
   normalizeGraph,
-  obsidianOpenHref,
 } from "../graph-data";
 import { loadGraphFromFile } from "../graph-load";
 import { AtlasExportPrivacyChrome } from "./AtlasExportPrivacyChrome";
@@ -281,25 +280,6 @@ export function GraphExplorer({
     return copyToClipboard(path, "Path copied.");
   }
 
-  function openSelectedInObsidian() {
-    if (!graph?.vault_label_claim || !selected?.path) {
-      setCopyStatus("Obsidian open requires an explicit vault_name label claim on the graph.");
-      return;
-    }
-    const href = obsidianOpenHref(graph.vault_label_claim, selected.path);
-    if (!href) {
-      setCopyStatus("Could not build a safe Obsidian open link for this note.");
-      return;
-    }
-    const anchor = document.createElement("a");
-    anchor.href = href;
-    anchor.rel = "noopener noreferrer";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    setCopyStatus("Opened note in Obsidian via vault label claim.");
-  }
-
   function showTrailOnMap(nodeIds: string[]) {
     if (!nodeIds.length) return;
     setSelectedId(nodeIds[0]);
@@ -507,16 +487,6 @@ export function GraphExplorer({
                   </div>
                   <h3 ref={detailHeadingRef} tabIndex={-1}>{selected.title}</h3>
                   <div className="node-path" title={selected.path}>{selected.path}</div>
-                  {graph.vault_label_claim && (
-                    <div className="node-open-actions">
-                      <button type="button" onClick={openSelectedInObsidian}>
-                        Open in Obsidian
-                      </button>
-                      <button type="button" onClick={() => copyPlainPath(selected.path)}>
-                        Copy path
-                      </button>
-                    </div>
-                  )}
                   {graph.schema_version === VIEWER_SCHEMA_V2 && (
                     <div className="node-provenance-claims" role="note">
                       {selected.content_hash && (
