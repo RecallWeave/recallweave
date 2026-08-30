@@ -144,6 +144,8 @@
   `recallweave.viewer.v2` (structural and timestamp trail types, dismiss
   persistence, Clear history); the bundled sample graph is an honest v2 fixture
   with timestamps, export history, and evidence signals;
+- indexer records filesystem birth time for `created_at` when frontmatter omits
+  `created` and the platform exposes birth/creation time (never invents a clock);
 - local, atomic SQLite indexing for Markdown and Obsidian vaults;
 - safe data-only frontmatter parsing;
 - verified authored wikilink and Markdown-link edges;

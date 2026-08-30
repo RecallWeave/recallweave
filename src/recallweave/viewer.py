@@ -147,11 +147,18 @@ def _edge_evidence(
         evidence["explanation"] = _excerpt(explanation, MAX_EVIDENCE_CHARACTERS)
 
     # Prefer index-derived tag intersection over any producer-claimed list.
-    tag_terms = list(shared_tags or [])[:12]
-    if not tag_terms:
+    # Distinguish "computed empty" (do not fall back) from "not supplied" (None).
+    if shared_tags is not None:
+        tag_terms = _dedupe_string_terms(shared_tags, limit=12)
+    else:
         claimed = parsed.get("shared_tags")
         if isinstance(claimed, list):
-            tag_terms = [str(tag) for tag in claimed if isinstance(tag, str)][:12]
+            tag_terms = _dedupe_string_terms(
+                [str(tag) for tag in claimed if isinstance(tag, str)],
+                limit=12,
+            )
+        else:
+            tag_terms = []
 
     signals: dict[str, Any] = {}
     if lexical_terms:
@@ -173,6 +180,23 @@ def _mutual_neighbors(
     shared.discard(source)
     shared.discard(target)
     return sorted(shared)
+
+
+def _dedupe_string_terms(terms: list[str], *, limit: int = 12) -> list[str]:
+    """Stable, case-preserving unique strings capped at ``limit``."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in terms:
+        if not isinstance(term, str) or not term:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(term)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _intersecting_tags(

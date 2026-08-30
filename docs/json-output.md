@@ -329,7 +329,7 @@ Every node from v1 remains. v2 adds:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `created_at` | yes when known from the index; otherwise JSON `null` | UTC ISO-8601 timestamp of note creation as recorded by the index. Never invent a clock value. |
+| `created_at` | yes when known from the index; otherwise JSON `null` | UTC ISO-8601 timestamp of note creation as recorded by the index. Prefer frontmatter `created` when present; otherwise the indexer may record filesystem birth time (`st_birthtime`, or Windows creation time) when the platform exposes it. Never invent a clock value; use JSON `null` when unknown. |
 | `modified_at` | yes when known from the index; otherwise JSON `null` | UTC ISO-8601 timestamp of last indexed content change. |
 | `content_hash` | yes | Hex SHA-256 of the exact note bytes the index hashed for this path. Empty-string hashes are forbidden; use `null` only if the index lacks a hash (legacy indexes). |
 
@@ -340,7 +340,7 @@ index**, not as live filesystem facts, unless the consumer recomputes them.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `vault_name` | no | Optional vault label for constructing `obsidian://open` links. Never a filesystem path. Absent when the operator did not supply one. |
+| `vault_name` | no | Optional vault label claim for provenance chrome. Never a filesystem path. Absent when the operator did not supply one. Direct Obsidian open navigation from this field is deferred pending a separate redesign. |
 | `policy_config_sha256` | no | SHA-256 of the exact policy-file bytes applied at index time when `policy_mode` was `config`. MUST NOT include the policy path or policy contents. Absent for `--no-policy` indexes. |
 | `export_history` | yes | Object describing this export relative to prior exports of the same graph destination. |
 

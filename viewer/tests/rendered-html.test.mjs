@@ -117,6 +117,7 @@ test("Cold Trails tour dialog meets accessibility and trust boundaries", async (
     /if \(event\.key === "Escape"\) \{\s*event\.preventDefault\(\);\s*endTour\(\);/s,
   );
   assert.doesNotMatch(tour, /obsidian:\/\//);
+  assert.doesNotMatch(tour, /obsidianOpenHref/);
 
   const explorer = await readFile(
     new URL("../app/components/GraphExplorer.tsx", import.meta.url),
@@ -124,6 +125,7 @@ test("Cold Trails tour dialog meets accessibility and trust boundaries", async (
   );
   assert.match(explorer, /Cold Trails/);
   assert.match(explorer, /ColdTrailsTour/);
+  assert.doesNotMatch(explorer, /Open in Obsidian|obsidianOpenHref|obsidian:\/\//);
 });
 
 test("client import and keyboard focus guards remain wired", async () => {
@@ -161,7 +163,7 @@ test("client import and keyboard focus guards remain wired", async () => {
   assert.match(provenanceChrome, /Index claims:/);
   assert.match(provenanceChrome, /privacy-provenance-detail/);
   assert.match(provenanceChrome, /formatAtlasProvenanceClaims/);
-  assert.doesNotMatch(source, /obsidianUrl|Open in Obsidian|obsidian:\/\//);
+  assert.doesNotMatch(source, /obsidianOpenHref|Open in Obsidian|obsidian:\/\//);
   assert.match(source, /resetExplorer\(true\)/);
   assert.match(source, /searchRef\.current\?\.focus\(\)/);
 });
@@ -181,7 +183,7 @@ test("runtime source and production bundles contain no direct vault navigation",
   ].join("\n");
   assert.doesNotMatch(
     sources,
-    /obsidian:\/\/|open in obsidian/iu,
+    /obsidian:\/\/|open in obsidian|obsidianOpenHref/iu,
   );
 });
 

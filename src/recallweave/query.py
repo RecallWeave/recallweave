@@ -380,7 +380,10 @@ def resurface(
             note = connection.execute(
                 "SELECT created_at, updated_at, modified_at FROM notes WHERE id = ?", (note_id,)
             ).fetchone()
-            age_days = _parse_age(note["updated_at"] or note["created_at"], note["modified_at"])
+            # Dormancy must track last author/work touch, not filesystem birth.
+            # Prefer frontmatter updated; otherwise use mtime. Never use created_at
+            # alone — birth-time fallback would make a recently edited old file look dormant.
+            age_days = _parse_age(note["updated_at"], note["modified_at"])
             if age_days < minimum_age_days:
                 continue
             verified_degree = int(

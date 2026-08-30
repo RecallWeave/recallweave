@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { validatedSharedTags } from "../cold-trails";
 import {
   GraphDocument,
   GraphEdge,
@@ -77,7 +78,11 @@ function buildLayout(graph: GraphDocument): PositionedNode[] {
   return result;
 }
 
-function evidenceText(edge: GraphEdge): string {
+function evidenceText(
+  edge: GraphEdge,
+  sourceNode: GraphNode | undefined,
+  targetNode: GraphNode | undefined,
+): string {
   if (edge.evidence?.explanation) return edge.evidence.explanation;
   const signals = edge.evidence?.signals;
   if (signals?.lexical_terms?.length) {
@@ -86,8 +91,11 @@ function evidenceText(edge: GraphEdge): string {
   if (edge.evidence?.shared_terms?.length) {
     return `Shared language: ${edge.evidence.shared_terms.join(", ")}`;
   }
-  if (signals?.shared_tags?.length) {
-    return `Shared tags: ${signals.shared_tags.join(", ")}`;
+  if (sourceNode && targetNode) {
+    const sharedTags = validatedSharedTags(sourceNode, targetNode, edge);
+    if (sharedTags.length) {
+      return `Shared tags: ${sharedTags.join(", ")}`;
+    }
   }
   return edge.verified
     ? "Authored in the source note."
@@ -682,6 +690,9 @@ function ConnectionGroup({
         {edges.map((edge) => {
           const otherId = edge.source === selected.id ? edge.target : edge.source;
           const other = positioned.find((node) => node.id === otherId);
+          // Every edge in this group touches `selected`; avoid scanning all nodes twice.
+          const sourceNode = edge.source === selected.id ? selected : other;
+          const targetNode = edge.target === selected.id ? selected : other;
           return (
             <article className={`connection-card ${edge.verified ? "authored" : "candidate"}`} key={edge.id}>
               <button
@@ -697,7 +708,9 @@ function ConnectionGroup({
                     {edge.verified ? "authored" : "candidate"}
                   </span>
                 </span>
-                <span className="connection-evidence">{evidenceText(edge)}</span>
+                <span className="connection-evidence">
+                  {evidenceText(edge, sourceNode, targetNode)}
+                </span>
               </button>
               <EvidenceSide
                 label="Source evidence"
