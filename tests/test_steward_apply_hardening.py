@@ -649,5 +649,168 @@ class TwoPassRecoveryTest(unittest.TestCase):
             )
 
 
+
+
+class Round2G3RegressionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.vault = TempVault(dir=self.base)
+        self.vault.write("kept.md", "kept")
+        self.vault.write("Restricted/hidden.md", "outside the allowlist")
+        self.database = self.base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.registry_path = self.base / "sources.json"
+        self.registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(self.vault.root),
+                            "mode": "appliable",
+                            "policy": {"include_paths": ["kept.md"]},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.registry = load_registry(self.registry_path)
+        self.state_root = self.base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def _proposal(self, edits, registry_sha=True):
+        return {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "proposal",
+            "proposal_id": "prp-g3round2round2",
+            "source": "src",
+            "action": "test",
+            "policy_level": "propose_only",
+            "edits": edits,
+            "conflicts_with": [],
+            "registry_sha256": (
+                self.registry.registry_sha256 if registry_sha else None
+            ),
+        }
+
+    def _apply(self, proposal, class_levels):
+        from recallweave.steward_apply import apply_proposal
+        from recallweave.steward_policy import WritePolicy
+
+        policy = WritePolicy.from_bytes(
+            json.dumps(
+                {
+                    "spec_version": "recallweave.steward.policy.v1",
+                    "class_levels": class_levels,
+                }
+            ).encode()
+        )
+        return apply_proposal(
+            proposal,
+            registry=self.registry,
+            state_dirs=self.dirs,
+            database=self.database,
+            policy=policy,
+            mode="per_item",
+            execute=True,
+        )
+
+    def test_trash_of_unadmitted_file_is_refused(self) -> None:
+        hidden = self.vault.root / "Restricted/hidden.md"
+        proposal = self._proposal(
+            [
+                {
+                    "mutation_class": "move_to_trash",
+                    "relative_path": "Restricted/hidden.md",
+                    "precondition_content_hash": _sha(hidden.read_bytes()),
+                }
+            ]
+        )
+        with self.assertRaisesRegex(ApplyError, "not admitted"):
+            self._apply(proposal, {"move_to_trash": "require_approval"})
+        self.assertTrue(hidden.exists())
+        self.assertEqual(list(self.dirs["journal"].glob("*.json")), [])
+
+    def test_null_proposal_digest_fails_closed(self) -> None:
+        kept = self.vault.root / "kept.md"
+        proposal = self._proposal(
+            [
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "kept.md",
+                    "precondition_content_hash": _sha(kept.read_bytes()),
+                    "replacement_text": "\nx\n",
+                    "predicted_post_hash": _sha(kept.read_bytes() + b"\nx\n"),
+                }
+            ],
+            registry_sha=False,
+        )
+        with self.assertRaisesRegex(ApplyError, "registry"):
+            self._apply(proposal, {"append_at_eof": "auto_apply"})
+
+    def test_interrupted_trash_is_restored_and_counted(self) -> None:
+        kept = self.vault.root / "kept.md"
+        original = kept.read_bytes()
+        backup_dir = self.dirs["backups"] / "b"
+        backup_dir.mkdir()
+        (backup_dir / "0-kept.md").write_bytes(original)
+        kept.unlink()  # simulate crash right after the trash unlink
+        journal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "apply_journal",
+            "proposal_id": "prp-trashcrashtras",
+            "source": "src",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "status": "intent",
+            "backup_dir": "b",
+            "operations": [
+                {
+                    "relative_path": "kept.md",
+                    "mutation_class": "move_to_trash",
+                    "content_hash_before": _sha(original),
+                    "content_hash_after": None,
+                    "backup_name": "0-kept.md",
+                    "state": "in_progress",
+                }
+            ],
+            "rollback_failures": [],
+        }
+        journal_name = "20260101T000000000000Z-tc.json"
+        atomic_write_json(
+            self.dirs["journal"] / journal_name,
+            journal,
+            within=self.dirs["journal"],
+        )
+        receipt = recover_journal(
+            journal_name, registry=self.registry, state_dirs=self.dirs
+        )
+        self.assertEqual(kept.read_bytes(), original)
+        self.assertEqual(receipt["operations_rolled_back"], 1)
+        self.assertGreaterEqual(receipt["vault_writes"], 1)
+
+    def test_every_destructive_unlink_routes_through_the_guarded_primitive(self) -> None:
+        source = (ROOT / "src" / "recallweave" / "steward_apply.py").read_text(
+            encoding="utf-8"
+        )
+        # The single permitted pathname unlink is _guarded_unlink's own
+        # documented fallback for platforms without dir_fd support.
+        occurrences = source.count("target.unlink(")
+        self.assertEqual(occurrences, 1, "new pathname unlinks appeared")
+        guarded_start = source.index("def _guarded_unlink")
+        guarded_end = source.index("\ndef ", guarded_start + 1)
+        self.assertIn(
+            "target.unlink(", source[guarded_start:guarded_end],
+            "the one pathname unlink must live inside _guarded_unlink",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

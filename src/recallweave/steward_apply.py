@@ -360,12 +360,13 @@ def _compute_post_bytes(edit: dict[str, Any], current: bytes | None) -> bytes | 
 
 def _preflight_edit(
     edit: dict[str, Any],
-    source_root: Path,
+    source: Any,
     database: Path,
 ) -> dict[str, Any]:
     """Verify one edit end-to-end without writing; return its execution plan."""
 
     _validate_edit(edit)
+    source_root = source.root
     target = _resolve_target(source_root, edit["relative_path"], database)
     mutation_class = edit["mutation_class"]
 
@@ -393,6 +394,38 @@ def _preflight_edit(
                 f"Precondition hash mismatch for {edit['relative_path']}: the "
                 "file changed since the proposal was compiled. Re-run "
                 "steward-observe, steward-assess and steward-propose."
+            )
+
+    # Admission is IndexPolicy, only -- for writes exactly as for reads. A
+    # target the source policy would not admit (outside the allowlist, over
+    # the size cap, or frontmatter-denied) is not part of the appliable
+    # corpus and may not be mutated or deleted, whatever a proposal claims.
+    admission_size = len(current) if current is not None else 0
+    allowed, reason = source.policy.path_allowed(
+        edit["relative_path"], admission_size
+    )
+    if not allowed:
+        raise ApplyError(
+            f"Edit target {edit['relative_path']} is not admitted by the "
+            f"source policy ({reason}); refusing to mutate outside the "
+            "admitted corpus."
+        )
+    if current is not None and source.policy.deny_frontmatter:
+        try:
+            note = parse_note(target, source_root)
+        except (UnicodeError, RecursionError, OSError):
+            raise ApplyError(
+                f"Cannot verify admission frontmatter for "
+                f"{edit['relative_path']}; refusing the edit."
+            ) from None
+        allowed, reason = source.policy.frontmatter_allowed(
+            note.frontmatter, valid=note.frontmatter_valid
+        )
+        if not allowed:
+            raise ApplyError(
+                f"Edit target {edit['relative_path']} is frontmatter-denied "
+                f"by the source policy ({reason}); refusing to mutate outside "
+                "the admitted corpus."
             )
 
     post = _compute_post_bytes(edit, current)
@@ -519,7 +552,7 @@ def _rollback(
     journal_path: Path,
     journal: dict[str, Any],
     journal_dir: Path,
-    boundary: Path | None = None,
+    boundary: Path,
 ) -> None:
     """Reverse-order verified restore of every completed operation."""
 
@@ -544,9 +577,11 @@ def _rollback(
                         f"backup retained at {backup}"
                     )
             else:
-                if boundary is not None:
-                    _recheck_parent_chain(target, boundary)
-                target.unlink(missing_ok=True)
+                try:
+                    _guarded_unlink(target, boundary)
+                except ApplyError:
+                    if target.exists():
+                        raise
         except (OSError, ApplyError) as error:
             # A guard refusal (e.g. a symlink planted mid-rollback) is a
             # failed restore like any other: record it, keep restoring the
@@ -607,7 +642,9 @@ def apply_proposal(
         )
     _require_root_identity(source)
     recorded_sha = proposal.get("registry_sha256")
-    if registry.registry_sha256 is not None and recorded_sha is not None and (
+    # Null fails closed when the active registry has a digest: an edited or
+    # legacy proposal must not bypass registry binding.
+    if registry.registry_sha256 is not None and (
         recorded_sha != registry.registry_sha256
     ):
         raise ApplyError(
@@ -691,7 +728,7 @@ def apply_proposal(
             )
 
     plans = [
-        _preflight_edit(edit, source.root, database)
+        _preflight_edit(edit, source, database)
         for edit in proposal["edits"]
     ]
 
@@ -1190,7 +1227,7 @@ def recover_journal(
     drifted: list[str] = []
     for item in candidates:
         state = item.pop("state")
-        item.pop("_op", None)
+        mutation_class = (item.pop("_op", None) or {}).get("mutation_class")
         content_hash_after = item.pop("content_hash_after", None)
         backup_exists = Path(item["backup_path"]).exists()
         target = Path(item["target"])
@@ -1206,7 +1243,12 @@ def recover_journal(
         # decide by hand.
         if state == "done" or (state == "in_progress" and backup_exists):
             if item["content_hash_before"] is not None:
-                if content_hash_after is not None and live == content_hash_after:
+                if mutation_class == "move_to_trash" and live is None:
+                    # The unlink landed before the crash: restore the
+                    # original bytes from the verified backup.
+                    if backup_exists:
+                        completed.append(item)
+                elif content_hash_after is not None and live == content_hash_after:
                     completed.append(item)
                 elif live == item["content_hash_before"]:
                     pass  # already at pre-apply bytes; nothing to undo

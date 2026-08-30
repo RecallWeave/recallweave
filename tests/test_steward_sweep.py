@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -603,7 +604,9 @@ class SweepApplyLegTest(StewardSweepTest):
                 }
             ],
             "conflicts_with": [],
-            "registry_sha256": None,
+            "registry_sha256": hashlib.sha256(
+                self.sources_path.read_bytes()
+            ).hexdigest(),
         }
         dirs = self._dirs()
         from recallweave.steward_state import atomic_write_json
@@ -685,7 +688,9 @@ class SweepApplyLegTest(StewardSweepTest):
                 }
             ],
             "conflicts_with": [],
-            "registry_sha256": None,
+            "registry_sha256": hashlib.sha256(
+                self.sources_path.read_bytes()
+            ).hexdigest(),
         }
         dirs = self._dirs()
         from recallweave.steward_state import atomic_write_json
