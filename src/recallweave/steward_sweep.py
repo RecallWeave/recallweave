@@ -258,41 +258,83 @@ def _aggregate_assessments(
 
     broken_citations: list[str] = []
     duplicates: list[str] = []
-    # Current-snapshot semantics: report ONLY the newest assessment per source.
-    # A single assessment is internally consistent -- its relations (including
-    # relationship findings like DUPLICATES_EXACT_BYTES, which are computed over
-    # a whole batch together) reflect one coherent moment. Unioning or
-    # per-path-reconciling across several retained assessments cannot represent
-    # relationship resolution correctly (e.g. two files that were duplicates,
-    # then one diverges in a later batch that never re-mentions the other) and
-    # makes the report depend on retention. The newest assessment is the current
-    # state; a finding that was recorded in an earlier batch and has already been
-    # turned into a pending proposal is tracked in the proposals section, not
-    # re-derived here.
+    # Durable current-state model. Assessments are INCREMENTAL (each is computed
+    # from one change batch, not a full rescan), so a finding must PERSIST until
+    # the affected path is reassessed -- a later, unrelated batch must not erase
+    # an unresolved broken citation or duplicate. For each (source, path) the
+    # latest assessment that MENTIONS it wins (that batch reassessed the path);
+    # a path no later batch mentions keeps its finding. Each path also records
+    # the batch index at which its state was set, so a DUPLICATES relationship
+    # can be invalidated when a PARTICIPANT (not an unrelated note) is later
+    # reassessed: a duplicate finding is dropped if any of its partner paths has
+    # a newer state than the finding itself.
+    current: dict[tuple[str, str], tuple[int, list[dict[str, Any]]]] = {}
+
     for source in registry.sources:
         if exclude_sources and source.name in exclude_sources:
             continue
-        latest = _latest_file(dirs["assessments"], source.name)
-        if latest is None:
-            continue
-        assessment = _load_json(latest)
-        if not isinstance(assessment, dict):
-            continue
-        for key, value in (assessment.get("summary") or {}).items():
-            if isinstance(value, int) and not isinstance(value, bool):
-                summary[key] = summary.get(key, 0) + value
-        for item in assessment.get("assessments") or []:
-            if not isinstance(item, dict):
+        for index, assessment_path in enumerate(
+            _source_files(dirs["assessments"], source.name)
+        ):
+            assessment = _load_json(assessment_path)
+            if not isinstance(assessment, dict):
                 continue
+            for key, value in (assessment.get("summary") or {}).items():
+                # Relation counts are recomputed from the durable state below;
+                # only the informational bookkeeping stats are carried here.
+                if key in DETERMINISTIC_RELATIONS:
+                    continue
+                if isinstance(value, int) and not isinstance(value, bool):
+                    summary[key] = summary.get(key, 0) + value
+            by_path: dict[str, list[dict[str, Any]]] = {}
+            for item in assessment.get("assessments") or []:
+                if not isinstance(item, dict):
+                    continue
+                path = item.get("relative_path")
+                if isinstance(path, str):
+                    by_path.setdefault(path, []).append(item)
+            for path, items in by_path.items():
+                current[(source.name, path)] = (index, items)
+
+    current_index = {key: idx for key, (idx, _items) in current.items()}
+
+    def _duplicate_still_current(source_name: str, idx: int, item: dict) -> bool:
+        # Valid only if no partner was reassessed AFTER this finding (which would
+        # mean the participant changed and the pairing may no longer hold).
+        inputs = item.get("inputs") or {}
+        partners = list(inputs.get("duplicate_of") or []) + list(
+            inputs.get("duplicate_in_batch") or []
+        )
+        for partner in partners:
+            if not isinstance(partner, str):
+                continue
+            partner_idx = current_index.get((source_name, partner))
+            if partner_idx is not None and partner_idx > idx:
+                return False
+        return True
+
+    relation_counts: dict[str, set[tuple[str, str]]] = {
+        relation: set() for relation in DETERMINISTIC_RELATIONS
+    }
+    for (source_name, path), (idx, items) in current.items():
+        for item in items:
             relation = item.get("relation")
-            path = item.get("relative_path")
-            if relation == "CITATION_BROKEN":
+            if relation == "DUPLICATES_EXACT_BYTES":
+                if not _duplicate_still_current(source_name, idx, item):
+                    continue
+                relation_counts["DUPLICATES_EXACT_BYTES"].add((source_name, path))
+                duplicates.append(path)
+            elif relation == "CITATION_BROKEN":
+                relation_counts["CITATION_BROKEN"].add((source_name, path))
                 for citation in (item.get("inputs") or {}).get("broken_citations") or []:
                     text = citation.get("citation") if isinstance(citation, dict) else None
                     if isinstance(text, str):
                         broken_citations.append(text)
-            elif relation == "DUPLICATES_EXACT_BYTES" and isinstance(path, str):
-                duplicates.append(path)
+            elif relation in relation_counts:
+                relation_counts[relation].add((source_name, path))
+
+    for relation, keys in relation_counts.items():
+        summary[relation] = len(keys)
 
     return summary, sorted(set(broken_citations)), sorted(set(duplicates))
 

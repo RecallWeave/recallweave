@@ -428,36 +428,101 @@ class StatusReportTest(StewardSweepTest):
 
 
 class ReportBacklogAggregationTest(StewardSweepTest):
-    def test_report_uses_current_snapshot_latest_assessment(self) -> None:
-        # Current-snapshot semantics: the integrity section reflects the NEWEST
-        # assessment per source (one internally-consistent moment), not a union
-        # of history. A finding recorded only in an older assessment is not
-        # re-derived here (its pending proposal, if any, is tracked separately).
+    def _write_assessment(self, name: str, records: list) -> None:
+        counts: dict[str, int] = {}
+        for r in records:
+            counts[r["relation"]] = counts.get(r["relation"], 0) + 1
+        (self._dirs()["assessments"] / name).write_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "assessment_batch",
+                    "source": "vault",
+                    "summary": counts,
+                    "assessments": records,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_unresolved_finding_persists_across_unrelated_later_batch(self) -> None:
+        # Assessments are incremental: a DELETED recorded in one batch, with a
+        # later batch touching only an unrelated path, must still be reported.
         from recallweave.steward_sweep import _aggregate_assessments
 
-        dirs = self._dirs()
-
-        def _assessment(name: str, records: list) -> None:
-            (dirs["assessments"] / name).write_text(
-                json.dumps(
-                    {
-                        "schema_version": STEWARD_SCHEMA_VERSION,
-                        "kind": "assessment_batch",
-                        "source": "vault",
-                        "summary": {"DELETED": len(records)},
-                        "assessments": records,
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-        _assessment(
+        self._write_assessment(
             "20260101T000000Z-vault.json",
             [{"relation": "DELETED", "relative_path": "Gone.md"}],
         )
-        _assessment("20260102T000000Z-vault.json", [])
-        summary, _broken, _dupes = _aggregate_assessments(dirs, self._registry())
-        self.assertEqual(summary["DELETED"], 0)  # newest assessment is empty
+        self._write_assessment(
+            "20260102T000000Z-vault.json",
+            [{"relation": "MODIFIED", "relative_path": "Other.md"}],
+        )
+        summary, _b, _d = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(summary["DELETED"], 1, "an unresolved deletion was dropped")
+        self.assertEqual(summary["MODIFIED"], 1)
+
+    def test_broken_citation_persists_until_path_reassessed(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_assessment(
+            "20260101T000000Z-vault.json",
+            [{
+                "relation": "CITATION_BROKEN", "relative_path": "A.md",
+                "inputs": {"broken_citations": [{"citation": "A.md:1-2"}]},
+            }],
+        )
+        self._write_assessment(
+            "20260102T000000Z-vault.json",
+            [{"relation": "MODIFIED", "relative_path": "B.md"}],
+        )
+        summary, broken, _d = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(summary["CITATION_BROKEN"], 1)
+        self.assertIn("A.md:1-2", broken)
+
+    def test_duplicate_persists_when_unrelated_note_changes(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_assessment(
+            "20260101T000000Z-vault.json",
+            [
+                {"relation": "DUPLICATES_EXACT_BYTES", "relative_path": "A.md",
+                 "inputs": {"duplicate_of": [], "duplicate_in_batch": ["B.md"]}},
+                {"relation": "DUPLICATES_EXACT_BYTES", "relative_path": "B.md",
+                 "inputs": {"duplicate_of": [], "duplicate_in_batch": ["A.md"]}},
+            ],
+        )
+        self._write_assessment(
+            "20260102T000000Z-vault.json",
+            [{"relation": "MODIFIED", "relative_path": "C.md"}],
+        )
+        summary, _b, dupes = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(summary["DUPLICATES_EXACT_BYTES"], 2)
+        self.assertEqual(dupes, ["A.md", "B.md"])
+
+    def test_duplicate_invalidated_when_a_participant_diverges(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_assessment(
+            "20260101T000000Z-vault.json",
+            [
+                {"relation": "DUPLICATES_EXACT_BYTES", "relative_path": "A.md",
+                 "inputs": {"duplicate_of": [], "duplicate_in_batch": ["B.md"]}},
+                {"relation": "DUPLICATES_EXACT_BYTES", "relative_path": "B.md",
+                 "inputs": {"duplicate_of": [], "duplicate_in_batch": ["A.md"]}},
+            ],
+        )
+        # A later batch changes A.md to unique content (no longer a duplicate).
+        self._write_assessment(
+            "20260102T000000Z-vault.json",
+            [{"relation": "MODIFIED", "relative_path": "A.md"}],
+        )
+        summary, _b, dupes = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(
+            summary["DUPLICATES_EXACT_BYTES"], 0,
+            "a stale duplicate finding survived a participant diverging",
+        )
+        self.assertEqual(dupes, [])
 
     def test_same_path_in_two_sources_counts_as_two_findings(self) -> None:
         from recallweave.steward_sweep import _aggregate_assessments
