@@ -918,5 +918,51 @@ class MissingSourceStalenessTest(unittest.TestCase):
             self.assertEqual(total_relations, 0)
 
 
+
+
+class RedactionCompletenessTest(unittest.TestCase):
+    def test_paths_with_spaces_redact_every_component(self) -> None:
+        from recallweave.cli import _redact_local_paths
+
+        cases = [
+            "Source root does not exist: /Users/josh/Secret Vault/Payroll.md",
+            "failed C:\\Users\\Josh Smith\\Secret Vault\\x.md",
+            "state root /a/Secret Docs vs source /b/Hidden Notes. Choose another.",
+        ]
+        for message in cases:
+            redacted = _redact_local_paths(message)
+            for component in ("Secret", "Vault", "Payroll", "Smith", "Hidden"):
+                self.assertNotIn(
+                    component, redacted,
+                    f"component {component!r} leaked in {redacted!r}",
+                )
+
+
+class AutoApplyDefaultBanTest(unittest.TestCase):
+    def test_default_level_auto_apply_is_refused_at_load(self) -> None:
+        from recallweave.steward_policy import WritePolicy
+
+        with self.assertRaisesRegex(ValueError, "default_level may not be auto_apply"):
+            WritePolicy.from_payload(
+                {
+                    "spec_version": "recallweave.steward.policy.v1",
+                    "default_level": "auto_apply",
+                }
+            )
+
+    def test_resolution_clamps_auto_apply_for_destructive_classes(self) -> None:
+        from recallweave.steward_policy import WritePolicy, resolve_level
+
+        policy = WritePolicy()
+        policy.default_level = "auto_apply"  # only reachable by direct mutation
+        level, reason = resolve_level(
+            policy,
+            mutation_class="move_to_trash",
+            source_name=None,
+            relative_path="Notes/A.md",
+        )
+        self.assertEqual((level, reason), ("require_approval", "auto_apply_clamped"))
+
+
 if __name__ == "__main__":
     unittest.main()

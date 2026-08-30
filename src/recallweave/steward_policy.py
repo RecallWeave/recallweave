@@ -130,6 +130,14 @@ class WritePolicy:
 
         default_level = payload.get("default_level", "propose_only")
         _require_level(default_level, where="default_level")
+        if default_level == "auto_apply":
+            # A blanket auto default would grant auto_apply to destructive
+            # classes by inheritance; only explicit, append-only class grants
+            # may ever be auto_apply.
+            raise ValueError(
+                "default_level may not be auto_apply; grant auto_apply "
+                "explicitly per append-only mutation class instead."
+            )
 
         class_levels = payload.get("class_levels", {})
         if not isinstance(class_levels, dict):
@@ -264,4 +272,9 @@ def resolve_level(
             return overrides[mutation_class], "source_override"
     if mutation_class in policy.class_levels:
         return policy.class_levels[mutation_class], "class_level"
-    return policy.default_level, "default"
+    level = policy.default_level
+    # Defense in depth: no resolution path may hand auto_apply to a class
+    # outside the append-only set, whatever a policy object claims.
+    if level == "auto_apply" and mutation_class not in APPEND_ONLY_CLASSES:
+        return "require_approval", "auto_apply_clamped"
+    return level, "default"

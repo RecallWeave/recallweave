@@ -40,7 +40,13 @@ def _emit(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=True))
 
 
-_ABSOLUTE_PATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][^\s'\",;]+)+")
+# From a path start, consume through spaces and dots-inside-filenames until a
+# sentence boundary (". " or end), colon, semicolon, or quote. Paths with
+# spaces redact whole; over-redacting neighboring words is acceptable -- the
+# failure direction must be "too much removed", never a leaked component.
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:)?[\\/](?:[^.:;\"'\n]|\.(?!\s|$))*"
+)
 
 
 def _redact_local_paths(message: str) -> str:
