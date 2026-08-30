@@ -140,10 +140,13 @@ class SourceRegistry:
         _reject_remotes(payload)
 
         seen: set[str] = set()
+        seen_folded: set[str] = set()
         parsed: list[StewardSource] = []
         try:
             for source in sources_payload:
-                parsed.append(cls._parse_source(source, base_dir, seen))
+                parsed.append(
+                    cls._parse_source(source, base_dir, seen, seen_folded)
+                )
             _validate_no_overlap(parsed)
         except BaseException:
             # Close any descriptors opened before the failure so a rejected
@@ -163,6 +166,7 @@ class SourceRegistry:
         source: Any,
         base_dir: Path | None,
         seen: set[str],
+        seen_folded: set[str],
     ) -> StewardSource:
         if not isinstance(source, dict):
             raise ValueError("Each source must be a JSON object.")
@@ -188,7 +192,20 @@ class SourceRegistry:
             )
         if name in seen:
             raise ValueError(f"Duplicate source name: {name!r}")
+        # Source names are embedded verbatim in state-artifact filenames (e.g.
+        # a source's checkpoint is <name>.json). On a case-insensitive filesystem
+        # `Main` and `main` would map to the same file, so the second source could
+        # load the first's checkpoint (failing its source_id check) or later state
+        # could overwrite. Reject a case-insensitive collision at load time.
+        folded = name.casefold()
+        if folded in seen_folded:
+            raise ValueError(
+                f"Source name {name!r} collides case-insensitively with another "
+                "source; their state-artifact filenames would collide on a "
+                "case-insensitive filesystem. Use case-distinct source names."
+            )
         seen.add(name)
+        seen_folded.add(folded)
 
         type_ = source["type"]
         if type_ not in SOURCE_TYPES:

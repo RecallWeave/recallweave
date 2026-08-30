@@ -852,6 +852,96 @@ class RootIdentityAtApplyTest(unittest.TestCase):
                 )
             self.assertFalse((root / "new.md").exists())
 
+    def test_apply_reverifies_identity_before_terminal_journal(self) -> None:
+        # If the source root identity changes AFTER the pre-mutation gate but
+        # before the journal is marked applied, the terminal transition must fail
+        # closed -- the journal is left non-terminal (recoverable), not applied.
+        import recallweave.steward_apply as _ap
+        from recallweave.steward_apply import apply_proposal
+        from recallweave.steward_policy import WritePolicy
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            root = base / "vault"
+            root.mkdir()
+            (root / "a.md").write_text("hello", encoding="utf-8")
+            database = base / "index.sqlite"
+            build_index(root, database, policy=IndexPolicy())
+            registry_path = base / "sources.json"
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "spec_version": SOURCES_SPEC_VERSION,
+                        "sources": [
+                            {
+                                "name": "src",
+                                "type": "folder",
+                                "root": str(root),
+                                "mode": "appliable",
+                                "policy": {"include_paths": ["a.md", "new.md"]},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry = load_registry(registry_path)
+            state_root = base / "state"
+            dirs = ensure_state_layout(state_root)
+            policy = WritePolicy.from_bytes(
+                json.dumps(
+                    {
+                        "spec_version": "recallweave.steward.policy.v1",
+                        "class_levels": {"create_new_file": "auto_apply"},
+                    }
+                ).encode()
+            )
+            proposal = {
+                "schema_version": STEWARD_SCHEMA_VERSION,
+                "kind": "proposal",
+                "proposal_id": "prp-terminalidentity",
+                "source": "src",
+                "action": "test",
+                "policy_level": "propose_only",
+                "edits": [
+                    {
+                        "mutation_class": "create_new_file",
+                        "relative_path": "new.md",
+                        "replacement_text": "x",
+                        "predicted_post_hash": _sha(b"x"),
+                    }
+                ],
+                "conflicts_with": [],
+                "registry_sha256": registry.registry_sha256,
+            }
+            real_identity = _ap._require_root_identity
+            calls = {"n": 0}
+
+            def flaky_identity(source):
+                calls["n"] += 1
+                if calls["n"] >= 2:  # the terminal re-verify, after mutations
+                    raise ApplyError(
+                        f"Source root for {source.name!r} identity changed"
+                    )
+                return real_identity(source)
+
+            with patch.object(_ap, "_require_root_identity", side_effect=flaky_identity):
+                with self.assertRaisesRegex(ApplyError, "identity changed"):
+                    apply_proposal(
+                        proposal,
+                        registry=registry,
+                        state_dirs=dirs,
+                        database=database,
+                        policy=policy,
+                        mode="per_item",
+                        execute=True,
+                    )
+            self.assertGreaterEqual(calls["n"], 2, "terminal identity re-verify did not run")
+            journals = list(dirs["journal"].glob("*.json"))
+            if journals:
+                status = json.loads(journals[0].read_text(encoding="utf-8"))["status"]
+                self.assertNotEqual(status, "applied")
+
     def test_recover_and_revert_refuse_swapped_root(self) -> None:
         import shutil
 

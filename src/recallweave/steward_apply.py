@@ -1753,6 +1753,14 @@ def apply_proposal(
             f"Apply failed and was rolled back: {type(error).__name__}: {error}"
         ) from error
 
+    # Re-verify the source root identity through the terminal transition. If
+    # another process renamed and recreated the registered root after the last
+    # validation gate, the mutations landed on the (now-moved) identity-pinned
+    # inode while the current pathname names a different directory. Marking the
+    # journal `applied` -- and committing that path in git -- would falsely claim
+    # the edits are in the live source and unblock recovery. Fail closed with the
+    # journal left non-terminal (recoverable) instead.
+    _require_root_identity(source)
     journal["status"] = "applied"
     journal["receipt_ref"] = receipt_ref
     atomic_write_json(journal_path, journal, within=journal_dir)

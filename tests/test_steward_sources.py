@@ -108,6 +108,16 @@ class StewardSourcesTest(unittest.TestCase):
             f"file source descriptor opened without O_BINARY: {captured!r}",
         )
 
+    def test_case_insensitive_source_name_collision_rejected(self) -> None:
+        # `Main` and `main` map to the same state-artifact filename on a
+        # case-insensitive filesystem; reject the collision at load time.
+        payload = _registry(
+            _source("Main", str(self.vault_a)),
+            _source("main", str(self.vault_b)),
+        )
+        with self.assertRaisesRegex(ValueError, "case-insensitive"):
+            SourceRegistry.from_payload(payload, base_dir=self.root)
+
     def test_appliable_file_source_rejected(self) -> None:
         # apply resolves <root>/<relative_path>; a file source's root IS the note,
         # so the combination is broken and must be rejected at validation.
