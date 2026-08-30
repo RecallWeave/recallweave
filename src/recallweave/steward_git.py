@@ -62,6 +62,12 @@ def _run_git(
             cwd=root,
             capture_output=True,
             text=True,
+            # Git emits paths in UTF-8; decode as UTF-8 on every platform
+            # (Python's default would use the locale codepage, e.g. cp1252 on
+            # Windows, mojibaking non-ASCII filenames). surrogateescape keeps
+            # any non-UTF-8 bytes round-trippable instead of raising.
+            encoding="utf-8",
+            errors="surrogateescape",
             timeout=GIT_TIMEOUT_SECONDS,
             env=_clean_env(),
         )
@@ -165,7 +171,11 @@ def repo_status(root: Path) -> dict[str, Any] | None:
     head = head_result.stdout.strip() if head_result.returncode == 0 else None
 
     status_result = _run_git(
-        ["-c", "status.relativePaths=false", "status", "--porcelain=v1", "-z"], root
+        [
+            "-c", "status.relativePaths=false",
+            "-c", "core.quotepath=false",
+            "status", "--porcelain=v1", "-z",
+        ], root
     )
     dirty_paths = _parse_porcelain_z_paths(status_result.stdout)
 

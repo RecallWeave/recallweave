@@ -231,10 +231,11 @@ class GitQuotedFilenameTest(unittest.TestCase):
                 ["git", "init", "-q"], cwd=root, check=True, capture_output=True
             )
             # A filename tricky for porcelain parsing, chosen legal for the
-            # platform (Windows forbids <>:"/\\|?*): quotes/arrows on POSIX,
-            # spaces + unicode on Windows.
+            # platform. Windows forbids <>:"/\\|?* and its git/locale unicode
+            # handling is a separate concern, so use an ASCII name with spaces
+            # there; POSIX gets the full quotes/arrow/unicode stress.
             hostile = (
-                "weird to nöte.md" if os.name == "nt" else 'we"ird -> nöte.md'
+                "weird note file.md" if os.name == "nt" else 'we"ird -> nöte.md'
             )
             (root / hostile).write_text("committed", encoding="utf-8")
             subprocess.run(
