@@ -617,5 +617,116 @@ class PruneLockingTest(unittest.TestCase):
             self.assertTrue(victim.exists(), "prune deleted despite held lock")
 
 
+
+
+class EvidenceIntegrityTest(unittest.TestCase):
+    """Checkpoint digests bind every field; proposals verify pinned batches."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.state_root = self.base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_every_checkpoint_entry_field_affects_the_digest(self) -> None:
+        from recallweave.steward_checkpoint import CheckpointEntry, manifest_digest
+
+        base = CheckpointEntry("a.md", "a" * 64, 10, 20, 1, 100)
+        digest = manifest_digest("src", [base])
+        variants = [
+            CheckpointEntry("b.md", "a" * 64, 10, 20, 1, 100),
+            CheckpointEntry("a.md", "b" * 64, 10, 20, 1, 100),
+            CheckpointEntry("a.md", "a" * 64, 11, 20, 1, 100),
+            CheckpointEntry("a.md", "a" * 64, 10, 21, 1, 100),
+            CheckpointEntry("a.md", "a" * 64, 10, 20, 2, 100),
+            CheckpointEntry("a.md", "a" * 64, 10, 20, 1, 101),
+        ]
+        for variant in variants:
+            self.assertNotEqual(
+                digest, manifest_digest("src", [variant]),
+                f"field change not digest-bound: {variant}",
+            )
+
+    def test_inode_only_checkpoint_tamper_is_rejected(self) -> None:
+        from recallweave.steward_checkpoint import (
+            CheckpointEntry,
+            CheckpointError,
+            load_checkpoint,
+            save_checkpoint,
+        )
+
+        entry = CheckpointEntry("a.md", "a" * 64, 10, 20, 1, 100)
+        path = save_checkpoint(
+            self.dirs, "src", [entry],
+            generated_at="2026-01-01T00:00:00+00:00", registry_sha256=None,
+        )
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["entries"][0]["file_ino"] = 999
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaises(CheckpointError):
+            load_checkpoint(self.dirs, "src")
+
+
+class ProposalBatchPinningTest(unittest.TestCase):
+    """A batch rewritten after assessment must never drive compiled edits."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        base = Path(self.temporary.name)
+        self.vault = TempVault(dir=base)
+        self.vault.write("a.md", "hello")
+        self.database = base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        self.state_root = base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+        self.registry = SourceRegistry(
+            sources=[_source("src", self.vault.root)], registry_sha256=None
+        )
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def test_tampered_rename_candidates_refuse_at_propose(self) -> None:
+        batch_path = self.dirs["changes"] / "20260101T000000000000Z-src.json"
+        atomic_write_json(
+            batch_path,
+            _batch("src", [], registry_sha256=None),
+            within=self.dirs["changes"],
+        )
+        assess_latest(self.registry, self.state_root, self.database)
+
+        tampered = json.loads(batch_path.read_text(encoding="utf-8"))
+        tampered["rename_candidates"] = [
+            {
+                "removed_path": "old.md",
+                "added_paths": ["unrelated.md"],
+                "content_hash": "c" * 64,
+                "inode_match": True,
+            }
+        ]
+        batch_path.write_text(json.dumps(tampered), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "no longer matches the digest"):
+            propose_latest(self.registry, self.state_root, self.database)
+
+    def test_invalid_change_batch_ref_is_refused(self) -> None:
+        batch_path = self.dirs["changes"] / "20260101T000000000000Z-src.json"
+        atomic_write_json(
+            batch_path,
+            _batch("src", [], registry_sha256=None),
+            within=self.dirs["changes"],
+        )
+        assess_latest(self.registry, self.state_root, self.database)
+        assessment_path = self.dirs["assessments"] / batch_path.name
+        document = json.loads(assessment_path.read_text(encoding="utf-8"))
+        document["change_batch_ref"] = "../escape.json"
+        assessment_path.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "invalid"):
+            propose_latest(self.registry, self.state_root, self.database)
+
+
 if __name__ == "__main__":
     unittest.main()

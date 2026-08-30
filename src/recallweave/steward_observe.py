@@ -279,7 +279,12 @@ def observe_source(
             if prior is not None:
                 new_entries[relative] = _entry_from_prior(prior)
             continue
-        if int(after.st_size) != size or int(after.st_mtime_ns) != mtime_ns:
+        if (
+            int(after.st_size) != size
+            or int(after.st_mtime_ns) != mtime_ns
+            or int(after.st_dev) != dev
+            or int(after.st_ino) != ino
+        ):
             changed_during_observe.append(relative)
             if prior is not None:
                 new_entries[relative] = _entry_from_prior(prior)

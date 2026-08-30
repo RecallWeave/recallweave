@@ -47,10 +47,14 @@ def _sort_key(entry: CheckpointEntry) -> str:
 
 
 def manifest_digest(source_id: str, entries: list[CheckpointEntry]) -> str:
+    # Every field of every entry is digest-bound. file_dev/file_ino feed the
+    # inode_match evidence behind compiled rename proposals, so an on-disk
+    # edit to them must invalidate the checkpoint, not survive verification.
     lines = [source_id]
     for entry in sorted(entries, key=_sort_key):
         lines.append(
-            f"{entry.relative_path}\t{entry.content_hash}\t{entry.size}\t{entry.mtime_ns}"
+            f"{entry.relative_path}\t{entry.content_hash}\t{entry.size}"
+            f"\t{entry.mtime_ns}\t{entry.file_dev}\t{entry.file_ino}"
         )
     canonical = "\n".join(lines)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

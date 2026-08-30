@@ -746,13 +746,35 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
             batch: dict[str, Any] | None = None
             batch_ref = assessment.get("change_batch_ref")
             if isinstance(batch_ref, str):
+                if (
+                    "/" in batch_ref
+                    or "\\" in batch_ref
+                    or batch_ref in ("", ".", "..")
+                ):
+                    raise ValueError(
+                        f"Assessment {latest.name} carries an invalid "
+                        f"change_batch_ref: {batch_ref!r}"
+                    )
                 batch_path = changes_dir / batch_ref
                 if batch_path.is_file():
-                    try:
-                        batch = json.loads(batch_path.read_text(encoding="utf-8"))
-                    except (OSError, ValueError) as error:
+                    batch_bytes = batch_path.read_bytes()
+                    pinned = assessment.get("change_batch_sha256")
+                    actual = hashlib.sha256(batch_bytes).hexdigest()
+                    if pinned is not None and actual != pinned:
+                        # The assessment pinned the exact batch it assessed; a
+                        # batch rewritten afterwards must never drive compiled
+                        # edits.
                         raise ValueError(
-                            f"Change batch {batch_path} is not valid JSON: {error}"
+                            f"Change batch {batch_ref} no longer matches the "
+                            "digest its assessment pinned; re-run "
+                            "steward-observe and steward-assess before "
+                            "proposing."
+                        )
+                    try:
+                        batch = json.loads(batch_bytes.decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError) as error:
+                        raise ValueError(
+                            f"Change batch {batch_ref} is not valid JSON: {error}"
                         ) from error
 
             skipped_drifted: list[str] = []
