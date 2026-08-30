@@ -480,6 +480,31 @@ class ObserveSourceTest(unittest.TestCase):
             self.assertFalse(_obs._retract_change_batch(changes_link, "batch.json"))
             self.assertTrue(victim.exists(), "retraction deleted through a symlink")
 
+    def test_retract_change_batch_fallback_refuses_symlinked_changes_dir(self) -> None:
+        # The pathname fallback (Windows, no dir_fd) must also refuse a link-like
+        # changes/ directory rather than delete through it. Force the fallback and
+        # verify the external same-named file is untouched and retraction fails.
+        import recallweave.steward_observe as _obs
+
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            state = base / "state"
+            state.mkdir()
+            external = base / "external"
+            external.mkdir()
+            victim = external / "batch.json"
+            victim.write_text("{}", encoding="utf-8")
+            changes_link = state / "changes"
+            try:
+                changes_link.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            with patch("recallweave.steward_observe._DIR_FD_RETRACT", False):
+                self.assertFalse(
+                    _obs._retract_change_batch(changes_link, "batch.json")
+                )
+            self.assertTrue(victim.exists(), "fallback retraction deleted through a symlink")
+
     def test_note_growing_during_read_is_not_committed(self) -> None:
         import recallweave.steward_observe as _obs
         self.vault.write("a.md", "small")

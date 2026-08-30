@@ -223,11 +223,20 @@ def _retract_change_batch(changes_dir: Path, filename: str) -> bool:
         finally:
             os.close(root_fd)
 
-    # Pathname fallback (e.g. Windows without dir_fd).
+    # Pathname fallback (e.g. Windows without dir_fd): refuse a link-like changes
+    # directory BEFORE deleting -- a symlink or junction would redirect the
+    # unlink to an external same-named file. Fail closed (return False) rather
+    # than delete through it or falsely report a successful retraction.
+    if is_link_like(changes_dir):
+        return False
     try:
         (changes_dir / filename).unlink()
     except OSError:
         pass
+    # Re-check link-likeness before trusting the existence result, so a swap in
+    # the unlink->verify window cannot make a redirected deletion look retracted.
+    if is_link_like(changes_dir):
+        return False
     return not (changes_dir / filename).exists()
 
 
