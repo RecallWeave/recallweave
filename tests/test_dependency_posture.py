@@ -94,6 +94,36 @@ class StewardModulePostureTest(unittest.TestCase):
             f"steward modules must not import networking/scheduler modules: {offenders}",
         )
 
+    def test_apply_module_is_import_isolated(self) -> None:
+        """The engine's no-write property stays provable from the static
+        import graph: no module imports steward_apply at module level, and
+        cli.py references it only inside a function body."""
+
+        import ast
+
+        offenders = []
+        for module in sorted((ROOT / "src" / "recallweave").glob("*.py")):
+            if module.name == "steward_apply.py":
+                continue
+            tree = ast.parse(module.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    names = [node.module or ""] + [
+                        alias.name for alias in node.names
+                    ]
+                if not any("steward_apply" in name for name in names):
+                    continue
+                if node.col_offset == 0:
+                    offenders.append(f"{module.name}:{node.lineno}")
+        self.assertEqual(
+            offenders, [],
+            "steward_apply may only be imported inside a function body: "
+            f"{offenders}",
+        )
+
     def test_steward_modules_do_not_shell_out_except_git_wrapper(self) -> None:
         # subprocess is reserved for the (future) git wrapper module only.
         offenders = []

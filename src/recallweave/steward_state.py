@@ -22,6 +22,8 @@ STEWARD_SUBDIRS = (
     "receipts",
     "reports",
     "backups",
+    "journal",
+    "trash",
 )
 
 

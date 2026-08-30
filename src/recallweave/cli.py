@@ -291,6 +291,57 @@ def _parser() -> argparse.ArgumentParser:
             "assessments/, and reports/ only."
         ),
     )
+
+    steward_apply_parser = subparsers.add_parser(
+        "steward-apply",
+        help=(
+            "Apply one approved proposal (or an approved mutation class) "
+            "under an explicit write policy. Dry-run without --execute."
+        ),
+    )
+    steward_apply_parser.add_argument("sources", type=_path)
+    _add_database_locator(steward_apply_parser)
+    steward_apply_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
+    steward_apply_parser.add_argument(
+        "--write-policy",
+        type=_path,
+        dest="write_policy",
+        required=True,
+        help="Explicit write policy JSON. Required; there is no permissive default.",
+    )
+    apply_selector = steward_apply_parser.add_mutually_exclusive_group(required=True)
+    apply_selector.add_argument(
+        "--proposal-id",
+        dest="proposal_id",
+        help="Apply exactly this pending proposal.",
+    )
+    apply_selector.add_argument(
+        "--approve-class",
+        dest="approve_class",
+        help="Apply every pending proposal whose edits are all of this mutation class.",
+    )
+    apply_selector.add_argument(
+        "--recover",
+        dest="recover",
+        help="Roll back an interrupted apply by its journal file name.",
+    )
+    steward_apply_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually write. Without this flag the command is a dry run.",
+    )
+    steward_apply_parser.add_argument(
+        "--allow-sync-root",
+        action="store_true",
+        dest="allow_sync_root",
+        help="Deliberately apply inside a detected sync-service folder.",
+    )
+
     return parser
 
 
@@ -354,6 +405,30 @@ def main(argv: list[str] | None = None) -> int:
             return observe_registry(registry, state_root)
 
         action = run_observe
+    elif args.command == "steward-apply":
+
+        def run_apply() -> dict[str, Any]:
+            # Imported here, not at module level: the engine's import graph
+            # must never reach the apply module (see steward_apply docstring).
+            from .steward_apply import apply_latest
+            from .steward_policy import WritePolicy
+
+            registry = load_registry(args.sources)
+            state_root = args.state_dir or steward_state_root(args.sources)
+            database = _query_database(args)
+            return apply_latest(
+                registry,
+                state_root,
+                database,
+                write_policy=WritePolicy.from_file(args.write_policy),
+                proposal_id=args.proposal_id,
+                approve_class=args.approve_class,
+                recover=args.recover,
+                execute=args.execute,
+                allow_sync_root=args.allow_sync_root,
+            )
+
+        action = run_apply
     elif args.command == "steward-status":
 
         def run_status() -> dict[str, Any]:

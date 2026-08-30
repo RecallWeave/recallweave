@@ -673,6 +673,9 @@ def propose_from_assessment(
 
     _assign_conflicts(proposals)
     for proposal in proposals:
+        # Bind each proposal to the registry its assessment ran under, so a
+        # later apply can refuse a cross-registry artifact.
+        proposal["registry_sha256"] = assessment.get("registry_sha256")
         _validate_machine_local(proposal)
     return proposals
 

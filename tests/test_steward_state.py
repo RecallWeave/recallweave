@@ -72,6 +72,8 @@ class EnsureStateLayoutTest(unittest.TestCase):
                 "receipts",
                 "reports",
                 "backups",
+                "journal",
+                "trash",
             },
         )
         for name, subdir in dirs.items():
