@@ -1022,7 +1022,7 @@ def _read_json_at(dir_fd: int, name: str) -> Any:
     try:
         with os.fdopen(fd, "r", encoding="utf-8") as handle:
             text = handle.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     try:
         return json.loads(text)

@@ -174,6 +174,20 @@ class PruneAnchorTest(unittest.TestCase):
             self.assertTrue(target.exists())
             self.assertEqual(target.read_bytes(), b"NEW-UNPROCESSED")
 
+    def test_read_json_at_tolerates_invalid_utf8(self) -> None:
+        # _read_json_at must return None (not raise) on non-UTF-8 bytes, so a
+        # corrupt marker/assessment cannot crash the prune allow-set read.
+        import recallweave.steward_sweep as _sw
+
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name)
+            (directory / "bad.json").write_bytes(b"\xff\xfe not utf-8 \x00")
+            dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                self.assertIsNone(_sw._read_json_at(dir_fd, "bad.json"))
+            finally:
+                os.close(dir_fd)
+
     def test_prune_fails_closed_without_dir_fd_support(self) -> None:
         # On a platform without descriptor-relative deletion, pruning must refuse
         # (delete nothing) rather than fall back to a pathname race, since a prune
