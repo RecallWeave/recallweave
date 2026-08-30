@@ -334,6 +334,7 @@ class ApplyPipelineTest(unittest.TestCase):
                 }
             ],
             "rollback_failures": [],
+            "registry_sha256": self.registry.registry_sha256,
         }
         journal_name = "20260101T000000000000Z-crash.json"
         atomic_write_json(

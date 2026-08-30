@@ -169,6 +169,36 @@ def _rebuild_bytes(
     return new_raw.encode("utf-8")
 
 
+def _dedup_skipped(skipped: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Collapse duplicate skip records for the same referrer (a referrer with
+    both a wikilink and a markdown-link edge is scanned once per edge) and
+    return them in a stable order."""
+
+    seen: dict[str, dict[str, str]] = {}
+    for record in skipped:
+        seen.setdefault(record["relative_path"], record)
+    return sorted(seen.values(), key=lambda item: item["relative_path"])
+
+
+def _count_rename_occurrences(raw: str, old_path: str) -> int:
+    """Count every wikilink or markdown link in ``raw`` that targets ``old_path``.
+
+    WIKILINK_RE's group 1 is already the bare target (anchor and alias
+    stripped); a markdown link matches when its path component (before any
+    ``#`` fragment) equals ``old_path``."""
+
+    old_stem = normalize_name(Path(old_path).stem)
+    total = 0
+    for line_text, _ending in _split_lines_keepends(raw):
+        for match in WIKILINK_RE.finditer(line_text):
+            if normalize_name(match.group(1).strip()) == old_stem:
+                total += 1
+        for match in MARKDOWN_LINK_RE.finditer(line_text):
+            if _markdown_target(match.group(1)).split("#", 1)[0] == old_path:
+                total += 1
+    return total
+
+
 def _resolve_rename_edit(
     referrer_path: str,
     kind: str,
@@ -202,6 +232,17 @@ def _resolve_rename_edit(
         raw = data.decode("utf-8-sig", errors="strict")
     except UnicodeDecodeError:
         return ("skip", "undecodable")
+
+    # The index records at most one edge per (referrer, target, kind), so it
+    # cannot see a referrer that links to the renamed note more than once (on
+    # another line, or via both a wikilink and a markdown link). Rewriting only
+    # the recorded occurrence would leave the others dangling, and emitting a
+    # second same-file edit would fail this file's precondition at apply time.
+    # Re-scan the whole hash-pinned referrer: unless there is exactly one
+    # occurrence to rewrite, refuse to compile a partial edit and hand the
+    # referrer to the operator for manual review instead.
+    if _count_rename_occurrences(raw, old_path) != 1:
+        return ("skip", "multiple_occurrences_manual_review")
 
     try:
         line_no = int(evidence.get("line", 0))
@@ -334,6 +375,7 @@ def _build_rename_proposal(
     database: Path,
     indexed_at: Any,
     skipped_drifted: list[str] | None,
+    added_content_hash: str | None = None,
 ) -> dict[str, Any] | None:
     row = connection.execute(
         "SELECT id FROM notes WHERE relative_path = ?", (old_path,)
@@ -399,12 +441,23 @@ def _build_rename_proposal(
             "removed_path": old_path,
             "added_path": new_path,
             "resolved_referrers": notes_affected,
-            "skipped_referrers": sorted(skipped, key=lambda item: item["relative_path"]),
+            "skipped_referrers": _dedup_skipped(skipped),
         },
         non_actions=[],
         notes_affected=notes_affected,
         id_salt=[old_path, new_path],
     )
+    # Pin BOTH sides of the rename, not just each referrer's bytes: the old path
+    # must still be absent and the new path must still exist with the candidate
+    # content hash at apply time. Without this an added file deleted or
+    # repurposed after observation would still drive link rewrites to a missing
+    # or unrelated note (the L1 unresolved-link gate permits a zero delta).
+    document["rename_preconditions"] = {
+        "removed_path": old_path,
+        "removed_absent": True,
+        "added_path": new_path,
+        "added_content_hash": added_content_hash,
+    }
     return document
 
 
@@ -517,22 +570,30 @@ def _build_duplicate_proposal(
 
 
 def _assign_conflicts(proposals: list[dict[str, Any]]) -> None:
-    """Cross-link proposals whose edits touch the same relative_path.
+    """Cross-link proposals whose edits touch the same (source, relative_path).
 
-    Recomputes ``conflicts_with`` from scratch on every call (not additive),
-    so it is safe to call again over a larger, merged list."""
+    Conflicts are keyed by (source, relative_path), not by path alone: two
+    disjoint sources that each edit ``Alpha.md`` target different files and
+    cannot overlap, so they must not be marked as conflicting (which would make
+    validation refuse both). Recomputes ``conflicts_with`` from scratch on every
+    call (not additive), so it is safe to call again over a larger, merged list.
+    """
 
-    path_to_ids: dict[str, list[str]] = {}
+    key_to_ids: dict[tuple[Any, str], list[str]] = {}
     for proposal in proposals:
+        source = proposal.get("source")
         touched = {edit["relative_path"] for edit in proposal.get("edits", [])}
         for path in touched:
-            path_to_ids.setdefault(path, []).append(proposal["proposal_id"])
+            key_to_ids.setdefault((source, path), []).append(
+                proposal["proposal_id"]
+            )
 
     for proposal in proposals:
+        source = proposal.get("source")
         touched = {edit["relative_path"] for edit in proposal.get("edits", [])}
         conflicting: set[str] = set()
         for path in touched:
-            for other_id in path_to_ids.get(path, []):
+            for other_id in key_to_ids.get((source, path), []):
                 if other_id != proposal["proposal_id"]:
                     conflicting.add(other_id)
         proposal["conflicts_with"] = sorted(conflicting)
@@ -572,16 +633,21 @@ def propose_from_assessment(
     assessment_file = assessment.get("change_batch_ref")
     indexed_at = (assessment.get("index") or {}).get("indexed_at")
 
-    rename_map: dict[str, str] = {}
+    rename_map: dict[str, tuple[str, str | None]] = {}
     if batch is not None:
         for candidate in batch.get("rename_candidates") or []:
             added_paths = candidate.get("added_paths") or []
             # Content-hash uniqueness gates a compiled rename edit: exactly
             # one added file shares the removed file's bytes. Inode identity is
             # not consulted (not portable across inode-reusing filesystems);
-            # the edit is hash-pinned and operator-reviewed regardless.
+            # the edit is hash-pinned and operator-reviewed regardless. The
+            # shared content hash is carried so the proposal can pin the NEW
+            # path's existence and bytes, not just each referrer's.
             if len(added_paths) == 1:
-                rename_map[candidate["removed_path"]] = added_paths[0]
+                rename_map[candidate["removed_path"]] = (
+                    added_paths[0],
+                    candidate.get("content_hash"),
+                )
 
     by_relation: dict[str, list[dict[str, Any]]] = {}
     for item in assessment.get("assessments") or []:
@@ -605,10 +671,11 @@ def propose_from_assessment(
             path = item["relative_path"]
             proposal: dict[str, Any] | None = None
             if path in rename_map:
+                added_path, added_content_hash = rename_map[path]
                 proposal = _build_rename_proposal(
                     _connection(),
                     path,
-                    rename_map[path],
+                    added_path,
                     source=source,
                     source_root=source_root,
                     assessment_file=assessment_file,
@@ -616,6 +683,7 @@ def propose_from_assessment(
                     database=database,
                     indexed_at=indexed_at,
                     skipped_drifted=skipped_drifted,
+                    added_content_hash=added_content_hash,
                 )
             if proposal is not None:
                 proposals.append(proposal)
@@ -710,7 +778,7 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
         proposals_dir = dirs["proposals"]
 
         per_source: list[dict[str, Any]] = []
-        pending: list[tuple[str, dict[str, Any]]] = []
+        all_computed: list[tuple[str, dict[str, Any], bool]] = []
 
         for source in registry.sources:
             assessment_files = sorted(assessments_dir.glob(f"*-{source.name}.json"))
@@ -718,10 +786,6 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                 per_source.append({"source": source.name, "reason": "no_assessment"})
                 continue
             latest = assessment_files[-1]
-            already = list(proposals_dir.glob(f"{latest.stem}-*.json"))
-            if already:
-                per_source.append({"source": source.name, "reason": "already_proposed"})
-                continue
 
             try:
                 assessment = json.loads(latest.read_text(encoding="utf-8"))
@@ -785,6 +849,12 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                         ) from error
 
             skipped_drifted: list[str] = []
+            # The proposal set is deterministic in the (pinned) assessment, so
+            # recompute it every run rather than treating the presence of ONE
+            # proposal file as proof the whole set was written. A run that
+            # crashed after writing some proposals then completes the rest here,
+            # and an already-written file (possibly since applied) is never
+            # overwritten.
             proposals = propose_from_assessment(
                 assessment,
                 batch,
@@ -793,31 +863,56 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                 now=generated_at,
                 skipped_drifted=skipped_drifted,
             )
-            per_source.append(
-                {
-                    "source": source.name,
-                    "assessment_ref": latest.name,
-                    "proposals_created": len(proposals),
-                    "skipped_drifted": sorted(set(skipped_drifted)),
-                }
-            )
+            missing = 0
             for proposal in proposals:
-                pending.append((latest.stem, proposal))
+                filename = f"{latest.stem}-{proposal['proposal_id']}.json"
+                is_new = not (proposals_dir / filename).exists()
+                all_computed.append((filename, proposal, is_new))
+                if is_new:
+                    missing += 1
+            if not proposals:
+                per_source.append(
+                    {
+                        "source": source.name,
+                        "assessment_ref": latest.name,
+                        "proposals_created": 0,
+                        "skipped_drifted": sorted(set(skipped_drifted)),
+                    }
+                )
+            elif missing == 0:
+                per_source.append(
+                    {"source": source.name, "reason": "already_proposed"}
+                )
+            else:
+                per_source.append(
+                    {
+                        "source": source.name,
+                        "assessment_ref": latest.name,
+                        "proposals_created": missing,
+                        "skipped_drifted": sorted(set(skipped_drifted)),
+                    }
+                )
 
-        _assign_conflicts([proposal for _stem, proposal in pending])
+        # Conflict-link across the full computed set (existing + new) so a newly
+        # written proposal references every counterpart; only missing files are
+        # actually written, and never an already-present (or applied) one.
+        _assign_conflicts([proposal for _fn, proposal, _new in all_computed])
 
-        for stem, proposal in pending:
-            filename = f"{stem}-{proposal['proposal_id']}.json"
+        written = 0
+        for filename, proposal, is_new in all_computed:
+            if not is_new:
+                continue
             atomic_write_json(
                 proposals_dir / filename, proposal, within=proposals_dir
             )
+            written += 1
 
         return {
             "schema_version": STEWARD_SCHEMA_VERSION,
             "kind": "steward_propose_receipt",
             "operation": "steward_propose",
             "generated_at": generated_at,
-            "proposals_created": len(pending),
+            "proposals_created": written,
             "per_source": per_source,
             "network_calls": 0,
             "vault_writes": 0,

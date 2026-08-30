@@ -81,6 +81,12 @@ from .steward_state import (
 REPORT_KIND = "stewardship_report"
 STATUS_KIND = "steward_status"
 
+# Per-list ceiling on the evidence arrays copied into a stewardship report.
+# Bounds report size deterministically; a truncated list is flagged with its
+# full length under integrity.evidence_truncated so a consumer can tell a
+# complete list from a Steward-truncated one.
+REPORT_EVIDENCE_LIMIT = 1000
+
 # Frozen for v1. Do not add, remove, or reorder without a corresponding audit
 # of every caller that indexes SWEEP_EXIT_CODES by these exact strings.
 SWEEP_RESULTS = (
@@ -321,6 +327,26 @@ def _assemble_report(
     )
     proposals_pending_total, proposals_by_action, dangling_references = _aggregate_proposals(dirs)
 
+    # Bound every unbounded evidence array so report size has a defined ceiling
+    # and consumers can tell a complete list from a Steward-truncated one. The
+    # budget is deterministic (stable ordering in, fixed cap) and each truncated
+    # list is annotated with its full length; physical line-range citations in
+    # the retained entries are untouched.
+    evidence_truncation: dict[str, dict[str, int]] = {}
+
+    def _bound(name: str, items: list[Any]) -> list[Any]:
+        if len(items) > REPORT_EVIDENCE_LIMIT:
+            evidence_truncation[name] = {
+                "reported": REPORT_EVIDENCE_LIMIT,
+                "total": len(items),
+            }
+            return items[:REPORT_EVIDENCE_LIMIT]
+        return items
+
+    broken_citations = _bound("broken_citations", broken_citations)
+    dangling_references = _bound("dangling_references", dangling_references)
+    duplicates = _bound("duplicates", duplicates)
+
     sources_missing = sorted(
         item["source"]
         for item in observe_receipt.get("sources", [])
@@ -355,6 +381,7 @@ def _assemble_report(
             "rename_candidates_pending": batch_agg["rename_candidates_pending"],
             "sources_missing": sources_missing,
             "checkpoint_invalid": batch_agg["checkpoint_invalid"],
+            "evidence_truncated": evidence_truncation,
         },
         "changes": batch_agg["changes"],
         "assessments": relation_summary,
@@ -373,7 +400,12 @@ def _assemble_report(
             "schema_version": _index_info(database)["schema_version"],
         },
         "network_calls": 0,
-        "vault_writes": 0,
+        # A read-only sweep performs no writes; an --apply sweep reports the
+        # mutations its auto-apply leg actually made, so the standard receipt
+        # field never claims a false no-mutation result after applying.
+        "vault_writes": (
+            apply_summary.get("mutations", 0) if apply_summary is not None else 0
+        ),
     }
 
 
@@ -426,6 +458,17 @@ def render_sweep_markdown(report: dict[str, Any]) -> str:
         )
     )
     lines.extend(_fenced_list_section("Duplicates", integrity.get("duplicates") or []))
+    truncated = integrity.get("evidence_truncated") or {}
+    if truncated:
+        lines.append("### Evidence truncated")
+        lines.append("")
+        for name in sorted(truncated):
+            info = truncated[name]
+            lines.append(
+                f"- {name}: showing {info.get('reported')} of "
+                f"{info.get('total')}"
+            )
+        lines.append("")
     lines.append(
         f"Rename candidates pending: {integrity.get('rename_candidates_pending', 0)}"
     )
@@ -583,6 +626,24 @@ def _dir_file_count(directory: Path) -> int:
     return sum(1 for entry in directory.iterdir() if entry.is_file())
 
 
+def _pending_proposal_count(directory: Path) -> int:
+    # Applied proposals remain on disk with status "applied" (their receipt
+    # references them); a pending count must exclude them, matching
+    # _aggregate_proposals. An unreadable/malformed proposal file is counted as
+    # pending -- it still needs operator attention and must not silently vanish.
+    pending = 0
+    for entry in sorted(directory.glob("*.json")):
+        try:
+            document = json.loads(entry.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pending += 1
+            continue
+        if isinstance(document, dict) and document.get("status") == "applied":
+            continue
+        pending += 1
+    return pending
+
+
 def _dir_total_bytes(directory: Path) -> int:
     total = 0
     for root, _dirs, files in os.walk(directory):
@@ -690,7 +751,7 @@ def status_report(
     counts = {
         "change_batches": _dir_file_count(dirs["changes"]),
         "assessments": _dir_file_count(dirs["assessments"]),
-        "proposals_pending": _dir_file_count(dirs["proposals"]),
+        "proposals_pending": _pending_proposal_count(dirs["proposals"]),
         "receipts": _dir_file_count(dirs["receipts"]),
         "reports": _dir_file_count(dirs["reports"]),
     }

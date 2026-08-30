@@ -41,13 +41,14 @@ def _emit(payload: dict[str, Any]) -> None:
 
 
 # From a path start, consume through spaces and dots-inside-filenames until a
-# sentence boundary (". " or end), colon, semicolon, or quote. Paths with
-# spaces redact whole; over-redacting neighboring words is acceptable -- the
-# failure direction must be "too much removed", never a leaked component.
-# Colons are legal POSIX filename characters, so they do not terminate a
-# match; over-redacting trailing prose is the safe failure direction.
+# newline or a sentence boundary (". " or end of string). Colons, semicolons,
+# and quotes are all legal POSIX filename characters, so none of them terminate
+# a match -- a path component that follows one must never survive redaction.
+# Paths with spaces redact whole; over-redacting neighboring words (or a
+# trailing quote around the path) is the safe failure direction -- the failure
+# must be "too much removed", never a leaked component.
 _ABSOLUTE_PATH_RE = re.compile(
-    r"(?:[A-Za-z]:)?[\\/](?:[^.;\"'\n]|\.(?!\s|$))*"
+    r"(?:[A-Za-z]:)?[\\/](?:[^.\n]|\.(?!\s|$))*"
 )
 
 
@@ -574,16 +575,23 @@ def main(argv: list[str] | None = None) -> int:
         message = str(error)
         if args.command.startswith("steward-"):
             message = _redact_local_paths(message)
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "error": type(error).__name__,
+            "message": message,
+            "operation": args.command,
+        }
+        # A multi-proposal apply that fails partway records the proposals it
+        # already applied on the exception; surface them so an operator learns
+        # the vault is in a partial state instead of assuming nothing changed.
+        partial = getattr(error, "partial_applied", None)
+        if partial:
+            envelope["partial_applied"] = partial
+            envelope["failed_proposal_id"] = getattr(
+                error, "failed_proposal_id", None
+            )
         print(
-            json.dumps(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "error": type(error).__name__,
-                    "message": message,
-                    "operation": args.command,
-                },
-                ensure_ascii=True,
-            ),
+            json.dumps(envelope, ensure_ascii=True),
             file=sys.stderr,
         )
         return 2

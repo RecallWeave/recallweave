@@ -222,6 +222,33 @@ class DuplicatesTest(StewardAssessTest):
         self.assertEqual(records["Theta1.md"]["inputs"]["duplicate_of"], [])
 
 
+    def test_duplicates_exact_bytes_within_batch_for_modified_notes(self) -> None:
+        # Two already-indexed notes modified in the same batch to identical new
+        # bytes (neither new hash in the index) must both be flagged; keying the
+        # same-batch map on "added" alone would drop this finding.
+        beta_before = self._index_hash("Beta.md")
+        gamma_before = self._index_hash("Gamma.md")
+        shared_text = "# Merged\n\nBeta and Gamma now hold identical bytes.\n"
+        beta = self._write("Beta.md", shared_text)
+        gamma = self._write("Gamma.md", shared_text)
+        shared_hash = _hash(beta)
+        self.assertEqual(shared_hash, _hash(gamma))
+        batch = _batch(
+            changes=[
+                _change("Beta.md", "modified", previous=beta_before, current=shared_hash),
+                _change("Gamma.md", "modified", previous=gamma_before, current=shared_hash),
+            ]
+        )
+        document = assess_change_batch(batch, self.database, self.vault, now=FROZEN_NOW)
+        records = {
+            item["relative_path"]: item
+            for item in self._by_relation(document, "DUPLICATES_EXACT_BYTES")
+        }
+        self.assertEqual(set(records), {"Beta.md", "Gamma.md"})
+        self.assertEqual(records["Beta.md"]["inputs"]["duplicate_in_batch"], ["Gamma.md"])
+        self.assertEqual(records["Gamma.md"]["inputs"]["duplicate_in_batch"], ["Beta.md"])
+
+
 class AuthoredReferenceTouchedTest(StewardAssessTest):
     def test_outbound_edge_when_source_of_link_is_touched(self) -> None:
         before_hash = self._index_hash("Alpha.md")
@@ -507,6 +534,89 @@ class AssessLatestTest(StewardAssessTest):
         self.assertEqual(
             receipt["skipped_sources"], [{"source": "vault", "reason": "no_change_batch"}]
         )
+
+    def test_processes_every_unassessed_batch_not_just_newest(self) -> None:
+        # An earlier batch must not be skipped because a later batch exists.
+        p1 = self._write("One.md", "# One\n\nfirst.\n")
+        b1 = self._write_batch_file(
+            "20260101T000000Z", [_change("One.md", "added", current=_hash(p1))]
+        )
+        p2 = self._write("Two.md", "# Two\n\nsecond.\n")
+        b2 = self._write_batch_file(
+            "20260102T000000Z", [_change("Two.md", "added", current=_hash(p2))]
+        )
+        receipt = assess_latest(self.registry, self.state_root, self.database)
+        refs = {item["change_batch_ref"] for item in receipt["assessed"]}
+        self.assertEqual(refs, {b1.name, b2.name})
+        self.assertTrue((self.dirs["assessments"] / b1.name).is_file())
+        self.assertTrue((self.dirs["assessments"] / b2.name).is_file())
+
+    def test_suffix_named_source_batch_does_not_collide(self) -> None:
+        # A stray batch for source "x-vault" must not be pulled into "vault"
+        # (glob '*-vault.json' would match it) and block the run.
+        stray = self.dirs["changes"] / "20260101T000000Z-x-vault.json"
+        stray.write_text(
+            json.dumps(_batch(source="x-vault", changes=[])), encoding="utf-8"
+        )
+        receipt = assess_latest(self.registry, self.state_root, self.database)
+        self.assertEqual(receipt["assessed"], [])
+        self.assertEqual(
+            receipt["skipped_sources"],
+            [{"source": "vault", "reason": "no_change_batch"}],
+        )
+
+    def test_multi_source_registry_is_refused(self) -> None:
+        second = self.root / "vault-b"
+        second.mkdir()
+        (second / "b.md").write_text("# B\n\nbody.\n", encoding="utf-8")
+        registry = SourceRegistry.from_payload(
+            {
+                "spec_version": SOURCES_SPEC_VERSION,
+                "sources": [
+                    {"name": "vault", "type": "folder", "root": str(self.vault),
+                     "mode": "read_only"},
+                    {"name": "vaultb", "type": "folder", "root": str(second),
+                     "mode": "read_only"},
+                ],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "more than one source"):
+            assess_latest(registry, self.state_root, self.database)
+
+
+class SingleFileSourceAssessTest(unittest.TestCase):
+    def test_file_source_resolves_from_parent_directory(self) -> None:
+        # A type:"file" source: source_root is the file, the observed relative
+        # path is its filename. Citation reads must hit <parent>/<filename>,
+        # not <file>/<filename>, so a real section is not misreported unreadable.
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            vault = base / "vault"
+            vault.mkdir()
+            note = vault / "one.md"
+            note.write_text(
+                "# One\n\nSee [[one]] here.\n\n## Body\n\nline a\nline b\n",
+                encoding="utf-8",
+                newline="",
+            )
+            database = base / "index.sqlite"
+            build_index(vault, database, policy=IndexPolicy(), minimum_candidate_score=0.0)
+            before = _hash(note)
+            note.write_text(
+                "# One\n\nSee [[one]] here.\n\n## Body\n\nline a\nline b changed\n",
+                encoding="utf-8",
+                newline="",
+            )
+            batch = _batch(
+                source="single",
+                changes=[_change("one.md", "modified", previous=before, current=_hash(note))],
+            )
+            # With the fix, this assesses cleanly (no path-escape error, no
+            # spurious unreadable-citation) because path_base is the parent dir.
+            document = assess_change_batch(
+                batch, database, note, now=FROZEN_NOW, source_is_file=True
+            )
+            self.assertEqual(document["summary"].get("MODIFIED"), 1)
 
 
 def _run_cli(*args: str) -> tuple[int, str, str]:

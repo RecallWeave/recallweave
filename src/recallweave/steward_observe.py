@@ -238,6 +238,17 @@ def observe_source(
     except CheckpointError:
         checkpoint_payload = None
         checkpoint_invalid = True
+    if (
+        checkpoint_payload is not None
+        and checkpoint_payload.get("registry_sha256") != registry_sha256
+    ):
+        # The checkpoint was recorded under a different source registry (e.g. a
+        # source root was repointed while keeping its name). Diffing the new
+        # tree against the old baseline would emit false removals/additions and
+        # bogus rename candidates. Rebaseline: ignore the stale checkpoint and
+        # let this run establish a fresh baseline under the active digest.
+        checkpoint_payload = None
+        checkpoint_invalid = True
     if checkpoint_payload is not None:
         prior_entries = {
             entry["relative_path"]: entry for entry in checkpoint_payload["entries"]
@@ -298,7 +309,18 @@ def observe_source(
         # then pass as unchanged — an integrity sweep may not treat stat
         # equality as proof of byte equality.
         prior = prior_entries.get(relative)
-        current_hash = _hash_file(path)
+        try:
+            current_hash = _hash_file(path)
+        except OSError:
+            # The file was statted during discovery but became unreadable (a
+            # permission change, a transient I/O error, a concurrent unlink)
+            # before or during hashing. Record it as changed-during-observe and
+            # keep any prior checkpoint entry, so one unreadable file cannot
+            # abort observation for every other file and source.
+            changed_during_observe.append(relative)
+            if prior is not None:
+                new_entries[relative] = _entry_from_prior(prior)
+            continue
         try:
             after = path.stat(follow_symlinks=False)
         except OSError:
@@ -366,14 +388,6 @@ def observe_source(
             }
         )
 
-    save_checkpoint(
-        state_dirs,
-        source.name,
-        sorted(new_entries.values(), key=lambda entry: entry.relative_path),
-        generated_at=generated_at,
-        registry_sha256=registry_sha256,
-    )
-
     receipt: dict[str, Any] = {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": CHANGE_BATCH_KIND,
@@ -395,6 +409,30 @@ def observe_source(
     }
     if checkpoint_invalid:
         receipt["checkpoint_invalid"] = True
+
+    # Persist the change batch BEFORE advancing the checkpoint. If this order
+    # were reversed and the process crashed in between, the checkpoint would
+    # already describe the new tree while no batch recorded the changes; the
+    # next run would then diff the new tree against the advanced checkpoint,
+    # see no differences, and permanently lose those modifications, deletions,
+    # and additions before assessment ever saw them. With batch-first, a crash
+    # merely re-observes against the old checkpoint and re-emits the batch
+    # (digest-bound assessment deduplicates), never losing a change.
+    filename = f"{_file_timestamp(generated_at)}-{source.name}.json"
+    atomic_write_json(
+        state_dirs["changes"] / filename,
+        receipt,
+        within=state_dirs["changes"],
+    )
+
+    save_checkpoint(
+        state_dirs,
+        source.name,
+        sorted(new_entries.values(), key=lambda entry: entry.relative_path),
+        generated_at=generated_at,
+        registry_sha256=registry_sha256,
+    )
+
     return receipt
 
 
@@ -419,15 +457,10 @@ def observe_registry(registry: SourceRegistry, state_root: Path) -> dict:
                 registry_sha256=registry.registry_sha256,
                 now=generated_at,
             )
-            if batch.get("error") is not None:
-                receipts.append(batch)
-                continue
-            filename = f"{_file_timestamp(generated_at)}-{source.name}.json"
-            atomic_write_json(
-                state_dirs["changes"] / filename,
-                batch,
-                within=state_dirs["changes"],
-            )
+            # observe_source persists the change batch itself (batch-first,
+            # before advancing the checkpoint); a successful source therefore
+            # already has its changes/<UTC>-<source>.json on disk. Error
+            # receipts carry no batch and none is written for them.
             receipts.append(batch)
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,

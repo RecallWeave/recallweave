@@ -88,6 +88,7 @@ class ForgedJournalTest(unittest.TestCase):
             "backup_dir": "forged-backups",
             "operations": operations,
             "rollback_failures": [],
+            "registry_sha256": self.registry.registry_sha256,
         }
         journal.update(extra)
         atomic_write_json(
@@ -106,6 +107,27 @@ class ForgedJournalTest(unittest.TestCase):
         }
         op.update(overrides)
         return op
+
+    def test_recover_refuses_journal_from_a_different_registry(self) -> None:
+        # A journal must be bound to the source registry it was recorded under:
+        # recovery of a journal carrying a foreign (or absent) registry digest
+        # is refused before any backup is touched.
+        name = self._write_journal(
+            "intent",
+            [self._forged_op(relative_path="a.md", mutation_class="append_at_eof")],
+            registry_sha256="0" * 64,
+        )
+        with self.assertRaisesRegex(ApplyError, "different source registry"):
+            recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+
+    def test_recover_refuses_journal_without_registry_digest(self) -> None:
+        name = self._write_journal(
+            "intent",
+            [self._forged_op(relative_path="a.md", mutation_class="append_at_eof")],
+            registry_sha256=None,
+        )
+        with self.assertRaisesRegex(ApplyError, "different source registry"):
+            recover_journal(name, registry=self.registry, state_dirs=self.dirs)
 
     def test_traversal_relative_path_in_recovery_is_refused(self) -> None:
         name = self._write_journal("intent", [self._forged_op()])
@@ -305,6 +327,18 @@ class Round2RegressionTest(unittest.TestCase):
         )
         self.assertNotIn("alpha", redacted)
         self.assertNotIn("secret", redacted)
+
+    def test_redaction_swallows_semicolon_and_quote_components(self) -> None:
+        from recallweave.cli import _redact_local_paths
+
+        # Semicolons and quotes are legal POSIX filename characters; a path
+        # component that follows one must not survive the redaction.
+        semi = _redact_local_paths("failed on /tmp/private;case/vault done")
+        self.assertNotIn("case", semi)
+        self.assertNotIn("vault", semi)
+        quoted = _redact_local_paths("failed on /tmp/it's/secret.md now")
+        self.assertNotIn("secret", quoted)
+        self.assertNotIn("it's", quoted)
 
     @unittest.skipUnless(git_available(), "git is not installed")
     def test_commit_excludes_previously_staged_unrelated_content(self) -> None:
@@ -642,6 +676,7 @@ class TwoPassRecoveryTest(unittest.TestCase):
                     },
                 ],
                 "rollback_failures": [],
+                "registry_sha256": registry.registry_sha256,
             }
             journal_name = "20260101T000000000000Z-t.json"
             atomic_write_json(
@@ -791,6 +826,7 @@ class Round2G3RegressionTest(unittest.TestCase):
                 }
             ],
             "rollback_failures": [],
+            "registry_sha256": self.registry.registry_sha256,
         }
         journal_name = "20260101T000000000000Z-tc.json"
         atomic_write_json(
@@ -1260,6 +1296,7 @@ class RecoverRevertDriftWindowTest(unittest.TestCase):
                 }
             ],
             "rollback_failures": [],
+            "registry_sha256": self.registry.registry_sha256,
         }
         name = f"20260101T000000000000Z-{status}.json"
         atomic_write_json(
@@ -1430,6 +1467,61 @@ class MalformedJournalBoundaryTest(unittest.TestCase):
         self.assertNotIn("Traceback", out + err)
         payload = json.loads(err)
         self.assertNotIn(str(self.base), payload["message"])
+
+
+class RenamePreconditionTest(unittest.TestCase):
+    """Both sides of a rewrite-after-rename must be verified at apply time."""
+
+    def setUp(self) -> None:
+        from types import SimpleNamespace
+
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        (self.root / "new.md").write_text("moved bytes", encoding="utf-8")
+        self.source = SimpleNamespace(root=self.root, name="src")
+
+    def _proposal(self, added_hash: str) -> dict:
+        return {
+            "rename_preconditions": {
+                "removed_path": "old.md",
+                "removed_absent": True,
+                "added_path": "new.md",
+                "added_content_hash": added_hash,
+            }
+        }
+
+    def test_clean_rename_passes(self) -> None:
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        good = _sha(b"moved bytes")
+        _verify_rename_preconditions(self._proposal(good), self.source)  # no raise
+
+    def test_reappeared_removed_path_is_refused(self) -> None:
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        (self.root / "old.md").write_text("came back", encoding="utf-8")
+        with self.assertRaisesRegex(ApplyError, "renamed-from path"):
+            _verify_rename_preconditions(
+                self._proposal(_sha(b"moved bytes")), self.source
+            )
+
+    def test_missing_added_path_is_refused(self) -> None:
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        (self.root / "new.md").unlink()
+        with self.assertRaisesRegex(ApplyError, "renamed-to path"):
+            _verify_rename_preconditions(
+                self._proposal(_sha(b"moved bytes")), self.source
+            )
+
+    def test_added_path_bytes_changed_is_refused(self) -> None:
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        with self.assertRaisesRegex(ApplyError, "observed bytes"):
+            _verify_rename_preconditions(
+                self._proposal(_sha(b"different observed bytes")), self.source
+            )
 
 
 if __name__ == "__main__":

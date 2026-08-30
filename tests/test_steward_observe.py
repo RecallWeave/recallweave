@@ -268,6 +268,56 @@ class ObserveSourceTest(unittest.TestCase):
         fresh = self.checkpoint()
         self.assertEqual(fresh["kind"], CHECKPOINT_KIND)
 
+    def test_batch_is_written_before_checkpoint_advances(self) -> None:
+        # observe_source must persist the change batch itself, so a change is
+        # never lost if the process dies before the checkpoint's batch reaches
+        # disk. The batch file must exist right after observe_source returns.
+        self.vault.write("a.md", "hello")
+        self.observe(now="2026-01-01T00:00:00+00:00")
+        batches = list(self.dirs["changes"].glob("*-src.json"))
+        self.assertEqual(len(batches), 1)
+        batch = json.loads(batches[0].read_text(encoding="utf-8"))
+        self.assertEqual(batch["kind"], CHANGE_BATCH_KIND)
+        self.assertEqual(batch["changes"][0]["change_type"], "added")
+
+    def test_checkpoint_from_a_different_registry_is_rebaselined(self) -> None:
+        self.vault.write("a.md", "hello")
+        observe_source(
+            self.source, self.dirs, registry_sha256="reg-A",
+            now="2026-01-01T00:00:00+00:00",
+        )
+        # A later run under a different registry digest must not diff against
+        # the old baseline; it rebaselines instead of emitting a false removal.
+        self.vault.write("b.md", "world")
+        receipt = observe_source(
+            self.source, self.dirs, registry_sha256="reg-B",
+            now="2026-01-02T00:00:00+00:00",
+        )
+        self.assertTrue(receipt["checkpoint_invalid"])
+        self.assertEqual(
+            {c["change_type"] for c in receipt["changes"]}, {"added"}
+        )
+        self.assertEqual(len(receipt["changes"]), 2)  # both a.md and b.md as added
+        fresh = self.checkpoint()
+        self.assertEqual(fresh["registry_sha256"], "reg-B")
+
+    def test_file_unreadable_during_hash_does_not_abort_observation(self) -> None:
+        self.vault.write("a.md", "hello")
+        self.vault.write("b.md", "world")
+        real_hash = _hash_file
+
+        def flaky(path):
+            if path.name == "a.md":
+                raise OSError("vanished mid-hash")
+            return real_hash(path)
+
+        with patch("recallweave.steward_observe._hash_file", side_effect=flaky):
+            receipt = self.observe(now="2026-01-01T00:00:00+00:00")
+        # b.md still observed; a.md recorded as changed-during-observe, not fatal.
+        self.assertIn("a.md", receipt["changed_during_observe"])
+        added = {c["relative_path"] for c in receipt["changes"] if c["change_type"] == "added"}
+        self.assertIn("b.md", added)
+
     def test_byte_identical_except_generated_at(self) -> None:
         self.vault.write("a.md", "hello")
         self.observe(now="2026-01-01T00:00:00+00:00")

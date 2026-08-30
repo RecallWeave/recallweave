@@ -39,9 +39,17 @@ def _application_data_root() -> Path:
 
 
 def steward_state_root(registry_path: Path) -> Path:
+    # Key the state directory on the resolved registry path. We must NOT
+    # case-fold unconditionally: on a case-sensitive filesystem `Sources.json`
+    # and `sources.json` are two distinct registries, and folding would collapse
+    # them onto one state tree (shared checkpoints/journals/locks -> corruption
+    # or overwrite). Distinct paths therefore always yield distinct fingerprints.
+    # On a case-insensitive filesystem the two spellings denote the same file,
+    # and ``resolve()`` canonicalises to its on-disk casing, so they converge on
+    # a single state tree without any folding here.
     resolved = registry_path.expanduser().resolve()
     fingerprint = hashlib.sha256(
-        resolved.as_posix().casefold().encode("utf-8")
+        resolved.as_posix().encode("utf-8")
     ).hexdigest()
     return _application_data_root() / "steward" / fingerprint
 

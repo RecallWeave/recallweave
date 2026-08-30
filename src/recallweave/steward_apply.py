@@ -347,6 +347,55 @@ def _validate_proposal(proposal: Any) -> None:
         )
 
 
+def _verify_rename_preconditions(proposal: dict, source: Any) -> None:
+    """Verify BOTH sides of a rewrite-after-rename proposal at apply time.
+
+    A ``fix_links_after_rename`` proposal pins each referrer's bytes, but its
+    referrer rewrites are only sound while the renamed-from path stays gone and
+    the renamed-to path still holds the observed bytes. If the added file was
+    deleted or repurposed after observation (referrers unchanged), applying
+    would rewrite links to a missing or unrelated note -- and the L1 gate,
+    which permits a zero unresolved-link delta, would not catch it. Refuse."""
+
+    pre = proposal.get("rename_preconditions")
+    if not isinstance(pre, dict):
+        return
+    removed = pre.get("removed_path")
+    if isinstance(removed, str) and removed:
+        _require_clean_relative_path(removed)
+        removed_target = source.root / removed
+        if is_link_like(removed_target) or removed_target.exists():
+            raise ApplyError(
+                "Rename precondition failed: the renamed-from path "
+                f"{removed!r} exists again; the rename is stale, refusing to "
+                "rewrite referrers. Re-run the pipeline."
+            )
+    added = pre.get("added_path")
+    if isinstance(added, str) and added:
+        _require_clean_relative_path(added)
+        added_target = source.root / added
+        if is_link_like(added_target):
+            raise ApplyError(
+                f"Rename precondition failed: the renamed-to path {added!r} is "
+                "a symlink; refusing to rewrite referrers to it."
+            )
+        try:
+            data = added_target.read_bytes()
+        except OSError:
+            raise ApplyError(
+                f"Rename precondition failed: the renamed-to path {added!r} is "
+                "missing or unreadable; refusing to rewrite referrers to it. "
+                "Re-run the pipeline."
+            ) from None
+        expected = pre.get("added_content_hash")
+        if expected is not None and _sha256_bytes(data) != expected:
+            raise ApplyError(
+                f"Rename precondition failed: the renamed-to path {added!r} no "
+                "longer holds the observed bytes; refusing to rewrite referrers "
+                "to it. Re-run the pipeline."
+            )
+
+
 def _validate_edit(edit: Any) -> None:
     if not isinstance(edit, dict):
         raise ApplyError("Each edit must be a JSON object.")
@@ -702,6 +751,7 @@ def _guarded_replace(
     boundary: Path,
     *,
     create_dirs: bool = False,
+    create_only: bool = False,
     root_identity: tuple[int, int] | None = None,
 ) -> list[Path]:
     """Write ``data`` to ``target`` via a same-directory fsync'd temp file and
@@ -718,12 +768,19 @@ def _guarded_replace(
             boundary, target, create_dirs=create_dirs, root_identity=root_identity
         )
         try:
+            existing_mode = None
             try:
                 info = os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
                 if stat.S_ISLNK(info.st_mode):
                     raise ApplyError(
                         f"Refusing to replace a symlink or junction: {target}"
                     )
+                if create_only:
+                    raise ApplyError(
+                        f"Refusing to create {target}: a file appeared at the "
+                        "target after preflight."
+                    )
+                existing_mode = stat.S_IMODE(info.st_mode)
             except FileNotFoundError:
                 pass
             flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
@@ -739,10 +796,34 @@ def _guarded_replace(
                     handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.rename(
-                    temp_name, filename,
-                    src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
-                )
+                if existing_mode is not None:
+                    # Preserve the original file's permission bits so a private
+                    # (e.g. 0600) note is not widened to the umask default.
+                    os.chmod(temp_name, existing_mode, dir_fd=parent_fd)
+                if create_only:
+                    # Atomic create-or-fail: link refuses if the target now
+                    # exists, closing the preflight->write window.
+                    try:
+                        os.link(
+                            temp_name, filename,
+                            src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                        )
+                    except FileExistsError as error:
+                        raise ApplyError(
+                            f"Refusing to create {target}: a file appeared at "
+                            "the target after preflight."
+                        ) from error
+                    os.unlink(temp_name, dir_fd=parent_fd)
+                else:
+                    os.rename(
+                        temp_name, filename,
+                        src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                    )
+                # Durability: flush the directory entry of the mutated note.
+                try:
+                    os.fsync(parent_fd)
+                except OSError:
+                    pass
             except BaseException:
                 try:
                     os.unlink(temp_name, dir_fd=parent_fd)
@@ -774,6 +855,14 @@ def _guarded_replace(
     _recheck_parent_chain(target, boundary)
     if is_link_like(target):
         raise ApplyError(f"Refusing to replace a symlink or junction: {target}")
+    existing_mode = None
+    if target.exists():
+        if create_only:
+            raise ApplyError(
+                f"Refusing to create {target}: a file appeared at the target "
+                "after preflight."
+            )
+        existing_mode = stat.S_IMODE(target.stat().st_mode)
     temp = target.parent / temp_name
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -789,15 +878,45 @@ def _guarded_replace(
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
+    if existing_mode is not None:
+        os.chmod(temp, existing_mode)
     try:
-        os.replace(temp, target)
+        if create_only:
+            try:
+                os.link(temp, target)
+            except FileExistsError as error:
+                temp.unlink(missing_ok=True)
+                raise ApplyError(
+                    f"Refusing to create {target}: a file appeared at the "
+                    "target after preflight."
+                ) from error
+            temp.unlink(missing_ok=True)
+        else:
+            os.replace(temp, target)
     except OSError:
         try:
             temp.unlink()
         except OSError:
             pass
         raise
+    _fsync_dir(target.parent)
     return created
+
+
+def _fsync_dir(path: Path) -> None:
+    """Flush a directory's entries to disk so a freshly created file/dir
+    survives a crash. Best-effort: platforms whose os.open cannot open a
+    directory (e.g. Windows) skip this."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def _write_backup(
@@ -812,6 +931,12 @@ def _write_backup(
         os.fsync(handle.fileno())
     if _sha256_bytes(backup_path.read_bytes()) != _sha256_bytes(data):
         raise ApplyError(f"Backup verification failed: {backup_path}")
+    # Durability: flush the backup directory entry (and its parent, in case
+    # the backup dir itself was just created) before the caller advances the
+    # journal and mutates the vault, so a crash cannot leave a mutated note
+    # with no readable backup.
+    _fsync_dir(backup_dir)
+    _fsync_dir(backup_dir.parent)
     return backup_path
 
 
@@ -950,6 +1075,8 @@ def apply_proposal(
             f"Proposal {proposal_id} was compiled under a different source "
             "registry (registry_sha256 mismatch); re-run the pipeline."
         )
+
+    _verify_rename_preconditions(proposal, source)
 
     marker = None if allow_sync_root else source_in_sync_root(source.root)
     if marker is not None:
@@ -1101,6 +1228,7 @@ def apply_proposal(
         "generated_at": generated_at,
         "status": "intent",
         "backup_dir": backup_dir.name,
+        "registry_sha256": registry.registry_sha256,
         "operations": [dict(op, state="planned") for op in planned_ops],
         "rollback_failures": [],
     }
@@ -1170,6 +1298,7 @@ def apply_proposal(
                     plan["post"],
                     source.root,
                     create_dirs=(edit["mutation_class"] == "create_new_file"),
+                    create_only=(edit["mutation_class"] == "create_new_file"),
                     root_identity=root_identity,
                 )
                 created_dirs.extend(made)
@@ -1398,6 +1527,15 @@ def sweep_auto_apply(
 
     proposals_dir = state_dirs["proposals"]
     receipts_dir = state_dirs["receipts"]
+    # An interrupted or failed-rollback journal must block new applies (as it
+    # does for steward-apply); otherwise a sweep could mutate a source that is
+    # only partially restored.
+    incomplete = _incomplete_journals(state_dirs["journal"])
+    if incomplete:
+        raise ApplyError(
+            "An earlier apply is unresolved; recover it first with "
+            f"steward-apply --recover {incomplete[0].name}"
+        )
     applied: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -1426,6 +1564,22 @@ def sweep_auto_apply(
         if source is None:
             skipped.append({"proposal": path.name, "reason": "unknown_source"})
             continue
+        def _edit_frontmatter(edit: dict) -> dict | None:
+            # Only needed when the policy protects by frontmatter; read the
+            # target's current frontmatter so a protected note is not counted
+            # eligible (which would otherwise show up as an apply failure).
+            if not write_policy.protected_frontmatter:
+                return None
+            target = source.root / edit.get("relative_path", "")
+            if not target.is_file():
+                return None
+            try:
+                return parse_note(target, source.root).frontmatter
+            except (UnicodeError, RecursionError, OSError):
+                # Unreadable frontmatter under a protect rule: treat as
+                # ineligible by returning a sentinel the policy will deny.
+                return {"__unreadable__": ["1"]}
+
         eligible = all(
             isinstance(edit, dict)
             and resolve_level(
@@ -1433,7 +1587,7 @@ def sweep_auto_apply(
                 mutation_class=edit.get("mutation_class", ""),
                 source_name=source.name,
                 relative_path=edit.get("relative_path", ""),
-                frontmatter=None,
+                frontmatter=_edit_frontmatter(edit),
             )[0]
             == "auto_apply"
             for edit in edits
@@ -1502,9 +1656,26 @@ def _incomplete_journals(journal_dir: Path) -> list[Path]:
         if not isinstance(document, dict):
             incomplete.append(path)
             continue
-        if document.get("status") in ("intent", None):
+        # Only fully-terminal, verified states are complete. intent (crashed
+        # apply), rollback_failed (partial restore with retained backups), and
+        # any unrecognized status all block new applies until the operator
+        # resolves them.
+        if document.get("status") not in ("applied", "rolled_back", "reverted"):
             incomplete.append(path)
     return incomplete
+
+
+def _require_journal_registry(
+    journal: dict, journal_name: str, registry: SourceRegistry
+) -> None:
+    """Refuse a journal recorded under a different source registry. Null in
+    the journal fails closed when the active registry has a digest."""
+    recorded = journal.get("registry_sha256")
+    if registry.registry_sha256 is not None and recorded != registry.registry_sha256:
+        raise ApplyError(
+            f"Journal {journal_name} was recorded under a different source "
+            "registry (registry_sha256 mismatch); refusing to act on it."
+        )
 
 
 def recover_journal(
@@ -1546,6 +1717,7 @@ def recover_journal(
             f"{journal.get('source')!r}."
         )
     _require_root_identity(source)
+    _require_journal_registry(journal, journal_name, registry)
     candidates = _validated_journal_ops(
         journal,
         journal_name,
@@ -1836,16 +2008,37 @@ def apply_latest(
 
         receipts: list[dict[str, Any]] = []
         for path, document in selected:
-            receipt = apply_proposal(
-                document,
-                registry=registry,
-                state_dirs=dirs,
-                database=database,
-                policy=write_policy,
-                mode=mode,
-                execute=execute,
-                allow_sync_root=allow_sync_root,
-            )
+            # A per-proposal failure in a multi-proposal (--approve-class) run
+            # still propagates — the caller must see a non-zero result — but it
+            # must not hide the proposals already applied earlier in this same
+            # invocation. Attach that partial progress to the exception so the
+            # CLI envelope can report which mutations already touched the vault.
+            try:
+                receipt = apply_proposal(
+                    document,
+                    registry=registry,
+                    state_dirs=dirs,
+                    database=database,
+                    policy=write_policy,
+                    mode=mode,
+                    execute=execute,
+                    allow_sync_root=allow_sync_root,
+                )
+            except ApplyError as error:
+                if receipts:
+                    error.partial_applied = [
+                        {
+                            "proposal_id": applied.get("proposal_id"),
+                            "journal_ref": applied.get("journal_ref"),
+                            "steward_vault_mutations": applied.get(
+                                "steward_vault_mutations", 0
+                            ),
+                        }
+                        for applied in receipts
+                        if applied.get("applied")
+                    ]
+                    error.failed_proposal_id = document.get("proposal_id")
+                raise
             receipts.append(receipt)
             if execute and receipt.get("applied"):
                 updated = dict(document)

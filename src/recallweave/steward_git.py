@@ -22,6 +22,7 @@ identically here: a caller that never gets a git repository back from
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -245,6 +246,26 @@ def check_apply_preconditions(
     return {"git_used": True, "head": status["head"], "branch": status["branch"]}
 
 
+def _unstage_paths(root: Path, paths: list[str]) -> None:
+    """Best-effort: return exactly ``paths`` to their pre-``add`` index state.
+
+    Called only after a commit fails post-``add``; ``check_apply_preconditions``
+    has already established these paths had no staged/uncommitted changes, so
+    unstaging them cannot discard operator work, and it keeps steward's staging
+    from leaking into the operator's next commit. Unrelated staged content is
+    untouched because the operation is pathspec-limited."""
+
+    if not paths:
+        return
+    reset = _run_git(["reset", "--quiet", "--"] + list(paths), root, check=False)
+    if reset.returncode != 0:
+        # Unborn HEAD (no commit yet): there is nothing to reset to, so drop the
+        # staged entries outright instead.
+        _run_git(
+            ["rm", "--cached", "--quiet", "--"] + list(paths), root, check=False
+        )
+
+
 def commit_applied(
     root: Path,
     touched_relative_paths: list[str],
@@ -255,10 +276,14 @@ def commit_applied(
     """Stage exactly the touched paths and commit them.
 
     Preconditions (clean HEAD, no rewriting hook) were already checked by
-    ``check_apply_preconditions``; ``--no-verify`` guards only against a hook
-    appearing in the window between that check and this commit. Raises
-    ``GitError`` on any failure -- the caller treats that as non-fatal
-    because the apply itself already succeeded and is journaled."""
+    ``check_apply_preconditions``. This commit additionally runs with every git
+    hook disabled (``core.hooksPath`` pointed at an empty directory): ``--no-verify``
+    suppresses only ``pre-commit`` and ``commit-msg``, so a ``post-commit`` (or
+    any other) hook could otherwise still run after validation and rewrite the
+    bytes this apply already hashed and journaled. Raises ``GitError`` on any
+    failure -- the caller treats that as non-fatal because the apply itself
+    already succeeded and is journaled -- but first unstages the touched paths
+    so a failed commit never leaves steward's staging in the operator's index."""
 
     root = Path(root)
     _run_git(["add", "--"] + list(touched_relative_paths), root)
@@ -278,14 +303,24 @@ def commit_applied(
         f"Journal: {journal_ref}\n"
         "Automated, operator-approved steward apply."
     )
-    # Pathspec-limited commit: only the touched paths enter this commit,
-    # even if unrelated content was already staged before the apply ran.
-    _run_git(
-        identity_args
-        + ["commit", "--no-verify", "-m", message, "--"]
-        + list(touched_relative_paths),
-        root,
-    )
+    # An empty hooks directory disables every commit-lifecycle hook (pre-commit,
+    # prepare-commit-msg, commit-msg, AND post-commit) for this one commit, so
+    # no hook can mutate the validated notes regardless of --no-verify's limits.
+    with tempfile.TemporaryDirectory(prefix="steward-nohooks-") as empty_hooks:
+        hooks_args = ["-c", f"core.hooksPath={empty_hooks}"]
+        # Pathspec-limited commit: only the touched paths enter this commit,
+        # even if unrelated content was already staged before the apply ran.
+        try:
+            _run_git(
+                hooks_args
+                + identity_args
+                + ["commit", "--no-verify", "-m", message, "--"]
+                + list(touched_relative_paths),
+                root,
+            )
+        except GitError:
+            _unstage_paths(root, list(touched_relative_paths))
+            raise
 
     sha_result = _run_git(["rev-parse", "HEAD"], root)
     return {"committed": True, "commit": sha_result.stdout.strip()}

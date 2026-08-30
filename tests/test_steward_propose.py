@@ -213,6 +213,50 @@ class RenameFixLinksTest(StewardProposeTest):
         self.assertEqual(len(advisories), 1)
         self.assertEqual(advisories[0]["edits"], [])
 
+    def test_rename_preconditions_pin_both_sides(self) -> None:
+        beta_hash = self._index_hash("Beta.md")
+        batch, assessment = self._rename_beta()
+        proposals = self._propose(assessment, batch)
+        fixes = self._by_action(proposals, "fix_links_after_rename")
+        self.assertEqual(len(fixes), 1)
+        pre = fixes[0]["rename_preconditions"]
+        self.assertEqual(pre["removed_path"], "Beta.md")
+        self.assertTrue(pre["removed_absent"])
+        self.assertEqual(pre["added_path"], "BetaNew.md")
+        self.assertEqual(pre["added_content_hash"], beta_hash)
+
+    def test_referrer_with_multiple_occurrences_is_not_partially_rewritten(self) -> None:
+        # A referrer that links to the renamed note more than once must not get
+        # a partial edit (which would leave the other link dangling).
+        self._write(
+            "Alpha.md",
+            "# Alpha\n\nSee [[Beta]] and again [[Beta]] here.\n",
+        )
+        build_index(
+            self.vault, self.database, policy=IndexPolicy(),
+            minimum_candidate_score=0.0, force=True,
+        )
+        beta_hash = self._index_hash("Beta.md")
+        (self.vault / "Beta.md").rename(self.vault / "BetaNew.md")
+        batch = _batch(
+            changes=[
+                _change("Beta.md", "removed", previous=beta_hash),
+                _change("BetaNew.md", "added", current=beta_hash),
+            ],
+            rename_candidates=[
+                {
+                    "removed_path": "Beta.md",
+                    "added_paths": ["BetaNew.md"],
+                    "content_hash": beta_hash,
+                }
+            ],
+        )
+        assessment = self._assess(batch)
+        proposals = self._propose(assessment, batch)
+        for proposal in self._by_action(proposals, "fix_links_after_rename"):
+            for edit in proposal["edits"]:
+                self.assertNotEqual(edit["relative_path"], "Alpha.md")
+
     def test_conflicts_with_populated_when_two_renames_touch_one_referrer(self) -> None:
         beta_hash = self._index_hash("Beta.md")
         gamma_hash = self._index_hash("Gamma.md")
@@ -248,6 +292,35 @@ class RenameFixLinksTest(StewardProposeTest):
         for proposal in fixes:
             others = ids - {proposal["proposal_id"]}
             self.assertEqual(set(proposal["conflicts_with"]), others)
+
+
+class AssignConflictsScopingTest(unittest.TestCase):
+    def test_conflicts_are_scoped_by_source_not_path_alone(self) -> None:
+        from recallweave.steward_propose import _assign_conflicts
+
+        proposals = [
+            {"proposal_id": "prp-a", "source": "vaultA",
+             "edits": [{"relative_path": "Alpha.md"}]},
+            {"proposal_id": "prp-b", "source": "vaultB",
+             "edits": [{"relative_path": "Alpha.md"}]},
+        ]
+        _assign_conflicts(proposals)
+        # Same path, different sources -> disjoint targets -> no conflict.
+        self.assertEqual(proposals[0]["conflicts_with"], [])
+        self.assertEqual(proposals[1]["conflicts_with"], [])
+
+    def test_same_source_same_path_conflicts(self) -> None:
+        from recallweave.steward_propose import _assign_conflicts
+
+        proposals = [
+            {"proposal_id": "prp-a", "source": "vault",
+             "edits": [{"relative_path": "Alpha.md"}]},
+            {"proposal_id": "prp-b", "source": "vault",
+             "edits": [{"relative_path": "Alpha.md"}]},
+        ]
+        _assign_conflicts(proposals)
+        self.assertEqual(proposals[0]["conflicts_with"], ["prp-b"])
+        self.assertEqual(proposals[1]["conflicts_with"], ["prp-a"])
 
 
 class DanglingReferencesTest(StewardProposeTest):
@@ -545,6 +618,41 @@ class ProposeLatestTest(StewardProposeTest):
         self.assertEqual(
             receipt["per_source"], [{"source": "vault", "reason": "no_assessment"}]
         )
+
+    def test_partial_write_is_completed_on_rerun(self) -> None:
+        # Simulate a crash that wrote only ONE of the assessment's proposals:
+        # the next run must create the missing proposals, not treat the single
+        # existing file as a completion marker and skip the rest.
+        self._write_assessment_and_batch("20260101T000000Z")
+        all_three = propose_latest(self.registry, self.state_root, self.database)
+        self.assertEqual(all_three["proposals_created"], 3)
+        written = sorted(
+            self.dirs["proposals"].glob("20260101T000000Z-vault-*.json")
+        )
+        self.assertEqual(len(written), 3)
+        # Delete two of the three to mimic a crash after the first write.
+        for path in written[1:]:
+            path.unlink()
+        receipt = propose_latest(self.registry, self.state_root, self.database)
+        self.assertEqual(receipt["proposals_created"], 2)
+        self.assertEqual(
+            len(list(self.dirs["proposals"].glob("20260101T000000Z-vault-*.json"))),
+            3,
+        )
+
+    def test_applied_proposal_is_not_overwritten_on_rerun(self) -> None:
+        self._write_assessment_and_batch("20260101T000000Z")
+        propose_latest(self.registry, self.state_root, self.database)
+        written = sorted(
+            self.dirs["proposals"].glob("20260101T000000Z-vault-*.json")
+        )
+        # Mark one proposal applied, as steward-apply would.
+        marked = json.loads(written[0].read_text(encoding="utf-8"))
+        marked["status"] = "applied"
+        written[0].write_text(json.dumps(marked), encoding="utf-8")
+        propose_latest(self.registry, self.state_root, self.database)
+        after = json.loads(written[0].read_text(encoding="utf-8"))
+        self.assertEqual(after["status"], "applied")
 
 
 def _run_cli(*args: str) -> tuple[int, str, str]:

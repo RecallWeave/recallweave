@@ -12,7 +12,12 @@ from .policy import IndexPolicy
 from .safe_write import is_link_like, path_identity
 
 SOURCES_SPEC_VERSION = "recallweave.steward.sources.v1"
-SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
+# Source names are embedded verbatim into checkpoint, change-batch, and
+# assessment filenames, so they must be portable across filesystems. A colon is
+# a legal POSIX filename character but is reserved on Windows (drive/ADS
+# separator), which would make a `vault:one` source load on POSIX yet fail when
+# Steward writes its state artifacts on Windows -- so it is excluded here.
+SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 ALLOWED_REGISTRY_KEYS = {"spec_version", "sources"}
 ALLOWED_SOURCE_KEYS = {"name", "type", "root", "mode", "policy"}
 SOURCE_TYPES = {"folder", "file", "git-worktree"}
@@ -166,7 +171,7 @@ class SourceRegistry:
 
         name = source["name"]
         if not isinstance(name, str) or not SOURCE_NAME_PATTERN.fullmatch(name):
-            raise ValueError("source name may only contain [A-Za-z0-9._:-].")
+            raise ValueError("source name may only contain [A-Za-z0-9._-].")
         if name in seen:
             raise ValueError(f"Duplicate source name: {name!r}")
         seen.add(name)

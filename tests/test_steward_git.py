@@ -245,6 +245,66 @@ class CommitAppliedTest(unittest.TestCase):
         head = _git(["rev-parse", "HEAD"], self.root).stdout.strip()
         self.assertEqual(head, result["commit"])
 
+    def test_post_commit_hook_does_not_run_during_steward_commit(self) -> None:
+        # --no-verify does not suppress post-commit; the steward commit must run
+        # with hooks disabled so no hook can mutate the validated notes.
+        _init_repo(self.root)
+        (self.root / "a.md").write_text("validated", encoding="utf-8")
+        _git(["add", "a.md"], self.root)
+        _git(["commit", "-m", "initial"], self.root)
+        (self.root / "a.md").write_text("validated-v2", encoding="utf-8")
+
+        hooks = self.root / ".git" / "hooks"
+        marker = self.root / "post-commit-ran.txt"
+        hook = hooks / "post-commit"
+        hook.write_text(
+            "#!/bin/sh\n"
+            f"echo tampered > '{self.root / 'a.md'}'\n"
+            f"touch '{marker}'\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        result = commit_applied(
+            self.root,
+            ["a.md"],
+            proposal_id="prp-hookhookhookhook",
+            journal_ref="j.json",
+        )
+        self.assertTrue(result["committed"])
+        self.assertFalse(
+            marker.exists(), "post-commit hook ran despite hooks being disabled"
+        )
+        self.assertEqual(
+            (self.root / "a.md").read_text(encoding="utf-8"),
+            "validated-v2",
+            "a hook mutated the validated note after apply",
+        )
+
+    def test_failed_commit_unstages_touched_paths(self) -> None:
+        # git add succeeds, then the commit fails (an unsatisfiable gpg-sign
+        # requirement): the touched path must not remain staged in the operator's
+        # index, or it would ride along in their next commit.
+        _init_repo(self.root)
+        (self.root / "a.md").write_text("a", encoding="utf-8")
+        _git(["add", "a.md"], self.root)
+        _git(["commit", "-m", "initial"], self.root)
+        (self.root / "a.md").write_text("a-changed", encoding="utf-8")
+        # Force commit failure without a usable signing key.
+        _git(["config", "commit.gpgsign", "true"], self.root)
+        _git(["config", "gpg.program", "/nonexistent-gpg-binary"], self.root)
+
+        with self.assertRaises(GitError):
+            commit_applied(
+                self.root,
+                ["a.md"],
+                proposal_id="prp-failfailfailfail",
+                journal_ref="j.json",
+            )
+
+        staged = _git(["diff", "--cached", "--name-only"], self.root).stdout
+        self.assertNotIn("a.md", staged, "failed commit left a.md staged")
+
     def test_works_when_repo_has_no_user_identity_configured(self) -> None:
         _git(["init", "-q"], self.root)
         (self.root / "a.md").write_text("a", encoding="utf-8")

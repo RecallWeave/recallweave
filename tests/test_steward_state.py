@@ -45,10 +45,18 @@ class StewardStateRootTest(unittest.TestCase):
         self.assertEqual(root.parent.parent, self.base)
         self.assertEqual(root.parent.name, "steward")
 
-    def test_root_fingerprint_casefolded(self) -> None:
-        self.assertEqual(
+    def test_distinct_case_paths_get_distinct_state_roots(self) -> None:
+        # On a case-sensitive filesystem these are two different registries;
+        # they must never collapse onto one state tree (shared journals/locks).
+        self.assertNotEqual(
             steward_state_root(Path("/Vault/Mixed")),
             steward_state_root(Path("/vault/mixed")),
+        )
+
+    def test_same_resolved_path_gets_stable_state_root(self) -> None:
+        self.assertEqual(
+            steward_state_root(Path("/vault/sources.json")),
+            steward_state_root(Path("/vault/sources.json")),
         )
 
 

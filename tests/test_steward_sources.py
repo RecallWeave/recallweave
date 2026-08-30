@@ -106,6 +106,14 @@ class StewardSourcesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "name may only contain"):
             SourceRegistry.from_payload(payload, base_dir=self.root)
 
+    def test_colon_in_name_rejected_for_windows_portability(self) -> None:
+        # Colons are legal on POSIX but reserved in Windows filenames; a source
+        # name is embedded verbatim into state artifact filenames, so it must be
+        # rejected up front rather than failing only when Steward writes state.
+        payload = _registry(_source("vault:one", str(self.vault_a)))
+        with self.assertRaisesRegex(ValueError, "name may only contain"):
+            SourceRegistry.from_payload(payload, base_dir=self.root)
+
     def test_duplicate_names_rejected(self) -> None:
         payload = _registry(
             _source("alpha", str(self.vault_a)),
