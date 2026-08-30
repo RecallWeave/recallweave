@@ -117,7 +117,10 @@ class StewardSweepTest(unittest.TestCase):
         return ensure_state_layout(self.state_root)
 
     def _settle(self) -> None:
-        time.sleep(1.1)
+        # Artifact filenames carry microsecond precision and assessments are
+        # bound to the batch content digest, so back-to-back sweeps no longer
+        # collide; kept as a no-op seam for the call sites below.
+        pass
 
     def _baseline(self) -> dict:
         """Establish a checkpoint over the untouched tree; always no_change."""

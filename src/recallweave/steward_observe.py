@@ -20,6 +20,7 @@ from .steward_state import (
     StateLock,
     atomic_write_json,
     ensure_state_layout,
+    ensure_state_root_outside_sources,
 )
 
 CHANGE_BATCH_KIND = "change_batch"
@@ -36,10 +37,13 @@ def _inside(path: Path, directory: Path) -> bool:
 
 
 def _file_timestamp(iso: str) -> str:
+    # Microsecond precision: two runs in the same wall-clock second must not
+    # collide on artifact names (a collision let an assessed batch be silently
+    # overwritten and its replacement skipped as already assessed).
     value = datetime.fromisoformat(iso)
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _hash_file(path: Path) -> str:
@@ -237,23 +241,24 @@ def observe_source(
             policy_excluded.add(relative)
             continue
 
+        # Every admitted file is hashed on every sweep. A size-and-mtime gate
+        # would be cheaper, but equal-length bytes with a restored mtime would
+        # then pass as unchanged — an integrity sweep may not treat stat
+        # equality as proof of byte equality.
         prior = prior_entries.get(relative)
-        if prior is not None and int(prior["size"]) == size and int(prior["mtime_ns"]) == mtime_ns:
-            current_hash = prior["content_hash"]
-        else:
-            current_hash = _hash_file(path)
-            try:
-                after = path.stat(follow_symlinks=False)
-            except OSError:
-                changed_during_observe.append(relative)
-                if prior is not None:
-                    new_entries[relative] = _entry_from_prior(prior)
-                continue
-            if int(after.st_size) != size or int(after.st_mtime_ns) != mtime_ns:
-                changed_during_observe.append(relative)
-                if prior is not None:
-                    new_entries[relative] = _entry_from_prior(prior)
-                continue
+        current_hash = _hash_file(path)
+        try:
+            after = path.stat(follow_symlinks=False)
+        except OSError:
+            changed_during_observe.append(relative)
+            if prior is not None:
+                new_entries[relative] = _entry_from_prior(prior)
+            continue
+        if int(after.st_size) != size or int(after.st_mtime_ns) != mtime_ns:
+            changed_during_observe.append(relative)
+            if prior is not None:
+                new_entries[relative] = _entry_from_prior(prior)
+            continue
 
         entry_stats[relative] = (dev, ino)
         new_entries[relative] = CheckpointEntry(
@@ -346,6 +351,9 @@ def observe_registry(registry: SourceRegistry, state_root: Path) -> dict:
     checkpoint is rotated (persisted) by observe_source. Returns the combined
     receipt; a missing source root is reported without writing a batch or
     touching its checkpoint."""
+    ensure_state_root_outside_sources(
+        state_root, [source.root for source in registry.sources]
+    )
     state_dirs = ensure_state_layout(state_root)
     generated_at = _utc_now()
     receipts: list[dict] = []
@@ -361,7 +369,11 @@ def observe_registry(registry: SourceRegistry, state_root: Path) -> dict:
                 receipts.append(batch)
                 continue
             filename = f"{_file_timestamp(generated_at)}-{source.name}.json"
-            atomic_write_json(state_dirs["changes"] / filename, batch)
+            atomic_write_json(
+                state_dirs["changes"] / filename,
+                batch,
+                within=state_dirs["changes"],
+            )
             receipts.append(batch)
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,

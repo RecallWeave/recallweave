@@ -340,10 +340,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "steward-status":
 
         def run_status() -> dict[str, Any]:
-            load_registry(args.sources)
+            registry = load_registry(args.sources)
             state_root = args.state_dir or steward_state_root(args.sources)
             return status_report(
-                state_root, prune_older_than_days=args.prune_older_than_days
+                state_root,
+                prune_older_than_days=args.prune_older_than_days,
+                source_roots=[source.root for source in registry.sources],
             )
 
         action = run_status

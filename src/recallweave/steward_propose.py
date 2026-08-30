@@ -62,6 +62,7 @@ from .steward_state import (
     STEWARD_SCHEMA_VERSION,
     atomic_write_json,
     ensure_state_layout,
+    ensure_state_root_outside_sources,
     lock_state,
 )
 
@@ -304,7 +305,9 @@ def _document_shell(
         "action": action,
         "policy_level": POLICY_LEVEL,
         "assessment_refs": assessment_refs,
-        "index": {"indexed_at": indexed_at, "database": str(database)},
+        # Persisted artifacts stay machine-local: filename only, never an
+        # absolute path.
+        "index": {"indexed_at": indexed_at, "database": Path(database).name},
         "edits": edits,
         "evidence": evidence,
         "non_actions": non_actions,
@@ -689,6 +692,9 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
     state_root = Path(state_root)
     database = Path(database)
     generated_at = _utc_now()
+    ensure_state_root_outside_sources(
+        state_root, [source.root for source in registry.sources]
+    )
 
     with lock_state(state_root):
         dirs = ensure_state_layout(state_root)
@@ -714,8 +720,26 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                 assessment = json.loads(latest.read_text(encoding="utf-8"))
             except (OSError, ValueError) as error:
                 raise ValueError(
-                    f"Assessment {latest} is not valid JSON: {error}"
+                    f"Assessment {latest.name} is not valid JSON: {error}"
                 ) from error
+            if assessment.get("source") != source.name:
+                raise ValueError(
+                    f"Assessment {latest.name} claims source "
+                    f"{assessment.get('source')!r} but was selected for source "
+                    f"{source.name!r}; refusing a cross-source proposal run."
+                )
+            recorded_sha = assessment.get("registry_sha256")
+            if (
+                recorded_sha is not None
+                and registry.registry_sha256 is not None
+                and recorded_sha != registry.registry_sha256
+            ):
+                raise ValueError(
+                    f"Assessment {latest.name} was recorded under a different "
+                    "source registry (registry_sha256 mismatch); re-run "
+                    "steward-observe and steward-assess with the current "
+                    "registry before proposing."
+                )
 
             batch: dict[str, Any] | None = None
             batch_ref = assessment.get("change_batch_ref")
@@ -753,7 +777,9 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
 
         for stem, proposal in pending:
             filename = f"{stem}-{proposal['proposal_id']}.json"
-            atomic_write_json(proposals_dir / filename, proposal)
+            atomic_write_json(
+                proposals_dir / filename, proposal, within=proposals_dir
+            )
 
         return {
             "schema_version": STEWARD_SCHEMA_VERSION,

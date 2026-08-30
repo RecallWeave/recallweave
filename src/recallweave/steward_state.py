@@ -44,6 +44,65 @@ def steward_state_root(registry_path: Path) -> Path:
     return _application_data_root() / "steward" / fingerprint
 
 
+def ensure_state_root_outside_sources(root: Path, source_roots: list[Path]) -> None:
+    """Refuse a state root that overlaps any registered source root.
+
+    Steward state writes report ``vault_writes: 0``; that claim is only true
+    when the state tree cannot sit inside (or contain) a registered source.
+    """
+
+    resolved_root = root.expanduser().resolve()
+    for source_root in source_roots:
+        resolved_source = Path(source_root).expanduser().resolve()
+        candidates = (
+            resolved_source if resolved_source.is_dir() else resolved_source.parent
+        )
+        if (
+            resolved_root == candidates
+            or candidates in resolved_root.parents
+            or resolved_root in resolved_source.parents
+            or resolved_root == resolved_source
+        ):
+            raise ValueError(
+                "Refusing a steward state directory that overlaps a registered "
+                f"source: state root {resolved_root} vs source {resolved_source}. "
+                "Choose a --state-dir outside every registered source."
+            )
+
+
+def guard_within(path: Path, within: Path) -> None:
+    """Refuse a state write whose destination escapes ``within``.
+
+    Every path component strictly below ``within`` must not be a symlink or
+    junction, and the destination parent must resolve inside ``within``.
+    ``within`` itself is expected to be a directory Steward created.
+    """
+
+    resolved_within = within.resolve()
+    try:
+        relative = path.absolute().relative_to(within.absolute())
+    except ValueError:
+        raise ValueError(
+            f"Refusing a state write outside its state directory: {path}"
+        ) from None
+    current = within
+    for part in relative.parts[:-1]:
+        current = current / part
+        if is_link_like(current):
+            raise ValueError(
+                f"Refusing a state write through a symlinked directory: {current}"
+            )
+    if is_link_like(path):
+        raise ValueError(f"Refusing to replace a symlink or junction: {path}")
+    parent = path.parent
+    if parent.exists() and resolved_within not in parent.resolve().parents and (
+        parent.resolve() != resolved_within
+    ):
+        raise ValueError(
+            f"Refusing a state write outside its state directory: {path}"
+        )
+
+
 def ensure_state_layout(root: Path) -> dict[str, Path]:
     result: dict[str, Path] = {}
     for name in STEWARD_SUBDIRS:
@@ -131,7 +190,9 @@ def lock_state(root: Path) -> Iterator[StateLock]:
         lock.release()
 
 
-def atomic_write_json(path: Path, payload: dict) -> None:
+def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) -> None:
+    if within is not None:
+        guard_within(path, within)
     if is_link_like(path):
         raise ValueError(f"Refusing to replace a symlink or junction: {path}")
     parent = path.parent

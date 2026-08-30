@@ -75,7 +75,7 @@ def save_checkpoint(
         "entries": [asdict(entry) for entry in ordered],
     }
     path = state_dirs["checkpoints"] / f"{source_id}.json"
-    atomic_write_json(path, payload)
+    atomic_write_json(path, payload, within=state_dirs["checkpoints"])
     return path
 
 

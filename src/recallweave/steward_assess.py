@@ -37,6 +37,7 @@ from .steward_state import (
     STEWARD_SCHEMA_VERSION,
     atomic_write_json,
     ensure_state_layout,
+    ensure_state_root_outside_sources,
     lock_state,
 )
 
@@ -145,6 +146,9 @@ def assess_change_batch(
     source_root: Path,
     *,
     now: str | None = None,
+    policy: Any = None,
+    expected_source: str | None = None,
+    expected_registry_sha256: str | None = None,
 ) -> dict:
     """Classify one change_batch document against the RecallWeave index.
 
@@ -158,6 +162,34 @@ def assess_change_batch(
     database = Path(database)
     source_root = Path(source_root)
     generated_at = now if now is not None else _utc_now()
+
+    if expected_source is not None and batch.get("source") != expected_source:
+        raise ValueError(
+            f"Change batch claims source {batch.get('source')!r} but is being "
+            f"assessed for source {expected_source!r}; refusing a cross-source "
+            "assessment. Re-run steward-observe for this registry."
+        )
+    if (
+        expected_registry_sha256 is not None
+        and batch.get("registry_sha256") is not None
+        and batch.get("registry_sha256") != expected_registry_sha256
+    ):
+        raise ValueError(
+            "Change batch was recorded under a different source registry "
+            "(registry_sha256 mismatch); re-run steward-observe with the "
+            "current registry before assessing."
+        )
+
+    def _path_admitted(relative: str) -> bool:
+        # Project every index-derived path through the active source policy so
+        # an index built over a broader corpus cannot leak excluded paths into
+        # emitted assessments.
+        if policy is None:
+            return True
+        allowed, _reason = policy.path_allowed(relative, 0)
+        return bool(allowed)
+
+    redacted_out_of_policy = 0
 
     connection = connect(database, readonly=True)
     try:
@@ -283,11 +315,17 @@ def assess_change_batch(
             current_hash = change.get("current_content_hash")
             if current_hash is None:
                 continue
-            duplicate_of = sorted(
+            duplicate_matches = [
                 other_path
                 for other_path, info in notes_by_path.items()
                 if other_path != path and info["content_hash"] == current_hash
+            ]
+            duplicate_of = sorted(
+                other_path
+                for other_path in duplicate_matches
+                if _path_admitted(other_path)
             )
+            redacted_out_of_policy += len(duplicate_matches) - len(duplicate_of)
             duplicate_in_batch = sorted(
                 {
                     other_path
@@ -335,6 +373,9 @@ def assess_change_batch(
                     other_id, direction = source_id, "inbound"
                 other_path = notes_by_id.get(other_id)
                 if other_path is None:
+                    continue
+                if not _path_admitted(other_path):
+                    redacted_out_of_policy += 1
                     continue
                 authored_edges.append(
                     {
@@ -521,6 +562,7 @@ def assess_change_batch(
         assessments.sort(key=lambda item: (item["relative_path"], item["relation"]))
         for item in assessments:
             summary[item["relation"]] = summary.get(item["relation"], 0) + 1
+        summary["redacted_out_of_policy"] = redacted_out_of_policy
 
         return {
             "schema_version": STEWARD_SCHEMA_VERSION,
@@ -528,11 +570,15 @@ def assess_change_batch(
             "operation": "steward_assess",
             "generated_at": generated_at,
             "source": batch.get("source"),
+            "registry_sha256": batch.get("registry_sha256"),
             "change_batch_ref": None,
+            "change_batch_sha256": None,
             "index": {
                 "indexed_at": indexed_at,
                 "schema_version": index_schema_version,
-                "database": str(database),
+                # Persisted artifacts stay machine-local: filename only, never
+                # an absolute path.
+                "database": database.name,
             },
             "assessments": assessments,
             "summary": summary,
@@ -559,6 +605,9 @@ def assess_latest(registry: SourceRegistry, state_root: Path, database: Path) ->
     state_root = Path(state_root)
     database = Path(database)
     generated_at = _utc_now()
+    ensure_state_root_outside_sources(
+        state_root, [source.root for source in registry.sources]
+    )
 
     with lock_state(state_root):
         dirs = ensure_state_layout(state_root)
@@ -576,26 +625,48 @@ def assess_latest(registry: SourceRegistry, state_root: Path, database: Path) ->
                 )
                 continue
             latest = batches[-1]
+            batch_bytes = latest.read_bytes()
+            batch_sha256 = hashlib.sha256(batch_bytes).hexdigest()
             assessment_path = assessments_dir / latest.name
             if assessment_path.exists():
-                skipped_sources.append(
-                    {"source": source.name, "reason": "already_assessed"}
-                )
-                continue
+                # Bind by batch content digest, not filename existence: a
+                # rewritten batch under a colliding name must be re-assessed.
+                try:
+                    existing = json.loads(
+                        assessment_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError):
+                    existing = None
+                if (
+                    isinstance(existing, dict)
+                    and existing.get("change_batch_sha256") == batch_sha256
+                ):
+                    skipped_sources.append(
+                        {"source": source.name, "reason": "already_assessed"}
+                    )
+                    continue
             try:
-                batch = json.loads(latest.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as error:
+                batch = json.loads(batch_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as error:
                 raise ValueError(
-                    f"Change batch {latest} is not valid JSON: {error}"
+                    f"Change batch {latest.name} is not valid JSON: {error}"
                 ) from error
-            result = assess_change_batch(batch, database, source.root)
+            result = assess_change_batch(
+                batch,
+                database,
+                source.root,
+                policy=source.policy,
+                expected_source=source.name,
+                expected_registry_sha256=registry.registry_sha256,
+            )
             result["change_batch_ref"] = latest.name
-            atomic_write_json(assessment_path, result)
+            result["change_batch_sha256"] = batch_sha256
+            atomic_write_json(assessment_path, result, within=assessments_dir)
             assessed.append(
                 {
                     "source": source.name,
                     "change_batch_ref": latest.name,
-                    "assessment_path": str(assessment_path),
+                    "assessment_ref": assessment_path.name,
                     "summary": result["summary"],
                 }
             )

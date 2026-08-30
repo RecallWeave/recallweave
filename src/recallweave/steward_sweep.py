@@ -73,6 +73,8 @@ from .steward_state import (
     STEWARD_SUBDIRS,
     atomic_write_json,
     ensure_state_layout,
+    ensure_state_root_outside_sources,
+    guard_within,
 )
 
 REPORT_KIND = "stewardship_report"
@@ -117,10 +119,14 @@ def _file_timestamp(iso: str) -> str:
     value = datetime.fromisoformat(iso)
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Microsecond precision, matching steward_observe: report names from
+    # back-to-back sweeps must not collide.
+    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
+def _atomic_write_text(path: Path, text: str, *, within: Path | None = None) -> None:
+    if within is not None:
+        guard_within(path, within)
     """Write text atomically, mirroring steward_state.atomic_write_json."""
     if is_link_like(path):
         raise ValueError(f"Refusing to replace a symlink or junction: {path}")
@@ -486,6 +492,9 @@ def sweep_registry(
     state_root = Path(state_root)
     database = Path(database)
     generated_at = _utc_now()
+    ensure_state_root_outside_sources(
+        state_root, [source.root for source in registry.sources]
+    )
 
     observe_receipt = observe_registry(registry, state_root)
     assess_latest(registry, state_root, database)
@@ -502,10 +511,16 @@ def sweep_registry(
     )
 
     timestamp = _file_timestamp(generated_at)
-    atomic_write_json(dirs["reports"] / f"{timestamp}-sweep.json", report)
+    atomic_write_json(
+        dirs["reports"] / f"{timestamp}-sweep.json",
+        report,
+        within=dirs["reports"],
+    )
     if report_format == "markdown":
         _atomic_write_text(
-            dirs["reports"] / f"{timestamp}-sweep.md", render_sweep_markdown(report)
+            dirs["reports"] / f"{timestamp}-sweep.md",
+            render_sweep_markdown(report),
+            within=dirs["reports"],
         )
     return report
 
@@ -529,9 +544,13 @@ def _dir_total_bytes(directory: Path) -> int:
 
 
 def _prune_dir(directory: Path, cutoff_epoch: float) -> int:
+    if is_link_like(directory):
+        raise ValueError(
+            f"Refusing to prune through a symlinked directory: {directory}"
+        )
     deleted = 0
     for entry in directory.iterdir():
-        if not entry.is_file():
+        if is_link_like(entry) or not entry.is_file():
             continue
         try:
             mtime = entry.stat().st_mtime
@@ -576,8 +595,13 @@ def _newest_report(reports_dir: Path) -> dict[str, Any] | None:
 
 
 def status_report(
-    state_root: Path, *, prune_older_than_days: int | None = None
+    state_root: Path,
+    *,
+    prune_older_than_days: int | None = None,
+    source_roots: list[Path] | None = None,
 ) -> dict[str, Any]:
+    if source_roots:
+        ensure_state_root_outside_sources(state_root, source_roots)
     """Report counts and lock state for ``state_root``; optionally prune.
 
     Pruning (only when ``prune_older_than_days`` is given) deletes files
