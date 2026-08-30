@@ -255,12 +255,14 @@ def _aggregate_assessments(
 
 
 def _aggregate_proposals(dirs: dict[str, Path]) -> tuple[int, dict[str, int], list[str]]:
-    """Scan every file currently in proposals/ (v1: pending = all of them)."""
+    """Scan proposals/ for PENDING proposals (applied ones no longer pend)."""
     by_action: dict[str, int] = {}
     dangling: set[str] = set()
     total = 0
     for path in sorted(dirs["proposals"].glob("*.json")):
         proposal = _load_json(path)
+        if proposal.get("status") == "applied":
+            continue
         total += 1
         action = proposal.get("action")
         if isinstance(action, str):
@@ -306,6 +308,7 @@ def _assemble_report(
     generated_at: str,
     observe_receipt: dict[str, Any],
     proposals_created_this_sweep: int,
+    apply_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     sources_errored = {
         item["source"]
@@ -327,9 +330,16 @@ def _assemble_report(
     total_relations = sum(
         relation_summary.get(relation, 0) for relation in DETERMINISTIC_RELATIONS
     )
-    result = _classify_result(
-        pending_total=proposals_pending_total, total_relations=total_relations
-    )
+    if apply_summary is not None and apply_summary.get("failures"):
+        result = "validation_failed_rolled_back"
+    elif apply_summary is not None and apply_summary.get("applied"):
+        result = "applied" if proposals_pending_total == 0 else "approval_required"
+    else:
+        result = _classify_result(
+            pending_total=proposals_pending_total,
+            total_relations=total_relations,
+        )
+    assert result in SWEEP_RESULTS
 
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
@@ -353,6 +363,7 @@ def _assemble_report(
             "pending_total": proposals_pending_total,
             "by_action": proposals_by_action,
         },
+        "apply": apply_summary,
         "observe": {
             "skipped_total": batch_agg["skipped_total"],
             "changed_during_observe": batch_agg["changed_during_observe"],
@@ -491,6 +502,8 @@ def sweep_registry(
     database: Path,
     *,
     report_format: str = "json",
+    apply: bool = False,
+    write_policy: Any = None,
 ) -> dict[str, Any]:
     """Run observe -> assess -> propose over every source, then report.
 
@@ -515,11 +528,29 @@ def sweep_registry(
         state_root, [source.root for source in registry.sources]
     )
 
+    if apply and write_policy is None:
+        raise ValueError(
+            "steward-sweep --apply requires an explicit --write-policy; "
+            "there is no permissive default."
+        )
+
     observe_receipt = observe_registry(registry, state_root)
     assess_latest(registry, state_root, database)
     propose_receipt = propose_latest(registry, state_root, database)
 
     dirs = ensure_state_layout(state_root)
+
+    apply_summary: dict[str, Any] | None = None
+    if apply:
+        # The --apply leg executes ONLY proposals whose every edit resolves
+        # to auto_apply; everything else stays pending for steward-apply.
+        # Imported here, matching the CLI's isolation of the apply module.
+        from .steward_apply import sweep_auto_apply
+
+        with lock_state(state_root):
+            apply_summary = sweep_auto_apply(
+                registry, dirs, database, write_policy=write_policy
+            )
     report = _assemble_report(
         registry,
         dirs,
@@ -527,6 +558,7 @@ def sweep_registry(
         generated_at=generated_at,
         observe_receipt=observe_receipt,
         proposals_created_this_sweep=propose_receipt["proposals_created"],
+        apply_summary=apply_summary,
     )
 
     timestamp = _file_timestamp(generated_at)

@@ -593,10 +593,16 @@ def apply_proposal(
             relative_path=edit["relative_path"],
             frontmatter=frontmatter,
         )
-        allowed = (
-            level == "auto_apply"
-            or (level == "require_approval" and mode in ("per_item", "per_class"))
-        )
+        if mode == "auto":
+            allowed = level == "auto_apply"
+        else:
+            allowed = (
+                level == "auto_apply"
+                or (
+                    level == "require_approval"
+                    and mode in ("per_item", "per_class")
+                )
+            )
         if not allowed:
             raise ApplyError(
                 f"Write policy resolves {edit['mutation_class']!r} on "
@@ -935,6 +941,114 @@ def _validated_journal_ops(
             }
         )
     return completed
+
+
+# Applied proposals per sweep --apply leg are capped: automation must not
+# turn a large backlog into one unreviewable batch.
+MAX_AUTO_APPLIES_PER_SWEEP = 10
+
+
+def sweep_auto_apply(
+    registry: SourceRegistry,
+    state_dirs: dict[str, Path],
+    database: Path,
+    *,
+    write_policy: WritePolicy,
+) -> dict[str, Any]:
+    """The sweep's --apply leg: execute pending proposals whose EVERY edit
+    resolves to auto_apply under the write policy. Anything needing approval
+    stays pending for steward-apply. Assumes the caller holds no state lock
+    conflicts (apply_latest-style locking is managed by the caller)."""
+
+    proposals_dir = state_dirs["proposals"]
+    receipts_dir = state_dirs["receipts"]
+    applied: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for path in sorted(proposals_dir.glob("*.json")):
+        if len(applied) >= MAX_AUTO_APPLIES_PER_SWEEP:
+            skipped.append({"proposal": path.name, "reason": "sweep_cap"})
+            continue
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            skipped.append({"proposal": path.name, "reason": "unreadable"})
+            continue
+        if document.get("status") == "applied":
+            continue
+        edits = document.get("edits") or []
+        if not edits:
+            continue
+        source = next(
+            (
+                item
+                for item in registry.sources
+                if item.name == document.get("source")
+            ),
+            None,
+        )
+        if source is None:
+            skipped.append({"proposal": path.name, "reason": "unknown_source"})
+            continue
+        eligible = all(
+            isinstance(edit, dict)
+            and resolve_level(
+                write_policy,
+                mutation_class=edit.get("mutation_class", ""),
+                source_name=source.name,
+                relative_path=edit.get("relative_path", ""),
+                frontmatter=None,
+            )[0]
+            == "auto_apply"
+            for edit in edits
+        )
+        if not eligible:
+            skipped.append({"proposal": path.name, "reason": "not_auto_apply"})
+            continue
+        try:
+            receipt = apply_proposal(
+                document,
+                registry=registry,
+                state_dirs=state_dirs,
+                database=database,
+                policy=write_policy,
+                mode="auto",
+                execute=True,
+            )
+        except (ApplyError, RollbackError) as error:
+            failures.append(
+                {
+                    "proposal": document.get("proposal_id"),
+                    "error": type(error).__name__,
+                    "rolled_back": not isinstance(error, RollbackError),
+                }
+            )
+            continue
+        updated = dict(document)
+        updated["status"] = "applied"
+        updated["applied_receipt_ref"] = receipt.get("journal_ref")
+        atomic_write_json(path, updated, within=proposals_dir)
+        receipt_name = (
+            f"{_file_timestamp(receipt['generated_at'])}-"
+            f"{document['proposal_id']}.json"
+        )
+        atomic_write_json(
+            receipts_dir / receipt_name, receipt, within=receipts_dir
+        )
+        applied.append(
+            {
+                "proposal": document.get("proposal_id"),
+                "mutations": receipt.get("steward_vault_mutations", 0),
+                "journal_ref": receipt.get("journal_ref"),
+                "git_commit": (receipt.get("git") or {}).get("commit"),
+            }
+        )
+    return {
+        "applied": applied,
+        "skipped": skipped,
+        "failures": failures,
+        "mutations": sum(item["mutations"] for item in applied),
+    }
 
 
 def _incomplete_journals(journal_dir: Path) -> list[Path]:

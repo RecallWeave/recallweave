@@ -71,6 +71,19 @@ def _add_database_locator(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _load_write_policy(path: Path | None):
+    # Imported lazily: only steward-apply and sweep --apply reach the write
+    # policy, matching the apply module's import isolation.
+    from .steward_policy import WritePolicy
+
+    if path is None:
+        raise ValueError(
+            "steward-sweep --apply requires an explicit --write-policy; "
+            "there is no permissive default."
+        )
+    return WritePolicy.from_file(path)
+
+
 def _query_database(args: argparse.Namespace) -> Path:
     if args.database is not None:
         return args.database
@@ -271,6 +284,20 @@ def _parser() -> argparse.ArgumentParser:
         choices=["json", "markdown"],
         default="json",
         help="Stewardship report format. Defaults to json.",
+    )
+    steward_sweep_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "After proposing, execute pending proposals whose every edit the "
+            "write policy resolves to auto_apply. Requires --write-policy."
+        ),
+    )
+    steward_sweep_parser.add_argument(
+        "--write-policy",
+        type=_path,
+        dest="write_policy",
+        help="Explicit write policy JSON; required with --apply.",
     )
 
     steward_status_parser = subparsers.add_parser(
@@ -515,6 +542,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.state_dir or steward_state_root(args.sources),
                 database,
                 report_format=args.format,
+                apply=args.apply,
+                write_policy=(
+                    _load_write_policy(args.write_policy)
+                    if args.apply
+                    else None
+                ),
             ),
         }
         action = commands[args.command]

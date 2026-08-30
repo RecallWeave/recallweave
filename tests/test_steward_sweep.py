@@ -10,6 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 from recallweave.cli import _parser
+from recallweave.steward_state import STEWARD_SCHEMA_VERSION
 from recallweave.cli import main as cli_main
 from recallweave.index import build_index
 from recallweave.policy import IndexPolicy
@@ -374,9 +375,12 @@ class ParserContractTest(unittest.TestCase):
             }
 
         stage_union = (
-            _flags("steward-observe") | _flags("steward-assess") | _flags("steward-propose")
+            _flags("steward-observe")
+            | _flags("steward-assess")
+            | _flags("steward-propose")
+            | _flags("steward-apply")
         )
-        allowed = stage_union | {"--format"}
+        allowed = stage_union | {"--format", "--apply"}
         sweep_flags = _flags("steward-sweep")
         self.assertTrue(sweep_flags <= allowed, sweep_flags - allowed)
 
@@ -541,3 +545,157 @@ class CliErrorEnvelopeTest(StewardSweepTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SweepApplyLegTest(StewardSweepTest):
+    """The --apply leg executes only auto_apply-resolved proposals."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Writes require an appliable source with an explicit allowlist.
+        self.sources_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {
+                            "name": "vault",
+                            "type": "folder",
+                            "root": str(self.vault),
+                            "mode": "appliable",
+                            "policy": {
+                                "include_paths": [
+                                    "Alpha.md",
+                                    "Beta.md",
+                                    "Gamma.md",
+                                    "Echo.md",
+                                ]
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _seed_auto_proposal(self, policy_level_class: str = "append_at_eof"):
+        import hashlib
+
+        base = self.vault / "Alpha.md"
+        data = base.read_bytes()
+        appended = "\nPlain appended sentence.\n"
+        proposal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "proposal",
+            "proposal_id": "prp-sweepapplytest0",
+            "source": "vault",
+            "action": "test",
+            "policy_level": "propose_only",
+            "edits": [
+                {
+                    "mutation_class": policy_level_class,
+                    "relative_path": "Alpha.md",
+                    "precondition_content_hash": hashlib.sha256(data).hexdigest(),
+                    "replacement_text": appended,
+                    "predicted_post_hash": hashlib.sha256(
+                        data + appended.encode()
+                    ).hexdigest(),
+                }
+            ],
+            "conflicts_with": [],
+            "registry_sha256": None,
+        }
+        dirs = self._dirs()
+        from recallweave.steward_state import atomic_write_json
+
+        atomic_write_json(
+            dirs["proposals"] / "20260101T000000000000Z-vault-prp-sweepapplytest0.json",
+            proposal,
+            within=dirs["proposals"],
+        )
+        return base, data, appended
+
+    def _write_policy(self):
+        import json as _json
+
+        from recallweave.steward_policy import WritePolicy
+
+        return WritePolicy.from_bytes(
+            _json.dumps(
+                {
+                    "spec_version": "recallweave.steward.policy.v1",
+                    "class_levels": {"append_at_eof": "auto_apply"},
+                }
+            ).encode()
+        )
+
+    def test_apply_requires_write_policy(self) -> None:
+        self._baseline()
+        with self.assertRaisesRegex(ValueError, "write-policy"):
+            self._sweep(apply=True)
+
+    def test_apply_leg_executes_auto_proposal_and_reports_applied(self) -> None:
+        self._baseline()
+        base, data, appended = self._seed_auto_proposal()
+        report = self._sweep(apply=True, write_policy=self._write_policy())
+        self.assertEqual(base.read_bytes(), data + appended.encode())
+        self.assertEqual(report["result"], "applied")
+        self.assertEqual(report["apply"]["mutations"], 1)
+        self.assertEqual(len(report["apply"]["applied"]), 1)
+        dirs = self._dirs()
+        self.assertTrue(list(dirs["receipts"].glob("*.json")))
+
+    def test_apply_leg_skips_non_auto_proposals(self) -> None:
+        self._baseline()
+        base, data, _appended = self._seed_auto_proposal(
+            policy_level_class="fix_unresolved_link"
+        )
+        # fix_unresolved_link is not auto_apply under this policy.
+        report = self._sweep(apply=True, write_policy=self._write_policy())
+        self.assertEqual(base.read_bytes(), data)
+        self.assertNotEqual(report["result"], "applied")
+        skipped = {item["reason"] for item in report["apply"]["skipped"]}
+        self.assertIn("not_auto_apply", skipped)
+
+    def test_apply_leg_failure_reports_validation_failed(self) -> None:
+        import hashlib
+
+        self._baseline()
+        # A proposal whose append introduces an unresolved link: L1 fails,
+        # the apply rolls back, and the sweep reports code-6 semantics.
+        base = self.vault / "Alpha.md"
+        data = base.read_bytes()
+        appended = "\nSee [[NoSuchNoteAnywhere]].\n"
+        proposal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "proposal",
+            "proposal_id": "prp-sweepapplyfail0",
+            "source": "vault",
+            "action": "test",
+            "policy_level": "propose_only",
+            "edits": [
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "Alpha.md",
+                    "precondition_content_hash": hashlib.sha256(data).hexdigest(),
+                    "replacement_text": appended,
+                    "predicted_post_hash": hashlib.sha256(
+                        data + appended.encode()
+                    ).hexdigest(),
+                }
+            ],
+            "conflicts_with": [],
+            "registry_sha256": None,
+        }
+        dirs = self._dirs()
+        from recallweave.steward_state import atomic_write_json
+
+        atomic_write_json(
+            dirs["proposals"] / "20260101T000000000000Z-vault-prp-sweepapplyfail0.json",
+            proposal,
+            within=dirs["proposals"],
+        )
+        report = self._sweep(apply=True, write_policy=self._write_policy())
+        self.assertEqual(report["result"], "validation_failed_rolled_back")
+        self.assertEqual(base.read_bytes(), data, "rollback did not restore")
+        self.assertTrue(report["apply"]["failures"])

@@ -39,8 +39,12 @@ remains literally true for every other command.
   write silently.
 - It is not a scheduler. `steward-sweep` is a one-shot local command with
   machine-readable results; recurring runs belong to your operating system's
-  own scheduler (launchd, cron, Task Scheduler). No daemon, watch, or interval
-  mode exists.
+  own scheduler — see [steward-scheduling.md](steward-scheduling.md) for
+  launchd, cron, and Task Scheduler recipes. No daemon, watch, or interval
+  mode exists. `steward-sweep --apply --write-policy <p.json>` additionally
+  executes pending proposals whose every edit the policy resolves to
+  `auto_apply` (append-only classes only, capped per sweep); everything else
+  stays pending for an interactive `steward-apply`.
 
 ## Commands
 
@@ -68,8 +72,8 @@ returns the matching exit code. The enum is frozen:
 | `no_change` | 0 | nothing changed; nothing awaits review |
 | `findings` | 3 | assessments were recorded; no proposals await review |
 | `approval_required` | 4 | proposals exist and await operator review |
-| `applied` | 5 | reserved for sweep-integrated apply (not yet emitted) |
-| `validation_failed_rolled_back` | 6 | reserved for sweep-integrated apply |
+| `applied` | 5 | `--apply` executed auto-approved proposals; nothing else pends |
+| `validation_failed_rolled_back` | 6 | an `--apply` execution failed and was rolled back |
 | `error` | 2 | hard error (standard JSON error envelope on stderr) |
 
 ## Source registry
