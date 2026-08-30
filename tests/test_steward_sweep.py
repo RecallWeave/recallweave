@@ -428,9 +428,11 @@ class StatusReportTest(StewardSweepTest):
 
 
 class ReportBacklogAggregationTest(StewardSweepTest):
-    def test_report_aggregates_all_assessments_not_just_latest(self) -> None:
-        # assess_latest processes every unassessed batch; the report must reflect
-        # a deletion recorded in an earlier assessment, not only the newest one.
+    def test_report_uses_current_snapshot_latest_assessment(self) -> None:
+        # Current-snapshot semantics: the integrity section reflects the NEWEST
+        # assessment per source (one internally-consistent moment), not a union
+        # of history. A finding recorded only in an older assessment is not
+        # re-derived here (its pending proposal, if any, is tracked separately).
         from recallweave.steward_sweep import _aggregate_assessments
 
         dirs = self._dirs()
@@ -455,10 +457,7 @@ class ReportBacklogAggregationTest(StewardSweepTest):
         )
         _assessment("20260102T000000Z-vault.json", [])
         summary, _broken, _dupes = _aggregate_assessments(dirs, self._registry())
-        self.assertEqual(
-            summary["DELETED"], 1,
-            "the earlier assessment's DELETED relation was dropped from the report",
-        )
+        self.assertEqual(summary["DELETED"], 0)  # newest assessment is empty
 
     def test_same_path_in_two_sources_counts_as_two_findings(self) -> None:
         from recallweave.steward_sweep import _aggregate_assessments

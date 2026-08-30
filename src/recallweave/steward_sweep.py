@@ -258,58 +258,41 @@ def _aggregate_assessments(
 
     broken_citations: list[str] = []
     duplicates: list[str] = []
-    # Reconcile to CURRENT state, not a union of history. assess_latest processes
-    # every unassessed batch, so several retained assessments can describe the
-    # same path at different times; unioning them would report contradictory,
-    # stale findings (e.g. a DELETED that a later NEW already superseded) and
-    # make the report depend on retention rather than the source's current
-    # state. For each (source, relative_path), the LATEST assessment that
-    # mentions it wins; a path only an older assessment mentions is preserved
-    # (nothing newer changed it). Counts and evidence are then derived from that
-    # reconciled current state, so they are consistent with each other.
-    current_items: dict[tuple[str, str], list[dict[str, Any]]] = {}
-
+    # Current-snapshot semantics: report ONLY the newest assessment per source.
+    # A single assessment is internally consistent -- its relations (including
+    # relationship findings like DUPLICATES_EXACT_BYTES, which are computed over
+    # a whole batch together) reflect one coherent moment. Unioning or
+    # per-path-reconciling across several retained assessments cannot represent
+    # relationship resolution correctly (e.g. two files that were duplicates,
+    # then one diverges in a later batch that never re-mentions the other) and
+    # makes the report depend on retention. The newest assessment is the current
+    # state; a finding that was recorded in an earlier batch and has already been
+    # turned into a pending proposal is tracked in the proposals section, not
+    # re-derived here.
     for source in registry.sources:
         if exclude_sources and source.name in exclude_sources:
             continue
-        # _source_files returns ascending (oldest-first) filename/timestamp
-        # order, so later assessments overwrite earlier per-path state below.
-        for assessment_path in _source_files(dirs["assessments"], source.name):
-            assessment = _load_json(assessment_path)
-            for key, value in (assessment.get("summary") or {}).items():
-                # Relation counts are recomputed from the reconciled state below;
-                # only the non-relation bookkeeping stats are carried here.
-                if key in DETERMINISTIC_RELATIONS:
-                    continue
-                if isinstance(value, int) and not isinstance(value, bool):
-                    summary[key] = summary.get(key, 0) + value
-            this_assessment: dict[str, list[dict[str, Any]]] = {}
-            for item in assessment.get("assessments") or []:
-                path = item.get("relative_path")
-                if isinstance(path, str):
-                    this_assessment.setdefault(path, []).append(item)
-            for path, items in this_assessment.items():
-                # Latest assessment mentioning this path supersedes earlier state.
-                current_items[(source.name, path)] = items
-
-    distinct_relations: dict[str, set[tuple[str, str]]] = {
-        relation: set() for relation in DETERMINISTIC_RELATIONS
-    }
-    for (source_name, path), items in current_items.items():
-        for item in items:
+        latest = _latest_file(dirs["assessments"], source.name)
+        if latest is None:
+            continue
+        assessment = _load_json(latest)
+        if not isinstance(assessment, dict):
+            continue
+        for key, value in (assessment.get("summary") or {}).items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                summary[key] = summary.get(key, 0) + value
+        for item in assessment.get("assessments") or []:
+            if not isinstance(item, dict):
+                continue
             relation = item.get("relation")
-            if relation in distinct_relations:
-                distinct_relations[relation].add((source_name, path))
+            path = item.get("relative_path")
             if relation == "CITATION_BROKEN":
                 for citation in (item.get("inputs") or {}).get("broken_citations") or []:
                     text = citation.get("citation") if isinstance(citation, dict) else None
                     if isinstance(text, str):
                         broken_citations.append(text)
-            elif relation == "DUPLICATES_EXACT_BYTES":
+            elif relation == "DUPLICATES_EXACT_BYTES" and isinstance(path, str):
                 duplicates.append(path)
-
-    for relation, keys in distinct_relations.items():
-        summary[relation] = len(keys)
 
     return summary, sorted(set(broken_citations)), sorted(set(duplicates))
 
