@@ -7,12 +7,15 @@ on ext4 (GitHub's Ubuntu runners) a directory deleted and recreated at the
 same path reuses its inode number, and a removed file's number is reused by
 the next created file. These tests pin the portable behavior:
 
-- the registry holds an open descriptor to each root, which pins the inode so
-  a same-path recreate is detected as an identity change on every platform;
+- where the OS can hold a directory descriptor (POSIX), the registry holds one
+  to pin the inode number; on Windows the path-pin fallback relies on NTFS file
+  IDs not being reused. Either way a same-path recreate is detected as an
+  identity change;
 - rename candidacy is content-hash based and carries no inode_match signal.
 """
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -60,16 +63,22 @@ class HeldRootDescriptorTest(unittest.TestCase):
     def test_registry_holds_a_root_descriptor(self) -> None:
         registry = load_registry(self.registry_path)
         try:
-            self.assertIsNotNone(registry.sources[0].root_fd)
+            # Identity is always pinned; the descriptor is held on platforms
+            # whose os.open can open a directory (POSIX). Windows uses the
+            # path-pin fallback (no held descriptor) and relies on NTFS file
+            # IDs not being reused across a recreate.
             self.assertIsNotNone(registry.sources[0].root_dev)
             self.assertIsNotNone(registry.sources[0].root_ino)
+            if os.name == "posix":
+                self.assertIsNotNone(registry.sources[0].root_fd)
         finally:
             registry.close()
         self.assertIsNone(registry.sources[0].root_fd)
 
     def test_context_manager_releases_descriptor(self) -> None:
         with load_registry(self.registry_path) as registry:
-            self.assertIsNotNone(registry.sources[0].root_fd)
+            if os.name == "posix":
+                self.assertIsNotNone(registry.sources[0].root_fd)
         self.assertIsNone(registry.sources[0].root_fd)
 
     def test_same_path_recreate_is_detected_as_identity_change(self) -> None:

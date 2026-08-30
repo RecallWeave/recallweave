@@ -6,6 +6,7 @@ doc/CLI contract."""
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -229,7 +230,12 @@ class GitQuotedFilenameTest(unittest.TestCase):
             subprocess.run(
                 ["git", "init", "-q"], cwd=root, check=True, capture_output=True
             )
-            hostile = 'we"ird -> nöte.md'
+            # A filename tricky for porcelain parsing, chosen legal for the
+            # platform (Windows forbids <>:"/\\|?*): quotes/arrows on POSIX,
+            # spaces + unicode on Windows.
+            hostile = (
+                "weird to nöte.md" if os.name == "nt" else 'we"ird -> nöte.md'
+            )
             (root / hostile).write_text("committed", encoding="utf-8")
             subprocess.run(
                 ["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"],
