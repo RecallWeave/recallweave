@@ -15,6 +15,9 @@ from recallweave.index import build_index
 from recallweave.policy import IndexPolicy
 from recallweave.viewer import (
     VIEWER_SCHEMA_VERSION,
+    _dedupe_string_terms,
+    _edge_evidence,
+    _intersecting_tags,
     _nullable_timestamp,
     _valid_previous_viewer_nodes,
     build_viewer_document,
@@ -151,6 +154,61 @@ class ViewerExportTest(unittest.TestCase):
         self.assertIsNotNone(second["export_history"]["previous_content_hash"])
         self.assertGreaterEqual(
             second["export_history"]["node_content_hashes_unchanged"], 1
+        )
+
+    def test_empty_computed_shared_tags_do_not_fall_back_to_claimed(self) -> None:
+        evidence = _edge_evidence(
+            json.dumps(
+                {
+                    "shared_terms": ["real"],
+                    "shared_tags": ["fabricated"],
+                    "explanation": "candidate",
+                }
+            ),
+            source_path="a.md",
+            target_path="b.md",
+            include_excerpts=False,
+            shared_tags=[],
+        )
+        signals = evidence.get("signals") or {}
+        self.assertEqual(signals.get("lexical_terms"), ["real"])
+        self.assertNotIn("shared_tags", signals)
+
+    def test_computed_shared_tags_win_over_conflicting_claims(self) -> None:
+        evidence = _edge_evidence(
+            json.dumps({"shared_tags": ["fabricated", "also-fake"]}),
+            source_path="a.md",
+            target_path="b.md",
+            include_excerpts=False,
+            shared_tags=["alpha", "beta"],
+        )
+        self.assertEqual(
+            evidence["signals"]["shared_tags"],
+            ["alpha", "beta"],
+        )
+
+    def test_shared_tags_cap_dedupes_and_preserves_order(self) -> None:
+        many = [f"tag-{index:02d}" for index in range(20)]
+        many_with_dupes = many + ["tag-00", "TAG-01"]
+        capped = _dedupe_string_terms(many_with_dupes, limit=12)
+        self.assertEqual(capped, many[:12])
+        evidence = _edge_evidence(
+            "{}",
+            source_path="a.md",
+            target_path="b.md",
+            include_excerpts=False,
+            shared_tags=many_with_dupes,
+        )
+        self.assertEqual(evidence["signals"]["shared_tags"], many[:12])
+
+    def test_intersecting_tags_are_deterministic(self) -> None:
+        tags = {
+            "a.md": ["zulu", "shared", "alpha"],
+            "b.md": ["shared", "bravo", "alpha"],
+        }
+        self.assertEqual(
+            _intersecting_tags(tags, "a.md", "b.md"),
+            ["alpha", "shared"],
         )
 
     def test_malformed_prior_export_is_not_used_as_history(self) -> None:

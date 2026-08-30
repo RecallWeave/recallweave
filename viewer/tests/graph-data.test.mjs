@@ -501,6 +501,7 @@ test("normalizes viewer.v2 provenance claims and reconciles export history", () 
         id: "a.md",
         title: "A",
         path: "a.md",
+        tags: ["decisions"],
         created_at: "2026-01-02T03:04:05Z",
         modified_at: "2026-01-03T03:04:05Z",
         content_hash: hashA,
@@ -509,6 +510,7 @@ test("normalizes viewer.v2 provenance claims and reconciles export history", () 
         id: "b.md",
         title: "B",
         path: "b.md",
+        tags: ["decisions"],
         created_at: null,
         modified_at: null,
         content_hash: hashB,
@@ -1128,6 +1130,47 @@ test("ignores unsupported vault names and treats local generation as a source cl
   );
   assert.equal(normalized.vault_label_claim, undefined);
   assert.equal(normalized.privacy.source_claims_generated_locally, true);
+});
+
+test("drops fabricated shared_tags that are not on both endpoint nodes", () => {
+  const hash = "a".repeat(64);
+  const normalized = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      {
+        id: "a.md",
+        title: "A",
+        path: "a.md",
+        tags: ["shared", "only-a"],
+        created_at: "2026-01-02T03:04:05Z",
+        modified_at: "2026-01-03T03:04:05Z",
+        content_hash: hash,
+      },
+      {
+        id: "b.md",
+        title: "B",
+        path: "b.md",
+        tags: ["shared", "only-b"],
+        created_at: "2026-01-02T03:04:05Z",
+        modified_at: "2026-01-03T03:04:05Z",
+        content_hash: hash,
+      },
+    ],
+    edges: [
+      {
+        id: "candidate",
+        source: "a.md",
+        target: "b.md",
+        verified: false,
+        evidence: {
+          signals: {
+            shared_tags: ["shared", "fabricated", "only-a"],
+          },
+        },
+      },
+    ],
+  });
+  assert.deepEqual(normalized.edges[0].evidence?.signals?.shared_tags, ["shared"]);
 });
 
 test("rejects malformed nodes and count caps", () => {

@@ -418,6 +418,7 @@ export function normalizeGraph(value: unknown): GraphDocument {
     nodes.push(normalized);
   });
 
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const edgeIds = new Set<string>();
   const edges: GraphEdge[] = [];
   raw.edges.forEach((item, index) => {
@@ -450,7 +451,29 @@ export function normalizeGraph(value: unknown): GraphDocument {
       return;
     }
     edgeIds.add(id);
-    const signals = isV2 ? evidenceSignals(evidence.signals) : undefined;
+    let signals = isV2 ? evidenceSignals(evidence.signals) : undefined;
+    if (signals?.shared_tags?.length) {
+      const sourceTags = new Set(
+        (nodesById.get(source)?.tags || []).map((tag) => tag.toLowerCase()),
+      );
+      const targetTags = new Set(
+        (nodesById.get(target)?.tags || []).map((tag) => tag.toLowerCase()),
+      );
+      const shared_tags = signals.shared_tags.filter(
+        (tag) => sourceTags.has(tag.toLowerCase()) && targetTags.has(tag.toLowerCase()),
+      );
+      signals = {
+        ...signals,
+        shared_tags: shared_tags.length ? shared_tags : undefined,
+      };
+      if (
+        !signals.lexical_terms?.length &&
+        !signals.shared_tags?.length &&
+        !signals.mutual_neighbor_ids?.length
+      ) {
+        signals = undefined;
+      }
+    }
     edges.push({
       id,
       source,
