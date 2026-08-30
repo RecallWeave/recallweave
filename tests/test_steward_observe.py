@@ -480,10 +480,11 @@ class ObserveSourceTest(unittest.TestCase):
             self.assertFalse(_obs._retract_change_batch(changes_link, "batch.json"))
             self.assertTrue(victim.exists(), "retraction deleted through a symlink")
 
-    def test_retract_change_batch_fallback_refuses_symlinked_changes_dir(self) -> None:
-        # The pathname fallback (Windows, no dir_fd) must also refuse a link-like
-        # changes/ directory rather than delete through it. Force the fallback and
-        # verify the external same-named file is untouched and retraction fails.
+    def test_retract_change_batch_fallback_refuses_without_deleting(self) -> None:
+        # The pathname fallback (Windows, no dir_fd) fails closed: it attempts NO
+        # pathname deletion (which could race a changes/ swap and delete an
+        # external same-named file) and reports the batch as not-retracted. Force
+        # the fallback and verify nothing external is deleted and it returns False.
         import recallweave.steward_observe as _obs
 
         with tempfile.TemporaryDirectory() as name:

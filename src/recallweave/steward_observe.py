@@ -223,21 +223,15 @@ def _retract_change_batch(changes_dir: Path, filename: str) -> bool:
         finally:
             os.close(root_fd)
 
-    # Pathname fallback (e.g. Windows without dir_fd): refuse a link-like changes
-    # directory BEFORE deleting -- a symlink or junction would redirect the
-    # unlink to an external same-named file. Fail closed (return False) rather
-    # than delete through it or falsely report a successful retraction.
-    if is_link_like(changes_dir):
-        return False
-    try:
-        (changes_dir / filename).unlink()
-    except OSError:
-        pass
-    # Re-check link-likeness before trusting the existence result, so a swap in
-    # the unlink->verify window cannot make a redirected deletion look retracted.
-    if is_link_like(changes_dir):
-        return False
-    return not (changes_dir / filename).exists()
+    # No dir_fd primitives (e.g. Windows without them): a pathname is_link_like
+    # check followed by a pathname unlink is NOT atomic -- a changes/ directory
+    # swapped for a symlink/junction between them would delete an external
+    # same-named file. Retraction is a destructive delete, so on a platform
+    # without descriptor-relative deletion, FAIL CLOSED: attempt no pathname
+    # deletion at all and report the batch as not-retracted, so the caller raises
+    # and advances nothing (the operator resolves the changed-identity run, and
+    # the assessment stage independently refuses an identity-changed source).
+    return False
 
 
 def _frontmatter_from_bytes(data: bytes) -> tuple[dict, bool]:
