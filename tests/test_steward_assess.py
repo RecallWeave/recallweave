@@ -183,6 +183,21 @@ class NewModifiedDeletedTest(StewardAssessTest):
         document = assess_change_batch(batch, self.database, self.vault, now=FROZEN_NOW)
         self.assertEqual(document["assessments"], [])
         self.assertEqual(document["summary"]["skipped_changed_during_observe"], 1)
+        # A skipped path was NOT assessed: it must be excluded from covered_paths
+        # so the report never treats it as a resolution of a prior finding.
+        self.assertEqual(document["covered_paths"], [])
+
+    def test_covered_paths_lists_only_assessed_paths(self) -> None:
+        newp = self._write("Fresh.md", "# Fresh\n\nnew.\n")
+        batch = _batch(
+            changes=[
+                _change("Fresh.md", "added", current=_hash(newp)),
+                _change("Skipped.md", "added", current="deadbeef"),
+            ],
+            changed_during_observe=["Skipped.md"],
+        )
+        document = assess_change_batch(batch, self.database, self.vault, now=FROZEN_NOW)
+        self.assertEqual(document["covered_paths"], ["Fresh.md"])
 
 
 class DuplicatesTest(StewardAssessTest):

@@ -555,6 +555,36 @@ class ReportBacklogAggregationTest(StewardSweepTest):
         self.assertEqual(summary["CITATION_BROKEN"], 0)
         self.assertEqual(broken, [])
 
+    def test_skipped_reassessment_does_not_clear_prior_finding(self) -> None:
+        # A later batch that lists the path only as changed_during_observe (so it
+        # was NOT assessed, covered_paths excludes it) must NOT erase the prior
+        # CITATION_BROKEN finding.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        dirs = self._dirs()
+        digest = self._registry().registry_sha256
+        (dirs["assessments"] / "20260101T000000Z-vault.json").write_text(
+            json.dumps({
+                "schema_version": STEWARD_SCHEMA_VERSION, "kind": "assessment_batch",
+                "source": "vault", "registry_sha256": digest,
+                "summary": {"CITATION_BROKEN": 1},
+                "assessments": [{
+                    "relation": "CITATION_BROKEN", "relative_path": "A.md",
+                    "inputs": {"broken_citations": [{"citation": "A.md:1-1"}]}}],
+                "covered_paths": ["A.md"],
+            }), encoding="utf-8")
+        (dirs["assessments"] / "20260102T000000Z-vault.json").write_text(
+            json.dumps({
+                "schema_version": STEWARD_SCHEMA_VERSION, "kind": "assessment_batch",
+                "source": "vault", "registry_sha256": digest,
+                "summary": {"skipped_changed_during_observe": 1},
+                "assessments": [],
+                "covered_paths": [],   # A.md was skipped, not assessed
+            }), encoding="utf-8")
+        summary, broken, _d = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(summary["CITATION_BROKEN"], 1, "an unresolved finding was erased")
+        self.assertIn("A.md:1-1", broken)
+
     def test_newest_report_filters_by_registry_digest(self) -> None:
         from recallweave.steward_sweep import _newest_report
 

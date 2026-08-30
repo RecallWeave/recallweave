@@ -288,6 +288,12 @@ def assess_change_batch(
         baseline_divergence: list[str] = []
         added_or_modified: list[dict[str, Any]] = []
         touched_note_ids: dict[str, int] = {}
+        # Paths this batch actually ASSESSED (reached a classification). Used by
+        # the sweep report to clear a path's prior finding when a later batch
+        # reassessed it to no relation. A path skipped as changed_during_observe
+        # was NOT assessed and must be excluded, or it would falsely erase an
+        # unresolved finding.
+        assessed_paths: set[str] = set()
 
         for change in batch["changes"]:
             path = change.get("relative_path")
@@ -298,6 +304,7 @@ def assess_change_batch(
             if path in skip_paths:
                 summary["skipped_changed_during_observe"] += 1
                 continue
+            assessed_paths.add(path)
 
             current_hash = change.get("current_content_hash")
             previous_hash = change.get("previous_content_hash")
@@ -660,19 +667,14 @@ def assess_change_batch(
                 "database": database.name,
             },
             "assessments": assessments,
-            # Every path this batch reassessed, INCLUDING ones that produced no
-            # deterministic relation (e.g. a modified note restored byte-for-byte
-            # to the index -> index_current, or a never-indexed NEW note later
-            # removed). The report uses this to CLEAR a path's prior finding when
-            # a later batch reassessed it to nothing; without it a resolved
-            # finding would persist forever.
-            "covered_paths": sorted(
-                {
-                    change.get("relative_path")
-                    for change in batch.get("changes") or []
-                    if isinstance(change.get("relative_path"), str)
-                }
-            ),
+            # Every path this batch actually ASSESSED, INCLUDING ones that
+            # produced no deterministic relation (e.g. a modified note restored
+            # byte-for-byte to the index -> index_current, or a never-indexed NEW
+            # note later removed). The report uses this to CLEAR a path's prior
+            # finding when a later batch reassessed it to nothing. Paths skipped
+            # as changed_during_observe are excluded -- they were NOT assessed,
+            # so they must not erase an unresolved finding.
+            "covered_paths": sorted(assessed_paths),
             "summary": summary,
             "content_drifted": sorted(set(content_drifted)),
             "baseline_divergence": sorted(set(baseline_divergence)),
