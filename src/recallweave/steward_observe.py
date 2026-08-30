@@ -490,8 +490,10 @@ def observe_source(
     stamp = _file_timestamp(generated_at)
     filename = f"{stamp}-{source.name}.json"
     nonce = 1
+    # Zero-padded so lexical filename order matches numeric order past nine
+    # collisions (a plain "_10" would sort before "_2").
     while (state_dirs["changes"] / filename).exists():
-        filename = f"{stamp}_{nonce}-{source.name}.json"
+        filename = f"{stamp}_{nonce:04d}-{source.name}.json"
         nonce += 1
     atomic_write_json(
         state_dirs["changes"] / filename,

@@ -1036,8 +1036,14 @@ def _rollback(
                         f"retained at {backup}"
                     )
                     continue
+                # Restoring a deletion writes into an expected-absent path. The
+                # absence check above is not atomic with the install, so use
+                # create_only=True: the link-based create-or-fail atomically
+                # refuses if another writer recreated the path in that window,
+                # rather than replacing (and destroying) their file.
                 _guarded_replace(
                     target, data, boundary,
+                    create_only=(after is None),
                     restore_mode=op.get("original_mode"),
                     root_identity=root_identity,
                 )

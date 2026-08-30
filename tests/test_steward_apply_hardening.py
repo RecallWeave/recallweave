@@ -256,6 +256,23 @@ class MutationBoundaryTest(unittest.TestCase):
                 _guarded_replace(target, b"attacker", boundary=boundary)
             self.assertEqual(list(elsewhere.iterdir()), [])
 
+    def test_guarded_replace_create_only_refuses_existing_target(self) -> None:
+        # Deletion restores use create_only=True so a path recreated in the
+        # check-to-install window is atomically refused, not clobbered.
+        with tempfile.TemporaryDirectory() as name:
+            boundary = Path(name)
+            target = boundary / "note.md"
+            target.write_text("unrelated recreated bytes", encoding="utf-8")
+            with self.assertRaises(ApplyError):
+                _guarded_replace(
+                    target, b"backup restore", boundary, create_only=True
+                )
+            self.assertEqual(
+                target.read_text(encoding="utf-8"),
+                "unrelated recreated bytes",
+                "create_only replace clobbered an existing file",
+            )
+
     def test_recheck_refuses_target_outside_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             base = Path(name)
