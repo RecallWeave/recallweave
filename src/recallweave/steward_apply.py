@@ -468,7 +468,10 @@ def _rollback(
                 if boundary is not None:
                     _recheck_parent_chain(target, boundary)
                 target.unlink(missing_ok=True)
-        except OSError as error:
+        except (OSError, ApplyError) as error:
+            # A guard refusal (e.g. a symlink planted mid-rollback) is a
+            # failed restore like any other: record it, keep restoring the
+            # rest, and surface the retained backup loudly.
             failures.append(
                 f"{op['relative_path']}: restore failed "
                 f"({type(error).__name__}), backup retained at "
@@ -985,27 +988,56 @@ def recover_journal(
     )
     completed = []
     creates_removed = 0
+    drifted: list[str] = []
     for item in candidates:
         state = item.pop("state")
         item.pop("_op", None)
         content_hash_after = item.pop("content_hash_after", None)
         backup_exists = Path(item["backup_path"]).exists()
-        # "done" ops definitely mutated; an "in_progress" op may have (a
-        # crash can land between the mutation and the journal update), so any
-        # op whose backup exists is restored -- a verified byte-identical
-        # restore of an unmutated file is harmless.
+        target = Path(item["target"])
+        live: str | None = None
+        if target.is_file():
+            live = _sha256_bytes(target.read_bytes())
+
+        # Recovery is hash-pinned like every other write. A target matching
+        # the journaled post-apply state is restorable; one already matching
+        # the pre-apply state needs nothing; anything else was edited (or
+        # torn) after the crash, and recovery refuses rather than destroy
+        # that newer work -- the backup path is named so the operator can
+        # decide by hand.
         if state == "done" or (state == "in_progress" and backup_exists):
-            completed.append(item)
-        elif state == "in_progress" and item["content_hash_before"] is None:
-            # A create that may have landed: remove the target ONLY when it
-            # matches the planned post-state exactly; anything else is left
-            # untouched. This deletion is a source write and is counted as
-            # one in the receipt.
-            target = Path(item["target"])
-            if target.is_file() and content_hash_after is not None:
-                if _sha256_bytes(target.read_bytes()) == content_hash_after:
+            if item["content_hash_before"] is not None:
+                if content_hash_after is not None and live == content_hash_after:
+                    completed.append(item)
+                elif live == item["content_hash_before"]:
+                    pass  # already at pre-apply bytes; nothing to undo
+                elif state == "in_progress" and live is None:
+                    pass  # the mutation never landed
+                else:
+                    drifted.append(
+                        f"{item['relative_path']} (backup: {item['backup_path']})"
+                    )
+            else:
+                # A completed create: delete only the exact planned bytes.
+                if live is not None and live == content_hash_after:
                     target.unlink()
                     creates_removed += 1
+                elif live is not None:
+                    drifted.append(
+                        f"{item['relative_path']} (created then edited; left in place)"
+                    )
+        elif state == "in_progress" and item["content_hash_before"] is None:
+            if live is not None and content_hash_after is not None:
+                if live == content_hash_after:
+                    target.unlink()
+                    creates_removed += 1
+    if drifted:
+        raise ApplyError(
+            "Refusing to recover: these files changed after the interrupted "
+            f"apply and a restore would overwrite that newer work: "
+            f"{sorted(drifted)}. Inspect the named backups and resolve by "
+            "hand, then remove or edit the journal."
+        )
     _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,

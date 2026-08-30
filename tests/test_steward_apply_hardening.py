@@ -148,6 +148,33 @@ class ForgedJournalTest(unittest.TestCase):
         recover_journal(name, registry=self.registry, state_dirs=self.dirs)
         self.assertEqual(target.read_bytes(), before)
 
+
+    def test_recovery_refuses_when_crashed_target_was_edited(self) -> None:
+        # A done op whose live bytes match neither the pre- nor post-apply
+        # hash means someone edited the file after the crash: recovery must
+        # refuse and leave the newer bytes alone.
+        target = self.vault.root / "a.md"
+        target.write_bytes(b"operator wrote this after the crash")
+        newer = target.read_bytes()
+        backup_dir = self.dirs["backups"] / "forged-backups"
+        backup_dir.mkdir()
+        (backup_dir / "0-a.md").write_bytes(b"pre-apply bytes")
+        name = self._write_journal(
+            "intent",
+            [
+                self._forged_op(
+                    relative_path="a.md",
+                    state="done",
+                    content_hash_before=_sha(b"pre-apply bytes"),
+                    content_hash_after=_sha(b"post-apply bytes"),
+                    backup_name="0-a.md",
+                )
+            ],
+        )
+        with self.assertRaisesRegex(ApplyError, "newer work"):
+            recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        self.assertEqual(target.read_bytes(), newer)
+
     def test_revert_validates_journal_paths_too(self) -> None:
         name = self._write_journal("applied", [self._forged_op()])
         with self.assertRaisesRegex(ApplyError, "Invalid relative path"):

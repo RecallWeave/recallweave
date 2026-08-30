@@ -301,7 +301,12 @@ class ApplyPipelineTest(unittest.TestCase):
         backup_dir.mkdir()
         backup_name = "0-" + edit["relative_path"].replace("/", "__")
         (backup_dir / backup_name).write_bytes(original)
-        target.write_bytes(b"# half-applied garbage\n")
+        # Simulate a crash AFTER the (atomic) mutation landed: the target
+        # holds exactly the journaled post-apply bytes.
+        anchor = edit["anchor"]
+        raw = original.decode("utf-8")
+        mutated = raw.replace(anchor["old_text"], edit["replacement_text"], 1)
+        target.write_bytes(mutated.encode("utf-8"))
         journal = {
             "schema_version": STEWARD_SCHEMA_VERSION,
             "kind": "apply_journal",
@@ -315,7 +320,7 @@ class ApplyPipelineTest(unittest.TestCase):
                     "relative_path": edit["relative_path"],
                     "mutation_class": edit["mutation_class"],
                     "content_hash_before": _sha(original),
-                    "content_hash_after": edit["predicted_post_hash"],
+                    "content_hash_after": _sha(mutated.encode("utf-8")),
                     "backup_name": backup_name,
                     "state": "done",
                 }
