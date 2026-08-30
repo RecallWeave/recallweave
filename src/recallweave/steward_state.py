@@ -277,19 +277,76 @@ def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) 
     ).encode("utf-8")
 
     if _DIR_FD_STATE_WRITES:
-        # Anchor the write to the parent directory opened O_NOFOLLOW, so a state
-        # subdirectory swapped for a symlink after guard_within cannot redirect
-        # the temp file or the rename outside the state tree (and, for a journal
-        # write, cannot leave the durable record where recovery will not look).
-        try:
-            dir_fd = os.open(
-                str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-            )
-        except OSError as error:
-            raise ValueError(
-                f"Refusing to write into a symlinked or missing state "
-                f"directory: {parent} ({type(error).__name__})"
-            ) from error
+        # Reach the destination parent by a descriptor-relative, component-by-
+        # component O_DIRECTORY|O_NOFOLLOW descent anchored at the state root
+        # (the parent of `within`). Opening only the final parent O_NOFOLLOW
+        # would still FOLLOW a swapped intermediate ancestor; descending from the
+        # anchor refuses a symlink at ANY component, so a race that swaps the
+        # state root, the `within` subdir, or any dir between them cannot
+        # redirect the temp file or the rename outside the state tree (and, for a
+        # journal write, cannot strand the durable record where recovery will not
+        # look). Without a `within` anchor there is nothing to descend from, so
+        # that case takes the pathname fallback below.
+        anchor = within.parent if within is not None else None
+        if anchor is None:
+            dir_fd = None
+        else:
+            try:
+                rel_from_anchor = path.relative_to(anchor)
+            except ValueError:
+                dir_fd = None
+            else:
+                descend = rel_from_anchor.parts[:-1]
+                try:
+                    fds: list[int] = [
+                        os.open(
+                            str(anchor),
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        )
+                    ]
+                except OSError as error:
+                    raise ValueError(
+                        f"Refusing to write through a symlinked or missing state "
+                        f"root: {anchor} ({type(error).__name__})"
+                    ) from error
+                try:
+                    for part in descend:
+                        fds.append(
+                            os.open(
+                                part,
+                                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=fds[-1],
+                            )
+                        )
+                except OSError as error:
+                    for open_fd in fds:
+                        try:
+                            os.close(open_fd)
+                        except OSError:
+                            pass
+                    raise ValueError(
+                        f"Refusing to write through a symlinked or missing state "
+                        f"directory under {anchor} ({type(error).__name__})"
+                    ) from error
+                # The immediate parent fd is the last opened; close ancestors.
+                dir_fd = fds[-1]
+                for ancestor_fd in fds[:-1]:
+                    try:
+                        os.close(ancestor_fd)
+                    except OSError:
+                        pass
+
+        if dir_fd is None:
+            # Fall back to opening the parent O_NOFOLLOW directly (no anchor).
+            try:
+                dir_fd = os.open(
+                    str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                )
+            except OSError as error:
+                raise ValueError(
+                    f"Refusing to write into a symlinked or missing state "
+                    f"directory: {parent} ({type(error).__name__})"
+                ) from error
         temp_name = f".{path.name}.steward-state.tmp"
         try:
             flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW

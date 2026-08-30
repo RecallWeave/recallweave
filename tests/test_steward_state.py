@@ -204,6 +204,26 @@ class AtomicWriteJsonTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlinked or missing"):
             atomic_write_json(target, {"value": 1})
 
+    def test_refuses_symlinked_state_root_ancestor(self) -> None:
+        # Swap an INTERMEDIATE ancestor (the state root, parent of `within`) for
+        # a symlink: the anchored descent must refuse it, not follow it.
+        import recallweave.steward_state as _st
+        if not _st._DIR_FD_STATE_WRITES:
+            self.skipTest("descriptor-relative writes unavailable")
+        real_root = self.root / "state_real"
+        (real_root / "journal").mkdir(parents=True)
+        link_root = self.root / "state"
+        try:
+            link_root.symlink_to(real_root, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        within = link_root / "journal"   # reached through the symlinked root
+        target = within / "j.json"
+        with self.assertRaisesRegex(ValueError, "symlinked or missing state root"):
+            atomic_write_json(target, {"value": 1}, within=within)
+        # Nothing was written into the real tree.
+        self.assertEqual(list((real_root / "journal").iterdir()), [])
+
     def test_refuses_symlink_destination(self) -> None:
         target = self.root / "target.json"
         target.write_text("target", encoding="utf-8")
