@@ -82,12 +82,17 @@ def _open_note_fd(source: Any, resolved_root: Path, base: Path, relative: str) -
     it."""
 
     root_fd = getattr(source, "root_fd", None)
+    # O_BINARY (Windows only; 0 elsewhere) keeps os.read from translating CRLF,
+    # so the bytes read match st_size and the note's true content hash.
+    read_flags = (
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    )
 
     if source.type == "file":
         # The single admitted path is the root file itself, pinned at load.
         if root_fd is not None:
             return os.dup(root_fd)
-        return os.open(resolved_root, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        return os.open(resolved_root, read_flags)
 
     parts = Path(relative).parts
     if not parts:
@@ -107,7 +112,7 @@ def _open_note_fd(source: Any, resolved_root: Path, base: Path, relative: str) -
                         dir_fd=fds[-1],
                     )
                 )
-            return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[-1])
+            return os.open(parts[-1], read_flags, dir_fd=fds[-1])
         finally:
             for fd in fds:
                 try:
@@ -126,7 +131,7 @@ def _open_note_fd(source: Any, resolved_root: Path, base: Path, relative: str) -
                         dir_fd=fds[-1],
                     )
                 )
-            return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[-1])
+            return os.open(parts[-1], read_flags, dir_fd=fds[-1])
         finally:
             for fd in fds:
                 try:
@@ -143,8 +148,7 @@ def _open_note_fd(source: Any, resolved_root: Path, base: Path, relative: str) -
     full = base / relative
     if is_link_like(full):
         raise OSError(f"symlink leaf: {full}")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    return os.open(full, flags)
+    return os.open(full, read_flags)
 
 
 def _pinned_stat(fd: int) -> os.stat_result:
@@ -456,9 +460,12 @@ def observe_source(
                 # A symlink, directory, or special file at the leaf: not a note.
                 skipped["unreadable_path"] += 1
                 continue
-            if int(info.st_nlink) > 1:
-                # A hardlinked leaf (possibly planted after discovery) is not a
-                # vault note; mirror the discovery-time hardlink skip on the fd.
+            # A hardlinked leaf (possibly planted after discovery) is not a vault
+            # note. Enforce this on the descriptor only where st_nlink from an
+            # fstat is reliable (the POSIX dir_fd path); on the pathname fallback
+            # (e.g. Windows, where os.fstat's st_nlink is not dependable) the
+            # discovery-time hardlink check in _walk_markdown already applies.
+            if _DIR_FD_OBSERVE and int(info.st_nlink) > 1:
                 skipped["hardlink"] += 1
                 continue
             size = int(info.st_size)
