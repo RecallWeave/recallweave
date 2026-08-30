@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .parser import parse_note
+from .parser import parse_frontmatter, parse_note
 from .safe_write import is_link_like, path_identity
 from .policy import RESERVED_DIRECTORY_NAMES
 from .steward_checkpoint import (
@@ -60,26 +61,62 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _open_pinned_fd(base: Path, relative: str) -> int:
-    """Open ``base/relative`` for reading WITHOUT following a symlink at any
-    component, descriptor-relative from ``base`` on POSIX.
+_DIR_FD_OBSERVE = (
+    os.open in os.supports_dir_fd
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
 
-    A parent directory swapped for a symlink between discovery and this open is
-    refused (OSError), so a file's bytes and stat are always taken from inside
-    the source tree -- never from an out-of-source target an ancestor symlink
-    would point at. Raises OSError if any component is a symlink/non-directory,
-    the leaf is missing, or the open fails. The caller fstats and reads the fd."""
+
+def _open_note_fd(source: Any, resolved_root: Path, base: Path, relative: str) -> int:
+    """Open a note for reading WITHOUT following a symlink at any component.
+
+    Anchored, where possible, to the registry's HELD root descriptor
+    (``source.root_fd``, opened O_NOFOLLOW at load and identity-pinned), so a
+    root renamed-and-replaced after discovery cannot redirect the read into a
+    replacement tree. For a ``type: file`` source the note IS that pinned
+    descriptor. Falls back to a symlink-checked pathname descent from ``base``
+    only when no held descriptor / dir_fd support is available. Raises OSError
+    on any symlinked/non-directory component, a missing leaf, or a failed open.
+    The caller fstats the fd (verifying a regular, single-link file) and reads
+    it."""
+
+    root_fd = getattr(source, "root_fd", None)
+
+    if source.type == "file":
+        # The single admitted path is the root file itself, pinned at load.
+        if root_fd is not None:
+            return os.dup(root_fd)
+        return os.open(resolved_root, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
 
     parts = Path(relative).parts
     if not parts:
         raise OSError("empty relative path")
-    use_dir_fd = (
-        os.open in os.supports_dir_fd
-        and hasattr(os, "O_NOFOLLOW")
-        and hasattr(os, "O_DIRECTORY")
-    )
-    if use_dir_fd:
-        fds: list[int] = [os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+
+    if root_fd is not None and _DIR_FD_OBSERVE:
+        # Descend from a dup of the pinned root descriptor (not a fresh open of
+        # the root pathname), so traversal starts from the identity-verified
+        # inode regardless of a concurrent root swap.
+        fds: list[int] = [os.dup(root_fd)]
+        try:
+            for part in parts[:-1]:
+                fds.append(
+                    os.open(
+                        part,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=fds[-1],
+                    )
+                )
+            return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[-1])
+        finally:
+            for fd in fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    if _DIR_FD_OBSERVE:
+        fds = [os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
         try:
             for part in parts[:-1]:
                 fds.append(
@@ -114,15 +151,26 @@ def _pinned_stat(fd: int) -> os.stat_result:
     return os.fstat(fd)
 
 
-def _hash_fd(fd: int) -> str:
+def _read_fd(fd: int) -> bytes:
     os.lseek(fd, 0, os.SEEK_SET)
-    digest = hashlib.sha256()
+    chunks: list[bytes] = []
     while True:
         chunk = os.read(fd, _CHUNK_SIZE)
         if not chunk:
             break
-        digest.update(chunk)
-    return digest.hexdigest()
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _frontmatter_from_bytes(data: bytes) -> tuple[dict, bool]:
+    """Frontmatter + validity from a note's raw bytes, matching parse_note's
+    decoding, so the frontmatter-denial check uses exactly the hashed bytes."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raise UnicodeError("UTF-16 Markdown is not supported.")
+    raw = data.decode("utf-8-sig", errors="strict")
+    lines = re.split(r"\r\n|\r|\n", raw)
+    frontmatter, _body_start, frontmatter_valid, _error = parse_frontmatter(lines)
+    return frontmatter, frontmatter_valid
 
 
 def _walk_markdown(
@@ -372,7 +420,7 @@ def observe_source(
         # a file outside the source (which would be committed to the checkpoint
         # as a vault note). All metadata and bytes come from this one fd.
         try:
-            fd = _open_pinned_fd(hash_base, relative)
+            fd = _open_note_fd(source, resolved_root, hash_base, relative)
         except OSError:
             skipped["unreadable_path"] += 1
             continue
@@ -386,6 +434,11 @@ def observe_source(
                 # A symlink, directory, or special file at the leaf: not a note.
                 skipped["unreadable_path"] += 1
                 continue
+            if int(info.st_nlink) > 1:
+                # A hardlinked leaf (possibly planted after discovery) is not a
+                # vault note; mirror the discovery-time hardlink skip on the fd.
+                skipped["hardlink"] += 1
+                continue
             size = int(info.st_size)
             mtime_ns = int(info.st_mtime_ns)
             dev = int(info.st_dev)
@@ -397,14 +450,25 @@ def observe_source(
                 policy_excluded.add(relative)
                 continue
 
+            # Read the note's bytes ONCE from the pinned fd; both the hash AND
+            # the frontmatter-denial check use exactly these bytes, so an
+            # attacker cannot swap the pathname between admission and hashing to
+            # get excluded content committed under a permissive incarnation. A
+            # re-fstat after the read detects a mid-read change.
+            prior = prior_entries.get(relative)
+            try:
+                data = _read_fd(fd)
+                after = _pinned_stat(fd)
+            except OSError:
+                _mark_changed_during(relative)
+                continue
+
             # The full IndexPolicy applies, frontmatter denial included: a note
             # the index would refuse must not be hashed or recorded by path
-            # anywhere in steward state. Parsing mirrors indexing's fail-closed
-            # behavior; with no deny rules configured, frontmatter_allowed always
-            # admits and the parse is skipped.
+            # anywhere in steward state. Parsed from the pinned bytes.
             if source.policy.deny_frontmatter:
                 try:
-                    note = parse_note(path, resolved_root)
+                    frontmatter, frontmatter_valid = _frontmatter_from_bytes(data)
                 except UnicodeError:
                     skipped["unsupported_encoding"] += 1
                     policy_excluded.add(relative)
@@ -413,29 +477,15 @@ def observe_source(
                     skipped["unparseable_frontmatter"] += 1
                     policy_excluded.add(relative)
                     continue
-                except OSError:
-                    _mark_changed_during(relative)
-                    continue
                 allowed, reason = source.policy.frontmatter_allowed(
-                    note.frontmatter, valid=note.frontmatter_valid
+                    frontmatter, valid=frontmatter_valid
                 )
                 if not allowed:
                     skipped[reason or "frontmatter_policy"] += 1
                     policy_excluded.add(relative)
                     continue
 
-            # Every admitted file is hashed on every sweep. A size-and-mtime gate
-            # would be cheaper, but equal-length bytes with a restored mtime would
-            # then pass as unchanged — an integrity sweep may not treat stat
-            # equality as proof of byte equality. The hash is read from the same
-            # pinned fd, and a re-fstat detects a mid-read change.
-            prior = prior_entries.get(relative)
-            try:
-                current_hash = _hash_fd(fd)
-                after = _pinned_stat(fd)
-            except OSError:
-                _mark_changed_during(relative)
-                continue
+            current_hash = hashlib.sha256(data).hexdigest()
             if (
                 int(after.st_size) != size
                 or int(after.st_mtime_ns) != mtime_ns

@@ -462,8 +462,12 @@ def _assemble_report(
         for item in items:
             if len(kept) >= REPORT_EVIDENCE_LIMIT:
                 break
-            length = len(str(item)) + 1  # +1 for the encoded separator/newline
-            if kept and used + length > REPORT_EVIDENCE_CHAR_BUDGET:
+            # Serialized (JSON, ensure_ascii) length -- what actually lands in
+            # the report -- plus one for the separator. The budget applies to
+            # EVERY entry including the first, so a single oversized entry is
+            # omitted and flagged rather than admitted unbounded.
+            length = len(json.dumps(item, ensure_ascii=True)) + 1
+            if used + length > REPORT_EVIDENCE_CHAR_BUDGET:
                 break
             kept.append(item)
             used += length
