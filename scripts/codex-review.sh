@@ -16,6 +16,40 @@
 
 set -u
 
+# Resolve the comparison base WITHOUT assuming any integration-branch name, so the
+# helper works in a fresh clone or a contributor fork. Order of preference:
+#   1. the checked-out branch's own upstream (`@{upstream}`),
+#   2. the remote default branch (`origin/HEAD`),
+#   3. a local default branch (`main`/`master`).
+# Prints the resolved ref on stdout; returns non-zero if none is found. Operates
+# on the git repository in the current directory.
+resolve_base() {
+  local base b
+  if base=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) && [[ -n $base ]]; then
+    print -- "$base"; return 0
+  fi
+  if base=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null) && [[ -n $base ]]; then
+    print -- "$base"; return 0
+  fi
+  for b in main master; do
+    if git rev-parse --verify --quiet "refs/heads/$b" >/dev/null 2>&1; then
+      print -- "$b"; return 0
+    fi
+  done
+  return 1
+}
+
+# Testable entry point: `codex-review.sh --print-base [DIR]` prints the resolved
+# comparison base for DIR (default: current directory) and exits, or exits 3 with
+# a precise message when no base can be determined. Handled before the cd below
+# so it can be exercised against an arbitrary repository.
+if [[ ${1:-} == --print-base ]]; then
+  [[ -n ${2:-} ]] && { cd "$2" || exit 2; }
+  if base=$(resolve_base); then print -- "$base"; exit 0; fi
+  print -u2 "no comparison base found (no upstream, no origin/HEAD, no main/master)"
+  exit 3
+fi
+
 repo_root=${0:A:h:h}
 cd "$repo_root" || exit 1
 
@@ -39,17 +73,21 @@ suite="$review_dir/suite-$stamp.txt"
 # Codex the real result instead, so it reasons from evidence rather than from
 # environment noise.
 print "running test suite for the reviewer -> $suite"
+# Fail closed: every suite command's status is captured. A later green command
+# (e.g. "viewer tests: OK") must never mask an earlier failure. The brace group
+# runs in the current shell (no subshell), so this flag persists past it.
+suite_failed=0
 {
   # Use an interpreter with the test extra installed, or the parser-backed
   # Markdown-inertness tests silently skip and the gate reports a green suite
   # that never ran its most important assertions.
   venv="$review_dir/.venv"
   if [[ ! -x $venv/bin/python ]]; then
-    python3 -m venv "$venv" >/dev/null 2>&1
+    python3 -m venv "$venv" >/dev/null 2>&1 || suite_failed=1
   fi
-  "$venv/bin/pip" install --quiet -e ".[test]" >/dev/null 2>&1
+  "$venv/bin/pip" install --quiet -e ".[test]" >/dev/null 2>&1 || suite_failed=1
   print "# PYTHONPATH=src .codex-reviews/.venv/bin/python -m unittest discover -s tests"
-  PYTHONPATH=src "$venv/bin/python" -m unittest discover -s tests 2>&1
+  PYTHONPATH=src "$venv/bin/python" -m unittest discover -s tests 2>&1 || suite_failed=1
   # Second pass with ResourceWarning promoted to an error. A leaked sqlite
   # connection or temp directory is finalized by the garbage collector at an
   # arbitrary later moment, and because the CLI tests capture stderr to parse
@@ -57,17 +95,28 @@ print "running test suite for the reviewer -> $suite"
   # stream and break it. Promoting the warning makes the leak fail where it is
   # caused instead of somewhere else, hours later.
   print "\n# PYTHONPATH=src .codex-reviews/.venv/bin/python -W error::ResourceWarning -m unittest discover -s tests"
-  PYTHONPATH=src "$venv/bin/python" -W error::ResourceWarning -m unittest discover -s tests 2>&1
+  PYTHONPATH=src "$venv/bin/python" -W error::ResourceWarning -m unittest discover -s tests 2>&1 || suite_failed=1
   print "\n# python3 -m compileall -q src"
-  python3 -m compileall -q src 2>&1 && print "compileall: OK"
+  if python3 -m compileall -q src 2>&1; then print "compileall: OK"; else suite_failed=1; fi
   if [[ -f viewer/package.json ]]; then
     print "\n# (cd viewer && npm test)"
-    (cd viewer && npm test) 2>&1 && print "viewer tests: OK"
+    if (cd viewer && npm test) 2>&1; then print "viewer tests: OK"; else suite_failed=1; fi
   fi
+  print "\n# suite_failed=$suite_failed"
 } > "$suite" 2>&1
 print "  $(tail -3 "$suite" | tr '\n' ' ')"
 
+# Do NOT invoke the reviewer on a broken suite: a review that cites a failed or
+# partial run is worse than no review. Preserve the full report and exit nonzero.
+if (( suite_failed )); then
+  print -u2 "suite FAILED; not invoking the reviewer. Full report: $suite"
+  exit 1
+fi
+
+review_base=$(resolve_base 2>/dev/null || print "(none found; review the working tree as checked out)")
+
 print "running codex review from $repo_root"
+print "  base  : $review_base"
 print "  brief : $brief"
 print "  suite : $suite"
 print "  output: $out"
@@ -77,7 +126,10 @@ codex exec \
   --sandbox read-only \
   --color never \
   --output-last-message "$out" \
-  - < <(cat "$brief"; print "\n\n## Test results from this invocation\n"; \
+  - < <(cat "$brief"; \
+        print "\n\n## Comparison base for this review\n"; \
+        print "Compare HEAD against: $review_base"; \
+        print "\n\n## Test results from this invocation\n"; \
         print "The suite was run by the harness before you were invoked, because your"; \
         print "read-only sandbox has no writable temp directory. Read it at:"; \
         print "  ${suite#$repo_root/}"; \

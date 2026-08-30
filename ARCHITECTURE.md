@@ -33,16 +33,21 @@ defense in depth; they are not the primary authorization boundary.
 
 ## Product boundary
 
-RecallWeave OSS is **local and single-user by construction**. Every capability in
-this repository runs on one machine, for one operator, against local files, with
-no server and no other person's data or credentials involved. This is a design
-boundary, not a temporary limitation.
+RecallWeave OSS is **local and single-user by construction**. The engine and its
+tools run on one machine, for one operator, against local files, with no server
+processing that operator's data and no other person's data or credentials
+involved. This is a design boundary, not a temporary limitation. Serving the
+**inert Atlas application shell** — a static build that parses a graph the viewer
+selects locally in their own browser, with no upload endpoint and no transmission
+of the selected file (see [viewer/README.md](viewer/README.md)) — is a static
+asset, not hosted execution over user data, and stays in scope.
 
 The following belong **outside** the OSS core, in a separate commercial control
 plane — never in this repository:
 
-- hosted scheduling or execution (running work on a server, for someone else,
-  on a timer they do not control locally);
+- hosted scheduling or execution **over user data** (running the engine or work
+  on a server, processing another person's vault or graph, on a timer they do not
+  control locally) — as distinct from serving the inert, data-less Atlas shell;
 - cross-machine or multi-agent **fleet orchestration** and routing;
 - multi-user accounts, roles, or **RBAC**;
 - **centralized approvals** (an approval service other people submit to);
@@ -51,8 +56,10 @@ plane — never in this repository:
 - **enterprise audit/admin**, billing, or usage metering;
 - any **proprietary control-plane** behavior.
 
-A useful test when adding a feature: *does it need a server, another user, or
-someone else's credentials to work?* If yes, it does not belong here. Local
+A useful test when adding a feature: *does it need a server to process someone's
+data, another user, or someone else's credentials to work?* If yes, it does not
+belong here. (Serving a static, inert client that does its work in the viewer's
+own browser is not that.) Local
 policy, local Git/checkpoint workflows, and local diff/reconcile/steward
 primitives are in scope precisely because they run entirely on the operator's own
 machine; the moment such a mechanism is hosted, shared, or centralized, it

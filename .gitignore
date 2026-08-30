@@ -75,5 +75,13 @@ docs/SESSION-HANDOFF.md
 /.codex/
 /.agents/
 
+# Local checkpoint-authorization state written by the private supervisor's push
+# gate. It is machine-local supervisor state and must never be tracked or reach
+# origin. (The gate reads it from a gitignored path; see the supervisor's
+# ensure_checkpoint_marker.) The bare root filename is also ignored so the older
+# tracked-marker location can never be recreated as a tracked file.
+/.rw-supervisor/
+/CHECKPOINT_NOT_APPROVED.md
+
 # Local uv lockfile (project uses pip/setuptools packaging)
 uv.lock
