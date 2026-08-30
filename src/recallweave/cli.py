@@ -494,6 +494,7 @@ def main(argv: list[str] | None = None) -> int:
                     state_root,
                     prune_older_than_days=args.prune_older_than_days,
                     source_roots=[source.root for source in registry.sources],
+                    registry_sha256=registry.registry_sha256,
                 )
 
         action = run_status

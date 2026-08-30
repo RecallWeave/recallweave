@@ -460,6 +460,44 @@ class ReportBacklogAggregationTest(StewardSweepTest):
             "the earlier assessment's DELETED relation was dropped from the report",
         )
 
+    def test_same_path_in_two_sources_counts_as_two_findings(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        # A second source whose vault also contains Gone.md.
+        vault_b = self.root / "vault-b"
+        vault_b.mkdir()
+        (vault_b / "x.md").write_text("# X\n", encoding="utf-8")
+        registry = SourceRegistry.from_payload(
+            {
+                "spec_version": SOURCES_SPEC_VERSION,
+                "sources": [
+                    {"name": "vault", "type": "folder", "root": str(self.vault),
+                     "mode": "read_only"},
+                    {"name": "vaultb", "type": "folder", "root": str(vault_b),
+                     "mode": "read_only"},
+                ],
+            }
+        )
+        dirs = self._dirs()
+        for src in ("vault", "vaultb"):
+            (dirs["assessments"] / f"20260101T000000Z-{src}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": STEWARD_SCHEMA_VERSION,
+                        "kind": "assessment_batch",
+                        "source": src,
+                        "summary": {"DELETED": 1},
+                        "assessments": [{"relation": "DELETED", "relative_path": "Gone.md"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+        summary, _b, _d = _aggregate_assessments(dirs, registry)
+        self.assertEqual(
+            summary["DELETED"], 2,
+            "same-named findings in disjoint sources were merged into one",
+        )
+
     def test_report_does_not_double_count_recurring_finding(self) -> None:
         from recallweave.steward_sweep import _aggregate_assessments
 
@@ -486,6 +524,39 @@ class ReportBacklogAggregationTest(StewardSweepTest):
         _assessment("20260102T000000Z-vault.json")
         summary, _broken, _dupes = _aggregate_assessments(dirs, self._registry())
         self.assertEqual(summary["DELETED"], 1, "a recurring finding was double-counted")
+
+
+class ForeignProposalPendingTest(StewardSweepTest):
+    def test_foreign_registry_proposal_excluded_from_pending(self) -> None:
+        from recallweave.steward_sweep import (
+            _aggregate_proposals,
+            _pending_proposal_count,
+        )
+
+        dirs = self._dirs()
+        reg = self._registry()
+        (dirs["proposals"] / "20260101T000000Z-vault-prp-foreign0000.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "proposal",
+                    "proposal_id": "prp-foreign0000",
+                    "source": "vault",
+                    "action": "review_dangling_references",
+                    "registry_sha256": "0" * 64,  # foreign
+                    "edits": [],
+                    "evidence": {"deleted_path": "Gone.md"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        total, _by_action, _dangling = _aggregate_proposals(dirs, reg.registry_sha256)
+        self.assertEqual(total, 0, "a foreign-registry proposal counted as pending")
+        self.assertEqual(
+            _pending_proposal_count(dirs["proposals"], reg.registry_sha256), 0
+        )
+        # Without a digest filter it still counts (back-compat).
+        self.assertEqual(_aggregate_proposals(dirs)[0], 1)
 
 
 class PruneTest(StewardSweepTest):

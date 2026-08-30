@@ -258,13 +258,14 @@ def _aggregate_assessments(
 
     broken_citations: list[str] = []
     duplicates: list[str] = []
-    # Count deterministic relations by DISTINCT finding identity (relation,
-    # relative_path), not by summing per-assessment counters. Summing would
-    # double-count a finding that recurs across retained assessments and would
-    # make the totals drift when processed assessments are later pruned; a
-    # distinct-identity count reflects the current integrity state and matches
-    # the deduplicated evidence arrays below.
-    distinct_relations: dict[str, set[str]] = {
+    # Count deterministic relations by DISTINCT finding identity, keyed on
+    # (source, relative_path), not by summing per-assessment counters. Summing
+    # would double-count a finding that recurs across retained assessments and
+    # drift when processed assessments are pruned; keying on the path alone would
+    # merge a same-named finding in two disjoint sources into one. A distinct
+    # (source, path) count reflects the current integrity state and matches the
+    # deduplicated evidence arrays below.
+    distinct_relations: dict[str, set[tuple[str, str]]] = {
         relation: set() for relation in DETERMINISTIC_RELATIONS
     }
 
@@ -288,7 +289,7 @@ def _aggregate_assessments(
                 relation = item.get("relation")
                 path = item.get("relative_path")
                 if relation in distinct_relations and isinstance(path, str):
-                    distinct_relations[relation].add(path)
+                    distinct_relations[relation].add((source.name, path))
                 if relation == "CITATION_BROKEN":
                     for citation in (item.get("inputs") or {}).get("broken_citations") or []:
                         text = citation.get("citation") if isinstance(citation, dict) else None
@@ -303,14 +304,24 @@ def _aggregate_assessments(
     return summary, sorted(set(broken_citations)), sorted(set(duplicates))
 
 
-def _aggregate_proposals(dirs: dict[str, Path]) -> tuple[int, dict[str, int], list[str]]:
-    """Scan proposals/ for PENDING proposals (applied ones no longer pend)."""
+def _aggregate_proposals(
+    dirs: dict[str, Path], registry_sha256: str | None = None
+) -> tuple[int, dict[str, int], list[str]]:
+    """Scan proposals/ for PENDING proposals (applied ones no longer pend).
+
+    A proposal from a prior registry revision (foreign registry_sha256) is not
+    this registry's pending work: it is excluded so a stale artifact cannot hold
+    the sweep result at ``approval_required`` (auto-apply already skips it)."""
     by_action: dict[str, int] = {}
     dangling: set[str] = set()
     total = 0
     for path in sorted(dirs["proposals"].glob("*.json")):
         proposal = _load_json(path)
         if proposal.get("status") == "applied":
+            continue
+        if registry_sha256 is not None and (
+            proposal.get("registry_sha256") != registry_sha256
+        ):
             continue
         total += 1
         action = proposal.get("action")
@@ -368,7 +379,9 @@ def _assemble_report(
     relation_summary, broken_citations, duplicates = _aggregate_assessments(
         dirs, registry, sources_errored
     )
-    proposals_pending_total, proposals_by_action, dangling_references = _aggregate_proposals(dirs)
+    proposals_pending_total, proposals_by_action, dangling_references = _aggregate_proposals(
+        dirs, registry.registry_sha256
+    )
 
     # Bound every unbounded evidence array so report size has a defined ceiling
     # and consumers can tell a complete list from a Steward-truncated one. The
@@ -669,11 +682,15 @@ def _dir_file_count(directory: Path) -> int:
     return sum(1 for entry in directory.iterdir() if entry.is_file())
 
 
-def _pending_proposal_count(directory: Path) -> int:
+def _pending_proposal_count(
+    directory: Path, registry_sha256: str | None = None
+) -> int:
     # Applied proposals remain on disk with status "applied" (their receipt
     # references them); a pending count must exclude them, matching
-    # _aggregate_proposals. An unreadable/malformed proposal file is counted as
-    # pending -- it still needs operator attention and must not silently vanish.
+    # _aggregate_proposals. A proposal from a prior registry revision (foreign
+    # digest) is also excluded -- it is not this registry's pending work. An
+    # unreadable/malformed proposal file is counted as pending -- it still needs
+    # operator attention and must not silently vanish.
     pending = 0
     for entry in sorted(directory.glob("*.json")):
         try:
@@ -682,6 +699,12 @@ def _pending_proposal_count(directory: Path) -> int:
             pending += 1
             continue
         if isinstance(document, dict) and document.get("status") == "applied":
+            continue
+        if (
+            registry_sha256 is not None
+            and isinstance(document, dict)
+            and document.get("registry_sha256") != registry_sha256
+        ):
             continue
         pending += 1
     return pending
@@ -812,6 +835,7 @@ def status_report(
     *,
     prune_older_than_days: int | None = None,
     source_roots: list[Path] | None = None,
+    registry_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Report counts and lock state for ``state_root``; optionally prune.
 
@@ -862,7 +886,9 @@ def status_report(
     counts = {
         "change_batches": _dir_file_count(dirs["changes"]),
         "assessments": _dir_file_count(dirs["assessments"]),
-        "proposals_pending": _pending_proposal_count(dirs["proposals"]),
+        "proposals_pending": _pending_proposal_count(
+            dirs["proposals"], registry_sha256
+        ),
         "receipts": _dir_file_count(dirs["receipts"]),
         "reports": _dir_file_count(dirs["reports"]),
     }
