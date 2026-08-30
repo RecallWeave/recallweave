@@ -253,6 +253,16 @@ export function safeVaultLabel(value: unknown): string {
   return label;
 }
 
+/** Build an Obsidian open URI from a vault label claim and relative note path. */
+export function obsidianOpenHref(vaultLabel: unknown, filePath: unknown): string {
+  const vault = safeVaultLabel(vaultLabel);
+  if (!vault || typeof filePath !== "string") return "";
+  const file = filePath.replace(/\\/g, "/").replace(/^\/+/u, "").trim();
+  if (!file || file.includes("..") || /[\0\r\n]/u.test(file)) return "";
+  if (/^[a-z][a-z0-9+.-]*:/iu.test(file)) return "";
+  return `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(file)}`;
+}
+
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
 import re
 from datetime import datetime, timezone
 from io import StringIO
@@ -451,6 +452,26 @@ def _frontmatter_tag_links(
     ]
 
 
+def _filesystem_birth_timestamp(path: Path) -> str | None:
+    """Return a UTC ISO-8601 birth time when the platform exposes one.
+
+    Prefer ``st_birthtime`` (macOS/BSD; some Linux filesystems). On Windows,
+    ``st_ctime`` is creation time. Never substitute ``st_mtime`` — that is
+    modification, not birth — and never invent a clock when birth is unknown.
+    """
+
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    birth: float | None = getattr(info, "st_birthtime", None)
+    if birth is None and os.name == "nt":
+        birth = float(info.st_ctime)
+    if birth is None or birth <= 0:
+        return None
+    return datetime.fromtimestamp(birth, timezone.utc).isoformat()
+
+
 def parse_note(path: Path, vault: Path) -> Note:
     content = path.read_bytes()
     if content.startswith((b"\xff\xfe", b"\xfe\xff")):
@@ -466,6 +487,11 @@ def parse_note(path: Path, vault: Path) -> Note:
     tags = _as_list(frontmatter.get("tags") or frontmatter.get("tag"))
     stat = path.stat()
     modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+    created_at = (
+        str(frontmatter["created"])
+        if frontmatter.get("created")
+        else _filesystem_birth_timestamp(path)
+    )
 
     return Note(
         path=path,
@@ -475,7 +501,7 @@ def parse_note(path: Path, vault: Path) -> Note:
         tags=tags,
         status=str(frontmatter["status"]) if frontmatter.get("status") else None,
         domain=str(frontmatter["domain"]) if frontmatter.get("domain") else None,
-        created_at=str(frontmatter["created"]) if frontmatter.get("created") else None,
+        created_at=created_at,
         updated_at=str(frontmatter["updated"]) if frontmatter.get("updated") else None,
         modified_at=modified,
         content_hash=hashlib.sha256(content).hexdigest(),

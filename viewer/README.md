@@ -86,7 +86,8 @@ When it is absent or invalid, Atlas uses the neutral reserved origin
   do not share them unless you have reviewed their contents.
 - Note and evidence excerpts are opt-in at export time.
 - Direct Obsidian open links stay gated on an explicit `vault_name` label claim
-  and the Cold Trails contract; do not invent vault labels in fixtures.
+  (never a filesystem path) and are never invented for fixtures. Without that
+  claim, Atlas copies the relative note path instead.
 
 ## Cold Trails
 

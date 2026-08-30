@@ -329,7 +329,7 @@ Every node from v1 remains. v2 adds:
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `created_at` | yes when known from the index; otherwise JSON `null` | UTC ISO-8601 timestamp of note creation as recorded by the index. Never invent a clock value. |
+| `created_at` | yes when known from the index; otherwise JSON `null` | UTC ISO-8601 timestamp of note creation as recorded by the index. Prefer frontmatter `created` when present; otherwise the indexer may record filesystem birth time (`st_birthtime`, or Windows creation time) when the platform exposes it. Never invent a clock value; use JSON `null` when unknown. |
 | `modified_at` | yes when known from the index; otherwise JSON `null` | UTC ISO-8601 timestamp of last indexed content change. |
 | `content_hash` | yes | Hex SHA-256 of the exact note bytes the index hashed for this path. Empty-string hashes are forbidden; use `null` only if the index lacks a hash (legacy indexes). |
 

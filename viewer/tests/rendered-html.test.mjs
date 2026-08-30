@@ -116,7 +116,8 @@ test("Cold Trails tour dialog meets accessibility and trust boundaries", async (
     tour,
     /if \(event\.key === "Escape"\) \{\s*event\.preventDefault\(\);\s*endTour\(\);/s,
   );
-  assert.doesNotMatch(tour, /obsidian:\/\//);
+  assert.match(tour, /vault_label_claim/);
+  assert.match(tour, /obsidianOpenHref/);
 
   const explorer = await readFile(
     new URL("../app/components/GraphExplorer.tsx", import.meta.url),
@@ -124,6 +125,7 @@ test("Cold Trails tour dialog meets accessibility and trust boundaries", async (
   );
   assert.match(explorer, /Cold Trails/);
   assert.match(explorer, /ColdTrailsTour/);
+  assert.match(explorer, /Open in Obsidian/);
 });
 
 test("client import and keyboard focus guards remain wired", async () => {
@@ -161,7 +163,9 @@ test("client import and keyboard focus guards remain wired", async () => {
   assert.match(provenanceChrome, /Index claims:/);
   assert.match(provenanceChrome, /privacy-provenance-detail/);
   assert.match(provenanceChrome, /formatAtlasProvenanceClaims/);
-  assert.doesNotMatch(source, /obsidianUrl|Open in Obsidian|obsidian:\/\//);
+  assert.match(source, /vault_label_claim/);
+  assert.match(source, /obsidianOpenHref/);
+  assert.match(source, /Open in Obsidian/);
   assert.match(source, /resetExplorer\(true\)/);
   assert.match(source, /searchRef\.current\?\.focus\(\)/);
 });
@@ -173,16 +177,18 @@ test("metadata uses a configurable neutral origin", async () => {
   assert.doesNotMatch(source, /private-preview|chatgpt\.site/i);
 });
 
-test("runtime source and production bundles contain no direct vault navigation", async () => {
+test("Obsidian open links stay gated on an explicit vault label claim", async () => {
   const sources = [
     ...await readRuntimeSources(new URL("../app/", import.meta.url)),
     ...await readRuntimeSources(new URL("../worker/", import.meta.url)),
     ...await readRuntimeSources(new URL("../dist/client/", import.meta.url)),
   ].join("\n");
-  assert.doesNotMatch(
-    sources,
-    /obsidian:\/\/|open in obsidian/iu,
-  );
+  assert.match(sources, /obsidianOpenHref/);
+  assert.match(sources, /vault_label_claim/);
+  assert.match(sources, /obsidian:\/\/open/);
+  // Never hardcode a concrete vault or absolute path into a navigation URI.
+  assert.doesNotMatch(sources, /obsidian:\/\/open\?vault=(?!\$\{|encodeURIComponent)/u);
+  assert.doesNotMatch(sources, /obsidian:\/\/open\?vault=[^"'`]*[/\\]/u);
 });
 
 test("production server delivers every rendered client asset", async (t) => {

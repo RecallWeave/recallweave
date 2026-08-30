@@ -29,7 +29,7 @@ import {
   loadDismissedPairDigests,
   saveDismissedPairDigests,
 } from "../cold-trails-feedback-store";
-import { citationPath, type GraphDocument, type GraphEdge } from "../graph-data";
+import { citationPath, obsidianOpenHref, type GraphDocument, type GraphEdge } from "../graph-data";
 
 type ColdTrailsTourProps = {
   graph: GraphDocument;
@@ -274,6 +274,19 @@ export function ColdTrailsTour({
     const path = current ? openSourcePath(graph, current) : "";
     if (!path) {
       onStatus("No safe source path is available for this trail.");
+      return;
+    }
+    const href = graph.vault_label_claim
+      ? obsidianOpenHref(graph.vault_label_claim, path)
+      : "";
+    if (href) {
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.rel = "noopener noreferrer";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      onStatus("Opened source in Obsidian via vault label claim.");
       return;
     }
     onCopyPath(path);

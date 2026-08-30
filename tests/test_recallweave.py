@@ -107,6 +107,51 @@ class RecallWeaveTest(unittest.TestCase):
         self.assertIn("citation", candidate["evidence"]["target_evidence"])
         self.assertIn("Candidate only", candidate["evidence"]["explanation"])
 
+    def test_parser_uses_filesystem_birth_when_frontmatter_lacks_created(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from recallweave.parser import parse_note
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        vault = Path(temp.name) / "vault"
+        vault.mkdir()
+        path = vault / "Untitled.md"
+        path.write_text("# Untitled\n\nbody.\n", encoding="utf-8")
+
+        birth = 1_700_000_000.0
+        fake_stat = SimpleNamespace(st_mtime=1_800_000_000.0, st_ctime=birth, st_birthtime=birth)
+        with patch.object(Path, "stat", return_value=fake_stat):
+            note = parse_note(path, vault)
+        self.assertEqual(note.created_at, "2023-11-14T22:13:20+00:00")
+
+        with_frontmatter = vault / "Dated.md"
+        with_frontmatter.write_text(
+            "---\ncreated: 2020-01-02T03:04:05Z\n---\n# Dated\n\nbody.\n",
+            encoding="utf-8",
+        )
+        with patch.object(Path, "stat", return_value=fake_stat):
+            noted = parse_note(with_frontmatter, vault)
+        self.assertEqual(noted.created_at, "2020-01-02T03:04:05Z")
+
+    def test_filesystem_birth_is_null_when_platform_has_no_birthtime(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from recallweave.parser import _filesystem_birth_timestamp
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = Path(temp.name) / "note.md"
+        path.write_text("# x\n", encoding="utf-8")
+        # Simulate Linux without st_birthtime and not Windows.
+        fake = SimpleNamespace(st_mtime=1_800_000_000.0, st_ctime=1_700_000_000.0)
+        with patch.object(Path, "stat", return_value=fake), patch(
+            "recallweave.parser.os.name", "posix"
+        ):
+            self.assertIsNone(_filesystem_birth_timestamp(path))
+
     def test_query_is_bounded_and_cited(self) -> None:
         result = context_packet(
             self.database,

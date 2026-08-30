@@ -114,15 +114,12 @@ non-PASS review.
 
 ## 6. Active beads and worker assignments
 
-- Epic **`recallweave-k7i`** — post-iyd Atlas/Cold Trails product completion.
-  - **`k7i.1` closed** — emit `signals.shared_tags` from note tag intersection.
-  - **`k7i.2` closed** — Cold Trails dismiss persistence + Clear history.
-  - **`k7i.3`** — refresh SESSION-HANDOFF / viewer README / sample-graph to v2
-    (this handoff refresh is part of that bead).
-- Optional later (not queued until human asks): `created_at` filesystem birth
-  fallback; `vault_name` Obsidian open (needs cold-trails.md alignment).
+- Closed epic **`recallweave-k7i`** — post-iyd Atlas/Cold Trails product completion
+  (`shared_tags`, dismiss persistence, handoff/sample v2).
 - Closed epic **`recallweave-iyd`** — viewer.v2 schema, emitter, Atlas consume,
   Cold Trails v1.
+- Follow-ups shipped: filesystem birth `created_at` fallback; `vault_name`-gated
+  Obsidian open (cold-trails.md aligned). No optional later items remain queued.
 
 ## 7. Known failure modes and traps
 
