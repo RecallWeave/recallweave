@@ -16,6 +16,7 @@ from .policy import IndexPolicy
 from .query import connections, context_packet, doctor, path_between, resurface, stats
 from .steward_assess import assess_latest
 from .steward_observe import observe_registry
+from .steward_propose import propose_latest
 from .steward_sources import load_registry
 from .steward_state import steward_state_root
 from .viewer import export_viewer_graph
@@ -213,6 +214,22 @@ def _parser() -> argparse.ArgumentParser:
         dest="state_dir",
         help="Override the default steward state directory.",
     )
+
+    steward_propose_parser = subparsers.add_parser(
+        "steward-propose",
+        help=(
+            "Compile reviewable proposals with hash-pinned edit scripts from "
+            "the latest assessment (propose_only; no vault or index writes)."
+        ),
+    )
+    steward_propose_parser.add_argument("sources", type=_path)
+    _add_database_locator(steward_propose_parser)
+    steward_propose_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
     return parser
 
 
@@ -328,6 +345,11 @@ def main(argv: list[str] | None = None) -> int:
                 vault=args.vault or Path.cwd(),
             ),
             "steward-assess": lambda: assess_latest(
+                load_registry(args.sources),
+                args.state_dir or steward_state_root(args.sources),
+                database,
+            ),
+            "steward-propose": lambda: propose_latest(
                 load_registry(args.sources),
                 args.state_dir or steward_state_root(args.sources),
                 database,
