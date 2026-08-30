@@ -31,6 +31,37 @@ For agent-facing indexes, the private broker should generate an exact
 `include_paths` allowlist from its approved retrieval corpus. Denylists remain
 defense in depth; they are not the primary authorization boundary.
 
+## Product boundary
+
+RecallWeave OSS is **local and single-user by construction**. Every capability in
+this repository runs on one machine, for one operator, against local files, with
+no server and no other person's data or credentials involved. This is a design
+boundary, not a temporary limitation.
+
+The following belong **outside** the OSS core, in a separate commercial control
+plane — never in this repository:
+
+- hosted scheduling or execution (running work on a server, for someone else,
+  on a timer they do not control locally);
+- cross-machine or multi-agent **fleet orchestration** and routing;
+- multi-user accounts, roles, or **RBAC**;
+- **centralized approvals** (an approval service other people submit to);
+- **managed secrets or connectors** (holding third-party credentials, brokering
+  access to external systems on a user's behalf);
+- **enterprise audit/admin**, billing, or usage metering;
+- any **proprietary control-plane** behavior.
+
+A useful test when adding a feature: *does it need a server, another user, or
+someone else's credentials to work?* If yes, it does not belong here. Local
+policy, local Git/checkpoint workflows, and local diff/reconcile/steward
+primitives are in scope precisely because they run entirely on the operator's own
+machine; the moment such a mechanism is hosted, shared, or centralized, it
+crosses into the commercial layer.
+
+The trust model above already assumes this split: identity, authorization,
+redaction, audit receipts, and human approval live in the **private broker /
+control plane**, and RecallWeave hands it bounded, cited, read-only evidence.
+
 ## Task contracts
 
 A task contract is a bounded projection of the index for one task: the

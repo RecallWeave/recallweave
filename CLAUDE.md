@@ -1,150 +1,89 @@
-# Project Instructions for AI Agents
+# Project Guide for AI Agents and Contributors
 
-This file provides instructions and context for AI coding agents working on this project.
+This file orients an AI coding agent (or a new human contributor) working on
+RecallWeave. It is generic guidance for the public OSS project — there is no
+private tooling or account you need to reproduce anything here.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
-## Beads Issue Tracker
+## What RecallWeave is
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+RecallWeave is a **local-first, evidence-cited discovery and resurfacing engine
+for Obsidian vaults**. It reads a Markdown vault, builds a disposable external
+SQLite index, and answers bounded, cited questions about what the vault says,
+which notes may be connected, and which older notes are relevant again. It also
+exports scoped, cited **task contracts** and a local **Atlas / Cold Trails**
+graph viewer.
 
-### Quick Reference
+The vault is canonical and read-only: the core has **no write path back into
+notes**, makes **no network calls**, and needs **no API key or model download**.
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
+Start with [README.md](README.md) for usage and [ARCHITECTURE.md](ARCHITECTURE.md)
+for the trust model, evidence classes, and the product boundary.
 
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-
-## Agent Context Profiles
-
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Commit and integrate per the Git Cadence below. Do not push to protected branches, open PRs, or merge without explicit approval. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Git Cadence
-
-Approved standing policy. The goal: eliminate local-only backlog while keeping
-review milestone-based. Josh's queue should hold genuine decisions, not routine
-requests to back up clean, validated commits.
-
-**Topology**
-- `main` is **protected**. It is never pushed to, merged into, or auto-merged
-  locally. Local `main` mirrors `origin/main` and nothing else.
-- `foundry/steward` is the **active integration branch** — the durable,
-  continuously updated remote checkpoint for current work.
-- A promoted checkpoint branch becomes **historical** the moment its milestone
-  PR merges: it is the preserved implementation lineage behind that PR, and a
-  fresh checkpoint branch is cut from the new `main`. `foundry/task-contracts`
-  is historical (merged to `main` on 2026-08-23 as PR #1). **Never merge a
-  historical branch into current work** — its commits already shipped, squashed,
-  and re-merging them replays 170 commits of settled history onto a fresh branch
-  and destroys the provenance the split exists to create. When this document and
-  a dispatch prompt disagree about the branch name, the branch you were
-  dispatched onto wins; say so rather than reaching for a name you remember.
-- Workers commit to their own `ntm/<session>/oc_N` branches in their worktrees.
-
-**Routine cycle (automatic, no approval needed)**
-```
-worker commits
-  -> coordinator integrates into the integration branch
-  -> dependency sync
-  -> full local test/gate suite
-  -> refresh Beads/BV state (and commit the passive export churn)
-  -> update clean worktrees
-  -> push the integration branch to origin
-  -> continue
-```
-Push only when ALL hold: suite green, conflicts resolved, tree clean, no open
-bead labelled `blocker` or `needs-human`. Otherwise do not push — fix first.
-
-**Milestone cycle (requires Josh)**
-```
-integration branch -> PR to protected main -> required review
-  -> remediation -> human merge approval
-```
-Open or update a PR only at a meaningful review checkpoint, release gate, or
-integration milestone — never as part of the routine cycle.
-
-**Review verdicts: what they gate**
-
-A failing or absent adversarial review does **not** block a checkpoint push. The
-checkpoint exists purely for durability and recovery, and stranding validated
-commits on one machine is the risk it removes.
-
-A failing or absent review **does** block every one of: promotion, merge,
-release, deploy, and milestone PR. Those need a PASS verdict *and* human
-approval.
-
-**Checkpoint branches are marked non-approved**
-
-The integration branch carries `CHECKPOINT_NOT_APPROVED.md` at its root, naming
-the branch and the latest review verdict. The supervisor refreshes it before
-every push and refuses to push an unmarked branch, so the marker cannot drift or
-go missing. Delete it as part of the promotion commit — its presence is the
-machine-checkable signal that the branch is not approved.
-
-Checkpoint branches must never be auto-mergeable: no auto-merge, no non-draft PR
-opened by automation, no `gh pr merge`. The supervisor refuses `gh pr
-merge|create|ready`, `gh release`, and any `--auto` flag outright; read-only `gh`
-(list, view) still works.
-
-**Never**
-- push or merge to protected `main`/`master`
-- auto-merge a PR, or let a checkpoint branch become auto-mergeable
-- promote, release, or deploy on a non-PASS review
-- push broken or dirty integration state
-- push an integration branch missing its non-approved marker
-- force-push without explicit approval
-- push worker branches individually, except for recovery, debugging, or a
-  specific review workflow
-
-Automation lives in `/Users/josh/particle-workers/supervisor/rw_supervisor.py`
-(`push_integration`), which refuses protected targets, never forces, and stops
-retrying after two consecutive push failures.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync per the Git Cadence section below** — integrate, gate, then
-   checkpoint the integration branch to origin. Never push or merge to a protected branch.
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
-
-
-## Build & Test
-
-_Add your build and test commands here_
+## Build & test
 
 ```bash
-# Example:
-# npm install
-# npm test
+# Python package (editable install with test extra)
+python -m pip install -e ".[test]"
+python -m compileall -q src
+python -m unittest discover -s tests -v
+
+# Viewer (Node 22+; from the viewer/ directory)
+cd viewer
+npm ci
+npm run lint
+npm run typecheck
+npm run build
+npm test
 ```
 
-## Architecture Overview
+CI runs the same steps across Linux/macOS/Windows and Python 3.11–3.13
+(`.github/workflows/tests.yml`). Tests and examples must use only **synthetic**
+notes — never real vault content, paths, or personal data.
 
-_Add a brief overview of your project architecture_
+## Non-interactive shell commands
 
-## Conventions & Patterns
+When scripting file operations, prefer non-interactive flags so an automated
+run never hangs waiting for a `y/n` prompt (`cp`/`mv`/`rm` are aliased to `-i`
+on some systems):
 
-_Add your project-specific conventions here_
+```bash
+cp -f source dest        # not: cp source dest
+mv -f source dest        # not: mv source dest
+rm -rf directory         # not: rm -r directory
+```
+
+`scp`/`ssh` accept `-o BatchMode=yes`; `apt-get` accepts `-y`.
+
+## Contributing & review
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the pull-request checklist. In short:
+run the full suite, keep test data synthetic, never stage vault paths / database
+files / credentials / personal names, and preserve the invariants below.
+
+A local, account-independent adversarial review helper is available at
+[`scripts/codex-review.sh`](scripts/codex-review.sh) (runs the Codex CLI in a
+read-only sandbox against [`docs/CODEX-REVIEW-PROMPT.md`](docs/CODEX-REVIEW-PROMPT.md)).
+It is optional and requires only the `codex` CLI — no project-specific
+infrastructure.
+
+## Invariants to preserve
+
+1. **No note mutation** — the vault is read-only; the index is disposable output.
+2. **No network calls** in the default core.
+3. **Evidence-class separation** — keep authored (verified), discovery-candidate,
+   and supporting (tag) signals visibly distinct; a candidate never becomes a fact.
+4. **Bounded, cited output** — every passage carries a physical line-range
+   citation, a character budget, and an explicit truncation flag.
+5. **Versioned JSON** — see [docs/json-output.md](docs/json-output.md).
+
+## Product boundary — local and single-user by construction
+
+RecallWeave OSS is **local and single-user by design**. Anything that requires
+hosted execution, cross-machine orchestration, multi-user or RBAC, centralized
+approvals, managed secrets or connectors, fleet management, billing/metering, or
+proprietary control-plane behavior **belongs outside this repository**, in the
+separate commercial control plane — not in the OSS core.
+
+When adding a feature, ask: *does this need a server, another user, or someone
+else's credentials to work?* If yes, it does not belong here. See the "Product
+boundary" section of [ARCHITECTURE.md](ARCHITECTURE.md).
