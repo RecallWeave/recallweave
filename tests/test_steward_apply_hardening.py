@@ -879,6 +879,41 @@ class Round2G3RegressionTest(unittest.TestCase):
         self.assertEqual(receipt["operations_rolled_back"], 1)
         self.assertGreaterEqual(receipt["vault_writes"], 1)
 
+    def test_recovery_refuses_when_deletion_backup_is_missing(self) -> None:
+        # Deletion landed (target gone) but the backup is missing: recovery must
+        # refuse (not falsely claim rolled_back) and leave the journal unresolved.
+        kept = self.vault.root / "kept.md"
+        original_hash = _sha(kept.read_bytes())
+        kept.unlink()
+        journal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "apply_journal",
+            "proposal_id": "prp-nobackupnobacku",
+            "source": "src",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "status": "intent",
+            "backup_dir": "missing-b",  # no such backup dir
+            "operations": [
+                {
+                    "relative_path": "kept.md",
+                    "mutation_class": "move_to_trash",
+                    "content_hash_before": original_hash,
+                    "content_hash_after": None,
+                    "backup_name": "0-kept.md",
+                    "state": "done",
+                }
+            ],
+            "rollback_failures": [],
+            "registry_sha256": self.registry.registry_sha256,
+        }
+        name = "20260101T000000000000Z-nb.json"
+        atomic_write_json(self.dirs["journal"] / name, journal, within=self.dirs["journal"])
+        with self.assertRaisesRegex(ApplyError, "backup missing|cannot be restored"):
+            recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        # Journal stays unresolved (intent) so later applies remain blocked.
+        saved = json.loads((self.dirs["journal"] / name).read_text(encoding="utf-8"))
+        self.assertEqual(saved["status"], "intent")
+
     def test_every_destructive_unlink_routes_through_the_guarded_primitive(self) -> None:
         import ast
 
@@ -1517,7 +1552,9 @@ class RenamePreconditionTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / "new.md").write_text("moved bytes", encoding="utf-8")
-        self.source = SimpleNamespace(root=self.root, name="src")
+        self.source = SimpleNamespace(
+            root=self.root, name="src", root_dev=None, root_ino=None
+        )
 
     def _proposal(self, added_hash: str) -> dict:
         return {
@@ -1591,6 +1628,32 @@ class RenamePreconditionTest(unittest.TestCase):
             _verify_rename_preconditions(
                 self._proposal(_sha(b"different observed bytes")), self.source
             )
+
+    def test_added_path_through_symlinked_parent_is_refused(self) -> None:
+        # The renamed-to path resolves through a parent swapped for a symlink to
+        # an external file whose bytes match the expected hash. A descriptor-
+        # relative O_NOFOLLOW read must refuse it rather than follow outside the
+        # vault and let the precondition pass.
+        from recallweave.steward_apply import _verify_rename_preconditions
+
+        external = Path(self.temporary.name).parent / "steward-external-x"
+        external.mkdir(exist_ok=True)
+        self.addCleanup(lambda: __import__("shutil").rmtree(external, ignore_errors=True))
+        (external / "new.md").write_text("moved bytes", encoding="utf-8")
+        if not make_symlink(external, self.root / "sub"):
+            self.skipTest("symlinks unsupported")
+        proposal = {
+            "action": "fix_links_after_rename",
+            "edits": [{"mutation_class": "fix_unresolved_link", "relative_path": "r.md"}],
+            "rename_preconditions": {
+                "removed_path": "old.md",
+                "removed_absent": True,
+                "added_path": "sub/new.md",
+                "added_content_hash": _sha(b"moved bytes"),
+            },
+        }
+        with self.assertRaisesRegex(ApplyError, "symlink|missing|unreadable"):
+            _verify_rename_preconditions(proposal, self.source)
 
 
 if __name__ == "__main__":

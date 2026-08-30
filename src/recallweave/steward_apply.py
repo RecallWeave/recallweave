@@ -347,6 +347,72 @@ def _validate_proposal(proposal: Any) -> None:
         )
 
 
+def _read_pinned_bytes(
+    source: Any, relative: str, root_identity: tuple[int, int] | None
+) -> bytes:
+    """Read ``relative`` under the source, refusing any symlink in the path.
+
+    Descriptor-relative from the identity-pinned root (O_NOFOLLOW at every
+    component) on POSIX; a symlink-checked pathname read on platforms without
+    dir_fd. Raises ApplyError if the file is missing, a symlink, reached through
+    a symlinked directory, or otherwise unreadable -- so a parent swapped for a
+    symlink after proposal generation cannot redirect the read outside the
+    vault."""
+
+    target = source.root / relative
+    if _DIR_FD_WRITES:
+        try:
+            parent_fd, filename, _created = _open_parent_chain(
+                source.root, target, create_dirs=False, root_identity=root_identity
+            )
+        except (OSError, ApplyError) as error:
+            raise ApplyError(f"Cannot read {relative!r} within the source.") from error
+        try:
+            try:
+                fd = os.open(
+                    filename, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd
+                )
+            except OSError as error:
+                raise ApplyError(
+                    f"Cannot read {relative!r} within the source."
+                ) from error
+            try:
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(fd, 1 << 20)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                return b"".join(chunks)
+            finally:
+                os.close(fd)
+        finally:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+
+    # Pathname fallback (e.g. Windows): re-validate the parent chain for
+    # symlinks and open the final component O_NOFOLLOW where available.
+    _recheck_parent_chain(target, source.root)
+    if is_link_like(target):
+        raise ApplyError(f"Refusing to read a symlink: {relative!r}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(target, flags)
+    except OSError as error:
+        raise ApplyError(
+            f"Cannot read {relative!r} within the source."
+        ) from error
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            return handle.read()
+    except OSError as error:
+        raise ApplyError(
+            f"Cannot read {relative!r} within the source."
+        ) from error
+
+
 def _verify_rename_preconditions(proposal: dict, source: Any) -> None:
     """Verify BOTH sides of a rewrite-after-rename proposal at apply time.
 
@@ -405,19 +471,19 @@ def _verify_rename_preconditions(proposal: dict, source: Any) -> None:
             "rewrite referrers. Re-run the pipeline."
         )
     _require_clean_relative_path(added)
-    added_target = source.root / added
-    if is_link_like(added_target):
-        raise ApplyError(
-            f"Rename precondition failed: the renamed-to path {added!r} is "
-            "a symlink; refusing to rewrite referrers to it."
-        )
+    # Read the renamed-to file descriptor-relative from the pinned root with
+    # O_NOFOLLOW on every component. Checking is_link_like only on the final
+    # component and then read_bytes() would follow a parent directory that was
+    # swapped for a symlink after proposal generation, letting an external file
+    # with the expected hash satisfy the precondition and drive a rewrite to a
+    # path the vault walker excludes.
     try:
-        data = added_target.read_bytes()
-    except OSError:
+        data = _read_pinned_bytes(source, added, _source_identity(source))
+    except ApplyError:
         raise ApplyError(
             f"Rename precondition failed: the renamed-to path {added!r} is "
-            "missing or unreadable; refusing to rewrite referrers to it. "
-            "Re-run the pipeline."
+            "missing, unreadable, or reached through a symlink; refusing to "
+            "rewrite referrers to it. Re-run the pipeline."
         ) from None
     if _sha256_bytes(data) != expected:
         raise ApplyError(
@@ -990,8 +1056,14 @@ def _rollback(
     journal_dir: Path,
     boundary: Path,
     root_identity: tuple[int, int] | None = None,
+    created_dirs: list[Path] | None = None,
 ) -> None:
-    """Reverse-order verified restore of every completed operation."""
+    """Reverse-order verified restore of every completed operation.
+
+    Directory cleanup (``created_dirs``) happens BEFORE the terminal journal
+    status is persisted, so a crash can never leave a journal marked
+    ``rolled_back`` while directories the apply created still sit in the vault
+    (which a now-terminal, unrecoverable journal would strand)."""
 
     failures: list[str] = []
     for op in reversed(completed):
@@ -1079,6 +1151,11 @@ def _rollback(
                 f"({type(error).__name__}), backup retained at "
                 f"{op.get('backup_path')}"
             )
+    # Remove created directories before persisting the terminal status: only
+    # once every vault mutation (files AND directories) is undone may the
+    # journal record a completed rollback.
+    if created_dirs:
+        _remove_created_dirs(created_dirs, boundary, root_identity)
     journal["status"] = "rollback_failed" if failures else "rolled_back"
     journal["rollback_failures"] = failures
     atomic_write_json(journal_path, journal, within=journal_dir)
@@ -1415,20 +1492,20 @@ def apply_proposal(
         index_deltas = validate_l1(receipt_before, receipt_after, plans)
     except ApplyError:
         _rollback(completed, journal_path, journal, journal_dir,
-                  boundary=source.root, root_identity=root_identity)
-        _remove_created_dirs(created_dirs, source.root, root_identity)
+                  boundary=source.root, root_identity=root_identity,
+                  created_dirs=created_dirs)
         raise
     except ValidationError as error:
         _rollback(completed, journal_path, journal, journal_dir,
-                  boundary=source.root, root_identity=root_identity)
-        _remove_created_dirs(created_dirs, source.root, root_identity)
+                  boundary=source.root, root_identity=root_identity,
+                  created_dirs=created_dirs)
         raise ApplyError(
             f"Validation failed and the apply was rolled back: {error}"
         ) from error
     except Exception as error:
         _rollback(completed, journal_path, journal, journal_dir,
-                  boundary=source.root, root_identity=root_identity)
-        _remove_created_dirs(created_dirs, source.root, root_identity)
+                  boundary=source.root, root_identity=root_identity,
+                  created_dirs=created_dirs)
         raise ApplyError(
             f"Apply failed and was rolled back: {type(error).__name__}: {error}"
         ) from error
@@ -1643,6 +1720,17 @@ def sweep_auto_apply(
             skipped.append({"proposal": path.name, "reason": "unreadable"})
             continue
         if document.get("status") == "applied":
+            continue
+        # Skip a proposal compiled under a different source registry BEFORE
+        # eligibility selection. Otherwise a stale same-named proposal reaches
+        # apply_proposal, fails its registry_sha256 check, and is recorded as an
+        # apply FAILURE -- which makes every scheduled sweep --apply report
+        # validation_failed_rolled_back (exit 6) until the artifact is removed
+        # by hand. A foreign proposal is simply not this registry's work.
+        if registry.registry_sha256 is not None and (
+            document.get("registry_sha256") != registry.registry_sha256
+        ):
+            skipped.append({"proposal": path.name, "reason": "foreign_registry"})
             continue
         edits = document.get("edits") or []
         if not edits:
@@ -1870,6 +1958,21 @@ def recover_journal(
         if target.is_file():
             live = _sha256_bytes(target.read_bytes())
 
+        # A deletion whose target is gone but whose backup is also missing is
+        # unrecoverable: proceeding would mark the journal rolled_back while the
+        # note stays deleted (a false success that unblocks later applies).
+        # Refuse the whole recovery and leave the journal unresolved.
+        if (
+            mutation_class == "move_to_trash"
+            and live is None
+            and not backup_exists
+        ):
+            drifted.append(
+                f"{item['relative_path']} (deletion backup missing at "
+                f"{item['backup_path']}; the deleted note cannot be restored)"
+            )
+            continue
+
         # Recovery is hash-pinned like every other write. A target matching
         # the journaled post-apply state is restorable; one already matching
         # the pre-apply state needs nothing; anything else was edited (or
@@ -1916,17 +2019,13 @@ def recover_journal(
     for target in creates_to_remove:
         _guarded_unlink(target, source.root, _recover_identity)
         creates_removed += 1
+    # Remove directories the interrupted apply created as part of the rollback,
+    # BEFORE the terminal status is persisted, so recovery never records a
+    # completed rollback while empty directories still sit in the vault. rmdir
+    # is empty-only, so a directory that has since gained content is left alone.
     _rollback(completed, journal_path, journal, journal_dir,
-              boundary=source.root, root_identity=_source_identity(source))
-    # Remove directories the interrupted apply created, mirroring the in-process
-    # rollback path so recovery never marks a transaction rolled back while
-    # leaving empty directories behind. rmdir is empty-only, so a directory that
-    # has since gained unrelated content is left in place.
-    _remove_created_dirs(
-        _journaled_created_dirs(journal, source.root),
-        source.root,
-        _recover_identity,
-    )
+              boundary=source.root, root_identity=_source_identity(source),
+              created_dirs=_journaled_created_dirs(journal, source.root))
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": "apply_recovery_receipt",
@@ -2025,15 +2124,12 @@ def revert_journal(
         }
         for item in candidates
     ]
+    # Remove directories the apply created as part of the rollback (before its
+    # terminal status), mirroring recovery and the in-process path so a reverted
+    # create leaves no empty directories.
     _rollback(completed, journal_path, journal, journal_dir,
-              boundary=source.root, root_identity=_source_identity(source))
-    # Remove directories the apply created, mirroring recovery and the
-    # in-process rollback, so a reverted create leaves no empty directories.
-    _remove_created_dirs(
-        _journaled_created_dirs(journal, source.root),
-        source.root,
-        _source_identity(source),
-    )
+              boundary=source.root, root_identity=_source_identity(source),
+              created_dirs=_journaled_created_dirs(journal, source.root))
     journal["status"] = "reverted"
     atomic_write_json(journal_path, journal, within=journal_dir)
     return {

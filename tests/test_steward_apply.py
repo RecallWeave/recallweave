@@ -20,6 +20,7 @@ from recallweave.steward_apply import (
     apply_latest,
     apply_proposal,
     recover_journal,
+    sweep_auto_apply,
 )
 from recallweave.steward_assess import assess_latest
 from recallweave.steward_observe import observe_registry
@@ -638,6 +639,57 @@ class ApplyUnitTest(unittest.TestCase):
                 self.registry, self.state_root, self.database,
                 write_policy=None, proposal_id="prp-whatever0000000", execute=True,
             )
+
+    def test_sweep_auto_apply_skips_foreign_registry_proposal(self) -> None:
+        # A stale proposal from a prior registry revision must be SKIPPED, not
+        # recorded as an apply failure (which would make every scheduled sweep
+        # --apply report validation_failed_rolled_back until manual cleanup).
+        content = "# New\n\nbody.\n"
+        proposal = self._proposal(
+            [
+                {
+                    "mutation_class": "create_new_file",
+                    "relative_path": "inbox/new.md",
+                    "replacement_text": content,
+                    "predicted_post_hash": _sha(content.encode()),
+                }
+            ],
+            registry_sha256="0" * 64,  # foreign digest
+        )
+        (self.dirs["proposals"] / "20260101T000000000000Z-src-prp-foreign00000.json").write_text(
+            json.dumps(proposal), encoding="utf-8"
+        )
+        summary = sweep_auto_apply(
+            self.registry, self.dirs, self.database,
+            write_policy=_policy({"class_levels": {"create_new_file": "auto_apply"}}),
+        )
+        self.assertEqual(summary["failures"], [])
+        self.assertEqual(summary["applied"], [])
+        self.assertTrue(
+            any(s.get("reason") == "foreign_registry" for s in summary["skipped"]),
+            f"foreign proposal not skipped: {summary['skipped']}",
+        )
+        self.assertFalse((self.vault.root / "inbox" / "new.md").exists())
+
+    def test_rollback_does_not_mark_terminal_before_dir_cleanup(self) -> None:
+        # If directory cleanup fails, the journal must NOT be marked rolled_back
+        # (a terminal, unrecoverable status) -- it stays recoverable so no crash
+        # window can strand created directories under a "done" journal.
+        journal = {"status": "intent", "operations": [], "rollback_failures": []}
+        journal_path = self.dirs["journal"] / "20260101T000000000000Z-x.json"
+        with patch.object(
+            steward_apply, "_remove_created_dirs", side_effect=OSError("boom")
+        ):
+            with self.assertRaises(OSError):
+                steward_apply._rollback(
+                    [], journal_path, journal, self.dirs["journal"],
+                    boundary=self.vault.root,
+                    created_dirs=[self.vault.root / "inbox"],
+                )
+        self.assertNotEqual(
+            journal["status"], "rolled_back",
+            "journal reached terminal status before directory cleanup completed",
+        )
 
     def test_replace_whole_section_is_not_executable_yet(self) -> None:
         proposal = self._proposal(

@@ -427,6 +427,37 @@ class StatusReportTest(StewardSweepTest):
         self.assertEqual(payload["operation"], "steward-status")
 
 
+class ReportBacklogAggregationTest(StewardSweepTest):
+    def test_report_aggregates_all_assessments_not_just_latest(self) -> None:
+        # assess_latest processes every unassessed batch; the report must reflect
+        # a deletion recorded in an earlier assessment, not only the newest one.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        dirs = self._dirs()
+
+        def _assessment(name: str, summary: dict) -> None:
+            (dirs["assessments"] / name).write_text(
+                json.dumps(
+                    {
+                        "schema_version": STEWARD_SCHEMA_VERSION,
+                        "kind": "assessment_batch",
+                        "source": "vault",
+                        "summary": summary,
+                        "assessments": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        _assessment("20260101T000000Z-vault.json", {"DELETED": 1})
+        _assessment("20260102T000000Z-vault.json", {"DELETED": 0})
+        summary, _broken, _dupes = _aggregate_assessments(dirs, self._registry())
+        self.assertEqual(
+            summary["DELETED"], 1,
+            "the earlier assessment's DELETED relation was dropped from the report",
+        )
+
+
 class PruneTest(StewardSweepTest):
     def test_prune_deletes_only_old_changes_assessments_reports(self) -> None:
         self._baseline()
@@ -468,6 +499,27 @@ class PruneTest(StewardSweepTest):
             status["pruned"]["changes"]
             + status["pruned"]["assessments"]
             + status["pruned"]["reports"],
+        )
+
+    def test_prune_preserves_unassessed_change_batch(self) -> None:
+        # observe advances the checkpoint; an unassessed batch holds the only
+        # record of those changes and must never be pruned by age.
+        self._baseline()
+        (self.vault / "Beta.md").rename(self.vault / "BetaMoved.md")
+        observe_registry(self._registry(), self.state_root)
+        dirs = self._dirs()
+        # The unassessed batch is the newest changes file with a real change.
+        unassessed = sorted(dirs["changes"].glob("*.json"))[-1]
+        old_epoch = time.time() - 40 * 86400
+        for entry in dirs["changes"].iterdir():
+            if entry.is_file():
+                os.utime(entry, (old_epoch, old_epoch))
+
+        status_report(self.state_root, prune_older_than_days=30)
+
+        self.assertTrue(
+            unassessed.exists(),
+            "an unassessed change batch was pruned, losing its changes",
         )
 
     def test_no_prune_by_default(self) -> None:

@@ -112,8 +112,9 @@ SWEEP_EXIT_CODES = {
 _V1_RESULTS = ("no_change", "findings", "approval_required")
 
 # Pruning never touches proposals/, receipts/, or backups/: a pending
-# proposal or a backup is never safe to discard by age alone.
-_PRUNABLE_SUBDIRS = ("changes", "assessments", "reports")
+# proposal or a backup is never safe to discard by age alone. reports/ is
+# pruned purely by age; changes/ and assessments/ are pruned only when their
+# downstream stage is durably complete (see _fully_processed_artifact_names).
 
 _REPORT_FORMATS = ("json", "markdown")
 
@@ -164,8 +165,30 @@ def _load_json(path: Path) -> Any:
         raise ValueError(f"{path} is not valid JSON: {error}") from error
 
 
+def _source_name_from_artifact(name: str) -> str | None:
+    """Exact source name from a ``<ts>-<source>.json`` artifact filename.
+
+    The timestamp segment carries no hyphen, so the source is everything after
+    the first hyphen -- this avoids the glob-suffix collision where ``*-a.json``
+    also matches ``<ts>-x-a.json`` (source ``x-a``)."""
+
+    if not name.endswith(".json"):
+        return None
+    stem = name[: -len(".json")]
+    _, sep, source = stem.partition("-")
+    return source if sep else None
+
+
+def _source_files(directory: Path, source_name: str) -> list[Path]:
+    return sorted(
+        p
+        for p in directory.glob(f"*-{source_name}.json")
+        if _source_name_from_artifact(p.name) == source_name
+    )
+
+
 def _latest_file(directory: Path, source_name: str) -> Path | None:
-    matches = sorted(directory.glob(f"*-{source_name}.json"))
+    matches = _source_files(directory, source_name)
     return matches[-1] if matches else None
 
 
@@ -239,23 +262,25 @@ def _aggregate_assessments(
     for source in registry.sources:
         if exclude_sources and source.name in exclude_sources:
             continue
-        latest = _latest_file(dirs["assessments"], source.name)
-        if latest is None:
-            continue
-        assessment = _load_json(latest)
-        for key, value in (assessment.get("summary") or {}).items():
-            if isinstance(value, int) and not isinstance(value, bool):
-                summary[key] = summary.get(key, 0) + value
-        for item in assessment.get("assessments") or []:
-            relation = item.get("relation")
-            path = item.get("relative_path")
-            if relation == "CITATION_BROKEN":
-                for citation in (item.get("inputs") or {}).get("broken_citations") or []:
-                    text = citation.get("citation") if isinstance(citation, dict) else None
-                    if isinstance(text, str):
-                        broken_citations.append(text)
-            elif relation == "DUPLICATES_EXACT_BYTES" and isinstance(path, str):
-                duplicates.append(path)
+        # Aggregate EVERY assessment for the source, not just the lexically
+        # newest: assess_latest processes every unassessed batch, so a deletion
+        # recorded in an earlier batch would otherwise be missing from the
+        # report (zero DELETED) even though propose created a proposal for it.
+        for assessment_path in _source_files(dirs["assessments"], source.name):
+            assessment = _load_json(assessment_path)
+            for key, value in (assessment.get("summary") or {}).items():
+                if isinstance(value, int) and not isinstance(value, bool):
+                    summary[key] = summary.get(key, 0) + value
+            for item in assessment.get("assessments") or []:
+                relation = item.get("relation")
+                path = item.get("relative_path")
+                if relation == "CITATION_BROKEN":
+                    for citation in (item.get("inputs") or {}).get("broken_citations") or []:
+                        text = citation.get("citation") if isinstance(citation, dict) else None
+                        if isinstance(text, str):
+                            broken_citations.append(text)
+                elif relation == "DUPLICATES_EXACT_BYTES" and isinstance(path, str):
+                    duplicates.append(path)
 
     return summary, sorted(set(broken_citations)), sorted(set(duplicates))
 
@@ -655,7 +680,11 @@ def _dir_total_bytes(directory: Path) -> int:
     return total
 
 
-def _prune_dir(directory: Path, cutoff_epoch: float) -> int:
+def _prune_dir(
+    directory: Path,
+    cutoff_epoch: float,
+    prunable_names: set[str] | None = None,
+) -> int:
     if is_link_like(directory):
         raise ValueError(
             f"Refusing to prune through a symlinked directory: {directory}"
@@ -663,6 +692,13 @@ def _prune_dir(directory: Path, cutoff_epoch: float) -> int:
     deleted = 0
     for entry in directory.iterdir():
         if is_link_like(entry) or not entry.is_file():
+            continue
+        # When an allow-set is given, only artifacts whose downstream stage is
+        # durably complete may be pruned -- so an unassessed change batch, or an
+        # assessed-but-unproposed batch/assessment, is never deleted (which
+        # would permanently lose changes the checkpoint has already advanced
+        # past).
+        if prunable_names is not None and entry.name not in prunable_names:
             continue
         try:
             mtime = entry.stat().st_mtime
@@ -675,6 +711,53 @@ def _prune_dir(directory: Path, cutoff_epoch: float) -> int:
             except OSError:
                 pass
     return deleted
+
+
+# Deterministic relations that cause propose to compile a proposal. An
+# assessment with none of these produces nothing downstream and is complete
+# once written; one that has them is complete only after a proposal exists.
+_PROPOSAL_ELIGIBLE_RELATIONS = (
+    "DELETED",
+    "CITATION_BROKEN",
+    "DUPLICATES_EXACT_BYTES",
+)
+
+
+def _fully_processed_artifact_names(dirs: dict[str, Path]) -> set[str]:
+    """Names of change-batch/assessment artifacts safe to prune.
+
+    An artifact ``<ts>-<source>.json`` (the batch and its same-named assessment)
+    is safe to prune only once propose has consumed it: either a proposal cites
+    it, or its assessment produced no proposal-eligible relations at all. An
+    unassessed batch is never in this set."""
+
+    proposed: set[str] = set()
+    for path in dirs["proposals"].glob("*.json"):
+        try:
+            document = _load_json(path)
+        except ValueError:
+            continue
+        if not isinstance(document, dict):
+            continue
+        for ref in document.get("assessment_refs") or []:
+            if isinstance(ref, dict) and isinstance(ref.get("assessment_file"), str):
+                proposed.add(ref["assessment_file"])
+
+    complete: set[str] = set()
+    for path in dirs["assessments"].glob("*.json"):
+        try:
+            document = _load_json(path)
+        except ValueError:
+            continue
+        if not isinstance(document, dict):
+            continue
+        summary = document.get("summary") or {}
+        eligible = any(
+            int(summary.get(rel, 0) or 0) > 0 for rel in _PROPOSAL_ELIGIBLE_RELATIONS
+        )
+        if not eligible or path.name in proposed:
+            complete.add(path.name)
+    return complete
 
 
 def _lock_state(state_root: Path) -> dict[str, Any]:
@@ -744,9 +827,19 @@ def status_report(
         # Destructive pruning is serialized by the same lock the pipeline
         # stages use, so a concurrent run cannot lose its selected inputs.
         with lock_state(state_root):
-            for name in _PRUNABLE_SUBDIRS:
-                pruned[name] = _prune_dir(dirs[name], cutoff_epoch)
-        pruned["total"] = sum(pruned.values())
+            # Reports are terminal output: prune purely by age. Change batches
+            # and assessments are pipeline inputs: prune only those whose
+            # downstream stage is durably complete, so an unprocessed backlog is
+            # never deleted after the checkpoint has advanced past it.
+            complete = _fully_processed_artifact_names(dirs)
+            pruned["reports"] = _prune_dir(dirs["reports"], cutoff_epoch)
+            pruned["changes"] = _prune_dir(
+                dirs["changes"], cutoff_epoch, prunable_names=complete
+            )
+            pruned["assessments"] = _prune_dir(
+                dirs["assessments"], cutoff_epoch, prunable_names=complete
+            )
+        pruned["total"] = pruned["reports"] + pruned["changes"] + pruned["assessments"]
 
     counts = {
         "change_batches": _dir_file_count(dirs["changes"]),
