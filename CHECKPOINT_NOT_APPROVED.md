@@ -6,7 +6,7 @@ automatically whenever the local suite is green and the tree is clean.
 
 **Do not merge, promote, release, or deploy from this branch.**
 
-- Latest adversarial review verdict: **PASS** (`.codex-reviews/review-20260830T004824Z.md` covered birth-time `created_at` + vault-gated Obsidian open; **Obsidian open was subsequently withdrawn** pending redesign `recallweave-fkd`. Birth-only promotion needs a fresh Codex review before merge.)
+- Latest adversarial review verdict: **PASS WITH FIXES** (`.codex-reviews/review-20260830T012119Z.md`, birth-time `created_at`; Obsidian open withdrawn; shared_tags integrity fix)
 - Promotion to `main` happens only through a milestone pull request with human
   merge approval, and only after the adversarial review returns PASS.
 - A failing or absent review does **not** block this checkpoint, because the
