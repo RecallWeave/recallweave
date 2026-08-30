@@ -1035,7 +1035,20 @@ def _open_state_root_fd(state_root: Path) -> int:
     descriptor PINS the state-root inode: every read/deletion done relative to it
     targets that one inode for the whole prune, so a state root renamed away and
     replaced by another (even non-symlink) directory between operations cannot
-    redirect them."""
+    redirect them.
+
+    Trust boundary (deliberate, and identical to the state WRITE path in
+    steward_state.atomic_write_bytes): steward validates and anchors the state
+    root and EVERYTHING BELOW it -- O_NOFOLLOW refuses a symlinked state root, the
+    held descriptor pins its inode, and every subdirectory/leaf is opened
+    relative to it O_NOFOLLOW with inode-verified deletion. The state root's OWN
+    ancestor directories are treated as trusted: an attacker able to swap one of
+    them for a symlink already has write access to the state tree's parent and
+    can tamper with state directly, so validating the full ancestor chain from /
+    would add no real protection -- and cannot be done in general anyway, since
+    legitimate state-dir paths traverse OS symlinks (e.g. /tmp and /var on macOS)
+    that an O_NOFOLLOW descent from / would wrongly reject. This matches the
+    boundary every other steward state read and write already relies on."""
     try:
         return os.open(
             state_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
