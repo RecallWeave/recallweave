@@ -657,6 +657,38 @@ class ApplyUnitTest(unittest.TestCase):
             json.dumps(proposal), encoding="utf-8"
         )
 
+    def test_sweep_auto_apply_leaves_unreadable_protected_frontmatter_pending(self) -> None:
+        # An auto-eligible target with unreadable protected frontmatter must be
+        # left pending (skipped), not sent to apply -> validation_failed.
+        target = self.vault.write("inbox/prot.md", "---\nx: 1\n---\nbody\n")
+        content = "extra\n"
+        proposal = self._proposal(
+            [
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "inbox/prot.md",
+                    "precondition_content_hash": _sha(target.read_bytes()),
+                    "replacement_text": content,
+                    "predicted_post_hash": _sha(target.read_bytes() + content.encode()),
+                }
+            ],
+            proposal_id="prp-protectedfront0",
+        )
+        (self.dirs["proposals"] / "20260101T000000000000Z-src-prp-protectedfront0.json").write_text(
+            json.dumps(proposal), encoding="utf-8"
+        )
+        policy = _policy({
+            "class_levels": {"append_at_eof": "auto_apply"},
+            "protected": {"frontmatter": {"x": ["1"]}},
+        })
+        with patch("recallweave.steward_apply.parse_note", side_effect=OSError("unreadable")):
+            summary = sweep_auto_apply(
+                self.registry, self.dirs, self.database, write_policy=policy
+            )
+        self.assertEqual(summary["applied"], [])
+        self.assertEqual(summary["failures"], [])
+        self.assertTrue(any(s.get("reason") == "not_auto_apply" for s in summary["skipped"]))
+
     def test_sweep_auto_apply_aborts_after_rollback_failure(self) -> None:
         # A RollbackError leaves the source partially restored; the sweep must
         # NOT apply the next proposal against it.

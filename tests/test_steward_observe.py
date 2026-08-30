@@ -227,15 +227,16 @@ class ObserveSourceTest(unittest.TestCase):
         self.observe()
         original_hash = self.checkpoint()["entries"][0]["content_hash"]
         self.vault.write("a.md", "changed-during-read-content")
-        real_hash = _hash_file
+        import recallweave.steward_observe as _obs
+        real_hash_fd = _obs._hash_fd
 
-        def flaky_hash(path: Path) -> str:
-            result = real_hash(path)
+        def flaky_hash(fd: int) -> str:
+            result = real_hash_fd(fd)
             self.vault.touch_mtime("a.md", offset_seconds=5)
             return result
 
         with patch(
-            "recallweave.steward_observe._hash_file", side_effect=flaky_hash
+            "recallweave.steward_observe._hash_fd", side_effect=flaky_hash
         ):
             receipt = self.observe()
         self.assertIn("a.md", receipt["changed_during_observe"])
@@ -279,6 +280,20 @@ class ObserveSourceTest(unittest.TestCase):
         batch = json.loads(batches[0].read_text(encoding="utf-8"))
         self.assertEqual(batch["kind"], CHANGE_BATCH_KIND)
         self.assertEqual(batch["changes"][0]["change_type"], "added")
+
+    def test_open_pinned_fd_refuses_symlinked_ancestor(self) -> None:
+        import os as _os
+        from recallweave.steward_observe import _open_pinned_fd
+
+        external = Path(self.temporary.name) / "ext"
+        external.mkdir()
+        (external / "note.md").write_text("outside", encoding="utf-8")
+        try:
+            _os.symlink(external, self.vault.root / "sub", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unsupported")
+        with self.assertRaises(OSError):
+            _open_pinned_fd(self.vault.root, "sub/note.md")
 
     def test_same_timestamp_run_does_not_overwrite_an_earlier_batch(self) -> None:
         # A second observation sharing the first's timestamp (clock rollback or
@@ -326,14 +341,17 @@ class ObserveSourceTest(unittest.TestCase):
     def test_file_unreadable_during_hash_does_not_abort_observation(self) -> None:
         self.vault.write("a.md", "hello")
         self.vault.write("b.md", "world")
-        real_hash = _hash_file
+        import recallweave.steward_observe as _obs
+        real_hash_fd = _obs._hash_fd
+        calls = {"n": 0}
 
-        def flaky(path):
-            if path.name == "a.md":
+        def flaky(fd):
+            calls["n"] += 1
+            if calls["n"] == 1:  # first admitted file (a.md, sorted first)
                 raise OSError("vanished mid-hash")
-            return real_hash(path)
+            return real_hash_fd(fd)
 
-        with patch("recallweave.steward_observe._hash_file", side_effect=flaky):
+        with patch("recallweave.steward_observe._hash_fd", side_effect=flaky):
             receipt = self.observe(now="2026-01-01T00:00:00+00:00")
         # b.md still observed; a.md recorded as changed-during-observe, not fatal.
         self.assertIn("a.md", receipt["changed_during_observe"])

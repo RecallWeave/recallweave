@@ -1823,34 +1823,36 @@ def sweep_auto_apply(
         if source is None:
             skipped.append({"proposal": path.name, "reason": "unknown_source"})
             continue
-        def _edit_frontmatter(edit: dict) -> dict | None:
-            # Only needed when the policy protects by frontmatter; read the
-            # target's current frontmatter so a protected note is not counted
-            # eligible (which would otherwise show up as an apply failure).
-            if not write_policy.protected_frontmatter:
-                return None
-            target = source.root / edit.get("relative_path", "")
-            if not target.is_file():
-                return None
-            try:
-                return parse_note(target, source.root).frontmatter
-            except (UnicodeError, RecursionError, OSError):
-                # Unreadable frontmatter under a protect rule: treat as
-                # ineligible by returning a sentinel the policy will deny.
-                return {"__unreadable__": ["1"]}
+        def _edit_eligible(edit: dict) -> bool:
+            if not isinstance(edit, dict):
+                return False
+            frontmatter = None
+            if write_policy.protected_frontmatter:
+                target = source.root / edit.get("relative_path", "")
+                if target.is_file():
+                    try:
+                        frontmatter = parse_note(target, source.root).frontmatter
+                    except (UnicodeError, RecursionError, OSError):
+                        # Unreadable/unparseable frontmatter under a protect rule
+                        # is NOT auto-appliable: return an explicit ineligibility
+                        # so the proposal is simply left pending, rather than a
+                        # synthetic frontmatter mapping that resolve_level would
+                        # not deny -- which would send it to apply_proposal and
+                        # make every scheduled sweep report
+                        # validation_failed_rolled_back.
+                        return False
+            return (
+                resolve_level(
+                    write_policy,
+                    mutation_class=edit.get("mutation_class", ""),
+                    source_name=source.name,
+                    relative_path=edit.get("relative_path", ""),
+                    frontmatter=frontmatter,
+                )[0]
+                == "auto_apply"
+            )
 
-        eligible = all(
-            isinstance(edit, dict)
-            and resolve_level(
-                write_policy,
-                mutation_class=edit.get("mutation_class", ""),
-                source_name=source.name,
-                relative_path=edit.get("relative_path", ""),
-                frontmatter=_edit_frontmatter(edit),
-            )[0]
-            == "auto_apply"
-            for edit in edits
-        )
+        eligible = all(_edit_eligible(edit) for edit in edits)
         if not eligible:
             skipped.append({"proposal": path.name, "reason": "not_auto_apply"})
             continue

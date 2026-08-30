@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +57,71 @@ def _hash_file(path: Path) -> str:
             if not chunk:
                 break
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _open_pinned_fd(base: Path, relative: str) -> int:
+    """Open ``base/relative`` for reading WITHOUT following a symlink at any
+    component, descriptor-relative from ``base`` on POSIX.
+
+    A parent directory swapped for a symlink between discovery and this open is
+    refused (OSError), so a file's bytes and stat are always taken from inside
+    the source tree -- never from an out-of-source target an ancestor symlink
+    would point at. Raises OSError if any component is a symlink/non-directory,
+    the leaf is missing, or the open fails. The caller fstats and reads the fd."""
+
+    parts = Path(relative).parts
+    if not parts:
+        raise OSError("empty relative path")
+    use_dir_fd = (
+        os.open in os.supports_dir_fd
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
+    if use_dir_fd:
+        fds: list[int] = [os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+        try:
+            for part in parts[:-1]:
+                fds.append(
+                    os.open(
+                        part,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=fds[-1],
+                    )
+                )
+            return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[-1])
+        finally:
+            for fd in fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    # Pathname fallback (e.g. Windows): reject a symlink at any component.
+    current = base
+    for part in parts[:-1]:
+        current = current / part
+        if is_link_like(current):
+            raise OSError(f"symlinked ancestor: {current}")
+    full = base / relative
+    if is_link_like(full):
+        raise OSError(f"symlink leaf: {full}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    return os.open(full, flags)
+
+
+def _pinned_stat(fd: int) -> os.stat_result:
+    return os.fstat(fd)
+
+
+def _hash_fd(fd: int) -> str:
+    os.lseek(fd, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    while True:
+        chunk = os.read(fd, _CHUNK_SIZE)
+        if not chunk:
+            break
+        digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -288,93 +354,98 @@ def observe_source(
     changed_during_observe: list[str] = []
     policy_excluded: set[str] = set()
 
+    # Base for symlink-free, descriptor-relative opens: a file source's note is
+    # its own root, so descend from the parent; a folder source descends from
+    # the root itself.
+    hash_base = resolved_root.parent if source.type == "file" else resolved_root
+
+    def _mark_changed_during(rel: str) -> None:
+        changed_during_observe.append(rel)
+        prior_entry = prior_entries.get(rel)
+        if prior_entry is not None:
+            new_entries[rel] = _entry_from_prior(prior_entry)
+
     for path in admitted:
         relative = _relative_for(source, resolved_root, path)
+        # Open the file WITHOUT following a symlink at any component, so a parent
+        # swapped for a symlink after discovery cannot redirect the stat/hash to
+        # a file outside the source (which would be committed to the checkpoint
+        # as a vault note). All metadata and bytes come from this one fd.
         try:
-            info = path.stat(follow_symlinks=False)
+            fd = _open_pinned_fd(hash_base, relative)
         except OSError:
             skipped["unreadable_path"] += 1
             continue
-        size = int(info.st_size)
-        mtime_ns = int(info.st_mtime_ns)
-        dev = int(info.st_dev)
-        ino = int(info.st_ino)
-
-        allowed, reason = source.policy.path_allowed(relative, size)
-        if not allowed:
-            skipped[reason or "policy"] += 1
-            policy_excluded.add(relative)
-            continue
-
-        # The full IndexPolicy applies, frontmatter denial included: a note
-        # the index would refuse must not be hashed or recorded by path
-        # anywhere in steward state. Parsing mirrors indexing's fail-closed
-        # behavior; with no deny rules configured, frontmatter_allowed always
-        # admits and the parse is skipped.
-        if source.policy.deny_frontmatter:
+        try:
             try:
-                note = parse_note(path, resolved_root)
-            except UnicodeError:
-                skipped["unsupported_encoding"] += 1
-                policy_excluded.add(relative)
-                continue
-            except RecursionError:
-                skipped["unparseable_frontmatter"] += 1
-                policy_excluded.add(relative)
-                continue
+                info = _pinned_stat(fd)
             except OSError:
-                # The file was statted during discovery but became unreadable or
-                # was removed before frontmatter parsing could open it. Record it
-                # as changed-during-observe and keep any prior checkpoint entry,
-                # so one transient read failure cannot abort observation for
-                # every other note and source (mirrors the hashing path below).
-                changed_during_observe.append(relative)
-                prior_entry = prior_entries.get(relative)
-                if prior_entry is not None:
-                    new_entries[relative] = _entry_from_prior(prior_entry)
+                skipped["unreadable_path"] += 1
                 continue
-            allowed, reason = source.policy.frontmatter_allowed(
-                note.frontmatter, valid=note.frontmatter_valid
-            )
+            if not stat.S_ISREG(info.st_mode):
+                # A symlink, directory, or special file at the leaf: not a note.
+                skipped["unreadable_path"] += 1
+                continue
+            size = int(info.st_size)
+            mtime_ns = int(info.st_mtime_ns)
+            dev = int(info.st_dev)
+            ino = int(info.st_ino)
+
+            allowed, reason = source.policy.path_allowed(relative, size)
             if not allowed:
-                skipped[reason or "frontmatter_policy"] += 1
+                skipped[reason or "policy"] += 1
                 policy_excluded.add(relative)
                 continue
 
-        # Every admitted file is hashed on every sweep. A size-and-mtime gate
-        # would be cheaper, but equal-length bytes with a restored mtime would
-        # then pass as unchanged — an integrity sweep may not treat stat
-        # equality as proof of byte equality.
-        prior = prior_entries.get(relative)
-        try:
-            current_hash = _hash_file(path)
-        except OSError:
-            # The file was statted during discovery but became unreadable (a
-            # permission change, a transient I/O error, a concurrent unlink)
-            # before or during hashing. Record it as changed-during-observe and
-            # keep any prior checkpoint entry, so one unreadable file cannot
-            # abort observation for every other file and source.
-            changed_during_observe.append(relative)
-            if prior is not None:
-                new_entries[relative] = _entry_from_prior(prior)
-            continue
-        try:
-            after = path.stat(follow_symlinks=False)
-        except OSError:
-            changed_during_observe.append(relative)
-            if prior is not None:
-                new_entries[relative] = _entry_from_prior(prior)
-            continue
-        if (
-            int(after.st_size) != size
-            or int(after.st_mtime_ns) != mtime_ns
-            or int(after.st_dev) != dev
-            or int(after.st_ino) != ino
-        ):
-            changed_during_observe.append(relative)
-            if prior is not None:
-                new_entries[relative] = _entry_from_prior(prior)
-            continue
+            # The full IndexPolicy applies, frontmatter denial included: a note
+            # the index would refuse must not be hashed or recorded by path
+            # anywhere in steward state. Parsing mirrors indexing's fail-closed
+            # behavior; with no deny rules configured, frontmatter_allowed always
+            # admits and the parse is skipped.
+            if source.policy.deny_frontmatter:
+                try:
+                    note = parse_note(path, resolved_root)
+                except UnicodeError:
+                    skipped["unsupported_encoding"] += 1
+                    policy_excluded.add(relative)
+                    continue
+                except RecursionError:
+                    skipped["unparseable_frontmatter"] += 1
+                    policy_excluded.add(relative)
+                    continue
+                except OSError:
+                    _mark_changed_during(relative)
+                    continue
+                allowed, reason = source.policy.frontmatter_allowed(
+                    note.frontmatter, valid=note.frontmatter_valid
+                )
+                if not allowed:
+                    skipped[reason or "frontmatter_policy"] += 1
+                    policy_excluded.add(relative)
+                    continue
+
+            # Every admitted file is hashed on every sweep. A size-and-mtime gate
+            # would be cheaper, but equal-length bytes with a restored mtime would
+            # then pass as unchanged — an integrity sweep may not treat stat
+            # equality as proof of byte equality. The hash is read from the same
+            # pinned fd, and a re-fstat detects a mid-read change.
+            prior = prior_entries.get(relative)
+            try:
+                current_hash = _hash_fd(fd)
+                after = _pinned_stat(fd)
+            except OSError:
+                _mark_changed_during(relative)
+                continue
+            if (
+                int(after.st_size) != size
+                or int(after.st_mtime_ns) != mtime_ns
+                or int(after.st_dev) != dev
+                or int(after.st_ino) != ino
+            ):
+                _mark_changed_during(relative)
+                continue
+        finally:
+            os.close(fd)
 
         new_entries[relative] = CheckpointEntry(
             relative_path=relative,

@@ -256,6 +256,15 @@ def _fsync_parent_dir(directory: Path) -> None:
         os.close(dir_fd)
 
 
+_DIR_FD_STATE_WRITES = (
+    os.open in os.supports_dir_fd
+    and os.rename in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
+
+
 def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) -> None:
     if within is not None:
         guard_within(path, within)
@@ -266,6 +275,57 @@ def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) 
     data = json.dumps(
         payload, ensure_ascii=True, sort_keys=True, indent=2
     ).encode("utf-8")
+
+    if _DIR_FD_STATE_WRITES:
+        # Anchor the write to the parent directory opened O_NOFOLLOW, so a state
+        # subdirectory swapped for a symlink after guard_within cannot redirect
+        # the temp file or the rename outside the state tree (and, for a journal
+        # write, cannot leave the durable record where recovery will not look).
+        try:
+            dir_fd = os.open(
+                str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+        except OSError as error:
+            raise ValueError(
+                f"Refusing to write into a symlinked or missing state "
+                f"directory: {parent} ({type(error).__name__})"
+            ) from error
+        temp_name = f".{path.name}.steward-state.tmp"
+        try:
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
+            try:
+                fd = os.open(temp_name, flags, 0o600, dir_fd=dir_fd)
+            except FileExistsError as error:
+                raise ValueError(
+                    f"A stale temp file occupies the state path beside "
+                    f"{path.name}; remove it and retry."
+                ) from error
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.rename(
+                    temp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd
+                )
+                # Durability: flush the directory entry of the rename.
+                try:
+                    os.fsync(dir_fd)
+                except OSError:
+                    pass
+            except BaseException:
+                try:
+                    os.unlink(temp_name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+                raise
+        finally:
+            os.close(dir_fd)
+        return
+
+    # Pathname fallback (e.g. Windows without dir_fd): re-check the leaf is not a
+    # symlink immediately before the replace; the parent-swap window cannot be
+    # fully excluded here, matching the apply module's documented fallback.
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
     )
@@ -274,11 +334,9 @@ def atomic_write_json(path: Path, payload: dict, *, within: Path | None = None) 
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        if is_link_like(path):
+            raise ValueError(f"Refusing to replace a symlink or junction: {path}")
         os.replace(temp_name, path)
-        # Fsync the containing directory so the rename is itself durable. Without
-        # this, a crash after os.replace can lose the new directory entry even
-        # though the file's bytes were fsynced -- which for a journal write would
-        # let recovery restart from a journal that omits an already-landed op.
         _fsync_parent_dir(parent)
     except BaseException:
         try:

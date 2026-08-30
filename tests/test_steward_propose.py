@@ -688,6 +688,31 @@ class ProposeLatestTest(StewardProposeTest):
         self.assertIn(gamma_doc["proposal_id"], beta_doc["conflicts_with"])
         self.assertIn(beta_doc["proposal_id"], gamma_doc["conflicts_with"])
 
+    def test_reemitted_batch_does_not_create_duplicate_proposal_id(self) -> None:
+        # A re-emitted batch (same changes under a new timestamp) must not
+        # produce a second proposal file with the same deterministic id.
+        self._write_assessment_and_batch("20260101T000000Z")
+        propose_latest(self.registry, self.state_root, self.database)
+        first = list(self.dirs["proposals"].glob("*.json"))
+        ids = {json.loads(p.read_text())["proposal_id"] for p in first}
+        # Duplicate the batch+assessment under a NEW timestamp (re-emit).
+        import shutil
+        for sub in ("changes", "assessments"):
+            src = self.dirs[sub] / "20260101T000000Z-vault.json"
+            dst = self.dirs[sub] / "20260102T000000Z-vault.json"
+            doc = json.loads(src.read_text())
+            if sub == "assessments":
+                doc["change_batch_ref"] = "20260102T000000Z-vault.json"
+            dst.write_text(json.dumps(doc), encoding="utf-8")
+        propose_latest(self.registry, self.state_root, self.database)
+        # No proposal id appears in more than one file.
+        seen: dict[str, int] = {}
+        for p in self.dirs["proposals"].glob("*.json"):
+            pid = json.loads(p.read_text())["proposal_id"]
+            seen[pid] = seen.get(pid, 0) + 1
+        self.assertTrue(all(n == 1 for n in seen.values()), f"duplicate ids: {seen}")
+        self.assertEqual(set(seen), ids)
+
     def test_foreign_assessment_is_skipped_not_fatal(self) -> None:
         # A stale assessment from a prior registry revision must be SKIPPED, not
         # raise -- otherwise it would wedge every propose/sweep until removed.

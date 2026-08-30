@@ -949,12 +949,32 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
             ]
         )
 
+        # Proposal ids already present on disk under ANY filename. A re-emitted
+        # batch (observe wrote a batch, then save_checkpoint failed, so the next
+        # observe re-detected the same changes under a new timestamp) produces a
+        # second assessment whose proposals carry the SAME deterministic
+        # proposal_id under a different filename stem. Writing that duplicate
+        # would let an apply select both -- the first mutating, the second
+        # failing its now-stale precondition. Collapse by id: never write a
+        # proposal whose id already exists.
+        existing_ids: set[str] = set()
+        for existing_path in proposals_dir.glob("*.json"):
+            try:
+                doc = json.loads(existing_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(doc, dict) and isinstance(doc.get("proposal_id"), str):
+                existing_ids.add(doc["proposal_id"])
+
         written = 0
         conflicts_synced = 0
         for filename, proposal, is_new in all_computed:
             path = proposals_dir / filename
             if is_new:
+                if proposal.get("proposal_id") in existing_ids:
+                    continue  # duplicate id from a re-emitted batch; skip
                 atomic_write_json(path, proposal, within=proposals_dir)
+                existing_ids.add(proposal.get("proposal_id"))
                 written += 1
                 continue
             # An EXISTING pending proposal may have gained a conflict with a

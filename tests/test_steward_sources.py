@@ -106,6 +106,11 @@ class StewardSourcesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "name may only contain"):
             SourceRegistry.from_payload(payload, base_dir=self.root)
 
+    def test_overlong_name_rejected(self) -> None:
+        payload = _registry(_source("a" * 200, str(self.vault_a)))
+        with self.assertRaisesRegex(ValueError, "too long"):
+            SourceRegistry.from_payload(payload, base_dir=self.root)
+
     def test_colon_in_name_rejected_for_windows_portability(self) -> None:
         # Colons are legal on POSIX but reserved in Windows filenames; a source
         # name is embedded verbatim into state artifact filenames, so it must be

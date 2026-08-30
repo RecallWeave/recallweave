@@ -18,6 +18,10 @@ SOURCES_SPEC_VERSION = "recallweave.steward.sources.v1"
 # separator), which would make a `vault:one` source load on POSIX yet fail when
 # Steward writes its state artifacts on Windows -- so it is excluded here.
 SOURCE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+# The name is embedded in state artifact filenames; 128 bytes leaves ample room
+# under the common 255-byte filesystem component limit for the timestamp,
+# collision nonce, proposal-id, separators, and ``.json`` suffix.
+MAX_SOURCE_NAME_BYTES = 128
 ALLOWED_REGISTRY_KEYS = {"spec_version", "sources"}
 ALLOWED_SOURCE_KEYS = {"name", "type", "root", "mode", "policy"}
 SOURCE_TYPES = {"folder", "file", "git-worktree"}
@@ -172,6 +176,16 @@ class SourceRegistry:
         name = source["name"]
         if not isinstance(name, str) or not SOURCE_NAME_PATTERN.fullmatch(name):
             raise ValueError("source name may only contain [A-Za-z0-9._-].")
+        # The name is embedded verbatim in state artifact filenames, whose
+        # longest form is roughly ``{ts:22}-{name}-{proposal_id:~20}.json``.
+        # Cap the name so a valid registry can never fail later with
+        # ENAMETOOLONG on the common 255-byte component limit.
+        if len(name.encode("utf-8")) > MAX_SOURCE_NAME_BYTES:
+            raise ValueError(
+                f"source name is too long ({len(name.encode('utf-8'))} bytes); "
+                f"the limit is {MAX_SOURCE_NAME_BYTES} so generated state "
+                "filenames stay within the filesystem's component limit."
+            )
         if name in seen:
             raise ValueError(f"Duplicate source name: {name!r}")
         seen.add(name)

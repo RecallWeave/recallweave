@@ -150,37 +150,59 @@ class AtomicWriteJsonTest(unittest.TestCase):
         self.assertTrue(path.is_file())
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"a": 2, "b": 1})
 
-    def test_parent_directory_is_fsynced_for_durability(self) -> None:
-        # The rename must itself be made durable (parent-dir fsync), so a
-        # journal write cannot be lost while the mutation it authorizes lands.
+    def test_write_is_made_durable(self) -> None:
+        # Durability (an fsync of the file and of the directory entry) is
+        # attempted; implementation may fsync a handle or a dir fd.
+        import recallweave.steward_state as _st
         path = self.root / "data.json"
-        with patch(
-            "recallweave.steward_state._fsync_parent_dir"
-        ) as fsync_dir:
+        real_fsync = _st.os.fsync
+        with patch.object(_st.os, "fsync", side_effect=real_fsync) as fsync:
             atomic_write_json(path, {"value": 1})
-        fsync_dir.assert_called_once_with(self.root)
+        self.assertGreaterEqual(fsync.call_count, 1)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"value": 1})
 
-    def test_crash_in_replace_leaves_old_file(self) -> None:
+    def test_crash_in_rename_leaves_old_file(self) -> None:
         path = self.root / "data.json"
         atomic_write_json(path, {"value": "old"})
         original = path.read_bytes()
-        with patch(
-            "recallweave.steward_state.os.replace",
-            side_effect=OSError("injected replace failure"),
-        ):
+        with patch("recallweave.steward_state.os.replace",
+                   side_effect=OSError("injected")), \
+             patch("recallweave.steward_state.os.rename",
+                   side_effect=OSError("injected")):
             with self.assertRaises(OSError):
                 atomic_write_json(path, {"value": "new"})
         self.assertEqual(path.read_bytes(), original)
+        # No leftover temp files beside the target.
+        self.assertEqual(
+            [p.name for p in self.root.iterdir() if p.name != "data.json"], []
+        )
 
-    def test_crash_in_replace_leaves_no_file_when_absent(self) -> None:
+    def test_crash_in_rename_leaves_no_file_when_absent(self) -> None:
         path = self.root / "absent.json"
-        with patch(
-            "recallweave.steward_state.os.replace",
-            side_effect=OSError("injected replace failure"),
-        ):
+        with patch("recallweave.steward_state.os.replace",
+                   side_effect=OSError("injected")), \
+             patch("recallweave.steward_state.os.rename",
+                   side_effect=OSError("injected")):
             with self.assertRaises(OSError):
                 atomic_write_json(path, {"value": "new"})
         self.assertFalse(path.exists())
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_refuses_symlinked_parent_directory(self) -> None:
+        # A state subdirectory swapped for a symlink must be refused.
+        real = self.root / "real"
+        real.mkdir()
+        link = self.root / "sub"
+        try:
+            link.symlink_to(real, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        target = link / "data.json"
+        import recallweave.steward_state as _st
+        if not _st._DIR_FD_STATE_WRITES:
+            self.skipTest("descriptor-relative writes unavailable")
+        with self.assertRaisesRegex(ValueError, "symlinked or missing"):
+            atomic_write_json(target, {"value": 1})
 
     def test_refuses_symlink_destination(self) -> None:
         target = self.root / "target.json"

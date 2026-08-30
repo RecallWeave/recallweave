@@ -86,6 +86,9 @@ STATUS_KIND = "steward_status"
 # full length under integrity.evidence_truncated so a consumer can tell a
 # complete list from a Steward-truncated one.
 REPORT_EVIDENCE_LIMIT = 1000
+# Per-array character budget for report evidence, so a handful of very long
+# entries cannot blow the report size even under the element-count cap.
+REPORT_EVIDENCE_CHAR_BUDGET = 200_000
 
 # Frozen for v1. Do not add, remove, or reorder without a corresponding audit
 # of every caller that indexes SWEEP_EXIT_CODES by these exact strings.
@@ -449,13 +452,27 @@ def _assemble_report(
     evidence_truncation: dict[str, dict[str, int]] = {}
 
     def _bound(name: str, items: list[Any]) -> list[Any]:
-        if len(items) > REPORT_EVIDENCE_LIMIT:
+        # Enforce BOTH a element-count cap and a deterministic character budget:
+        # a few filesystem-length paths or citations could otherwise blow the
+        # report size even under the count cap. Keep whole entries in order until
+        # either limit is reached; annotate the full total whenever anything is
+        # omitted.
+        kept: list[Any] = []
+        used = 0
+        for item in items:
+            if len(kept) >= REPORT_EVIDENCE_LIMIT:
+                break
+            length = len(str(item)) + 1  # +1 for the encoded separator/newline
+            if kept and used + length > REPORT_EVIDENCE_CHAR_BUDGET:
+                break
+            kept.append(item)
+            used += length
+        if len(kept) < len(items):
             evidence_truncation[name] = {
-                "reported": REPORT_EVIDENCE_LIMIT,
+                "reported": len(kept),
                 "total": len(items),
             }
-            return items[:REPORT_EVIDENCE_LIMIT]
-        return items
+        return kept
 
     sources_missing = sorted(
         item["source"]

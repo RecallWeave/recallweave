@@ -798,6 +798,29 @@ class ForeignProposalPendingTest(StewardSweepTest):
 
 
 class EvidenceBoundingTest(StewardSweepTest):
+    def test_evidence_bounded_by_character_budget(self) -> None:
+        import recallweave.steward_sweep as sw
+
+        self._baseline()
+        # Two entries whose combined length exceeds a tiny char budget, under the
+        # element-count cap: the char budget must still truncate + flag.
+        observe_receipt = {
+            "sources": [
+                {"source": "x" * 50, "error": "source_missing"},
+                {"source": "y" * 50, "error": "source_missing"},
+            ]
+        }
+        with patch.object(sw, "REPORT_EVIDENCE_LIMIT", 1000), \
+                patch.object(sw, "REPORT_EVIDENCE_CHAR_BUDGET", 60):
+            report = sw._assemble_report(
+                self._registry(), self._dirs(), self.database,
+                generated_at="2026-01-01T00:00:00+00:00",
+                observe_receipt=observe_receipt, proposals_created_this_sweep=0,
+            )
+        integ = report["integrity"]
+        self.assertLess(len(integ["sources_missing"]), 2)
+        self.assertIn("sources_missing", integ["evidence_truncated"])
+
     def test_all_integrity_evidence_arrays_are_bounded(self) -> None:
         import recallweave.steward_sweep as sw
 
