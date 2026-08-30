@@ -11,7 +11,7 @@ from pathlib import Path
 from recallweave.cli import main as cli_main
 from recallweave.index import build_index, connect
 from recallweave.policy import IndexPolicy
-from recallweave.steward_assess import assess_change_batch
+from recallweave.steward_assess import assess_change_batch, assess_latest
 from recallweave.steward_propose import (
     ACTIONS,
     POLICY_LEVEL,
@@ -617,6 +617,61 @@ class ProposeLatestTest(StewardProposeTest):
         self.assertEqual(receipt["proposals_created"], 0)
         self.assertEqual(
             receipt["per_source"], [{"source": "vault", "reason": "no_assessment"}]
+        )
+
+    def test_every_assessment_is_proposed_not_just_newest(self) -> None:
+        # Two assessments recorded before proposing: an earlier deletion must
+        # still produce its proposal even though a later assessment exists.
+        gamma_hash = self._index_hash("Gamma.md")
+        (self.vault / "Gamma.md").unlink()
+        early_batch = _batch(
+            changes=[_change("Gamma.md", "removed", previous=gamma_hash)]
+        )
+        early_batch_path = self.dirs["changes"] / "20260101T000000Z-vault.json"
+        early_batch_path.write_text(json.dumps(early_batch), encoding="utf-8")
+        early = self._assess(early_batch)
+        early["change_batch_ref"] = early_batch_path.name
+        (self.dirs["assessments"] / early_batch_path.name).write_text(
+            json.dumps(early), encoding="utf-8"
+        )
+        # A later, empty assessment.
+        later_batch = _batch(changes=[])
+        later_batch_path = self.dirs["changes"] / "20260102T000000Z-vault.json"
+        later_batch_path.write_text(json.dumps(later_batch), encoding="utf-8")
+        later = self._assess(later_batch)
+        later["change_batch_ref"] = later_batch_path.name
+        (self.dirs["assessments"] / later_batch_path.name).write_text(
+            json.dumps(later), encoding="utf-8"
+        )
+
+        receipt = propose_latest(self.registry, self.state_root, self.database)
+        # Gamma's deletion (from the earlier assessment) produced a proposal.
+        written = list(
+            self.dirs["proposals"].glob("20260101T000000Z-vault-*.json")
+        )
+        self.assertTrue(written, "earlier assessment produced no proposal")
+        self.assertGreaterEqual(receipt["proposals_created"], 1)
+
+    def test_assess_then_propose_two_batches_end_to_end(self) -> None:
+        # Full stage pairing: two change batches (earlier deletion, later empty)
+        # observed before assessment. assess_latest must assess both, and
+        # propose_latest must then emit a proposal for the earlier deletion.
+        gamma_hash = self._index_hash("Gamma.md")
+        (self.vault / "Gamma.md").unlink()
+        early = _batch(changes=[_change("Gamma.md", "removed", previous=gamma_hash)])
+        (self.dirs["changes"] / "20260101T000000Z-vault.json").write_text(
+            json.dumps(early), encoding="utf-8"
+        )
+        later = _batch(changes=[])
+        (self.dirs["changes"] / "20260102T000000Z-vault.json").write_text(
+            json.dumps(later), encoding="utf-8"
+        )
+        assess_receipt = assess_latest(self.registry, self.state_root, self.database)
+        self.assertEqual(len(assess_receipt["assessed"]), 2)
+        propose_latest(self.registry, self.state_root, self.database)
+        self.assertTrue(
+            list(self.dirs["proposals"].glob("20260101T000000Z-vault-*.json")),
+            "earlier deletion produced no proposal after full assess+propose",
         )
 
     def test_partial_write_is_completed_on_rerun(self) -> None:

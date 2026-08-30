@@ -169,6 +169,19 @@ def _rebuild_bytes(
     return new_raw.encode("utf-8")
 
 
+def _source_name_from_artifact_filename(name: str) -> str | None:
+    """Recover the exact source name from a ``<ts>-<source>.json`` artifact name.
+
+    The timestamp component contains no hyphen, so the source name (which may
+    itself contain hyphens) is everything after the first hyphen of the stem."""
+
+    if not name.endswith(".json"):
+        return None
+    stem = name[: -len(".json")]
+    _, sep, source = stem.partition("-")
+    return source if sep else None
+
+
 def _dedup_skipped(skipped: list[dict[str, str]]) -> list[dict[str, str]]:
     """Collapse duplicate skip records for the same referrer (a referrer with
     both a wikilink and a markdown-link edge is scanned once per edge) and
@@ -752,17 +765,54 @@ def propose_from_assessment(
     return proposals
 
 
-def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -> dict:
-    """For each registered source, propose from its newest un-proposed assessment.
+def _load_assessment_batch(
+    assessment: dict, assessment_name: str, changes_dir: Path
+) -> dict | None:
+    """Load and digest-verify the change batch an assessment was computed from."""
 
-    "Not yet proposed" mirrors ``assess_latest``: take the newest
-    ``assessments/<ts>-<source>.json`` file (by filename sort) and check
-    whether any ``proposals/<ts>-<source>-<proposal_id>.json`` file already
-    exists for that timestamp+source. If a source's assessment produced zero
-    proposals, nothing is written and the next run will look at that same
-    assessment again -- harmless, since it will again produce nothing new.
-    Runs under the steward state lock, since it both reads and writes the
-    steward state directory."""
+    batch_ref = assessment.get("change_batch_ref")
+    if not isinstance(batch_ref, str):
+        return None
+    if "/" in batch_ref or "\\" in batch_ref or batch_ref in ("", ".", ".."):
+        raise ValueError(
+            f"Assessment {assessment_name} carries an invalid "
+            f"change_batch_ref: {batch_ref!r}"
+        )
+    batch_path = changes_dir / batch_ref
+    if not batch_path.is_file():
+        return None
+    batch_bytes = batch_path.read_bytes()
+    pinned = assessment.get("change_batch_sha256")
+    actual = hashlib.sha256(batch_bytes).hexdigest()
+    if pinned is not None and actual != pinned:
+        # The assessment pinned the exact batch it assessed; a batch rewritten
+        # afterwards must never drive compiled edits.
+        raise ValueError(
+            f"Change batch {batch_ref} no longer matches the digest its "
+            "assessment pinned; re-run steward-observe and steward-assess "
+            "before proposing."
+        )
+    try:
+        return json.loads(batch_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError(
+            f"Change batch {batch_ref} is not valid JSON: {error}"
+        ) from error
+
+
+def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -> dict:
+    """For each registered source, propose from EVERY un-proposed assessment.
+
+    Every ``assessments/<ts>-<source>.json`` for a source is processed in
+    timestamp order (not just the newest): if assessment ran more than once
+    before proposing, taking only the latest would permanently skip an earlier
+    assessment's findings (e.g. a deletion recorded before an empty later run).
+    A proposal set is deterministic in its (digest-pinned) assessment, so it is
+    recomputed each run and only missing ``proposals/<ts>-<source>-<id>.json``
+    files are written -- a crashed run completes on rerun, and an existing
+    (possibly already-applied) proposal file is never overwritten. Runs under
+    the steward state lock, since it both reads and writes the state directory.
+    """
 
     state_root = Path(state_root)
     database = Path(database)
@@ -781,105 +831,87 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
         all_computed: list[tuple[str, dict[str, Any], bool]] = []
 
         for source in registry.sources:
-            assessment_files = sorted(assessments_dir.glob(f"*-{source.name}.json"))
+            # Match the source's assessments by EXACT recorded name, not a glob
+            # suffix (`*-a.json` also matches `<ts>-x-a.json`); the timestamp
+            # component carries no hyphen, so the name is what follows the first.
+            assessment_files = sorted(
+                path
+                for path in assessments_dir.glob(f"*-{source.name}.json")
+                if _source_name_from_artifact_filename(path.name) == source.name
+            )
             if not assessment_files:
                 per_source.append({"source": source.name, "reason": "no_assessment"})
                 continue
-            latest = assessment_files[-1]
 
-            try:
-                assessment = json.loads(latest.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as error:
-                raise ValueError(
-                    f"Assessment {latest.name} is not valid JSON: {error}"
-                ) from error
-            if assessment.get("source") != source.name:
-                raise ValueError(
-                    f"Assessment {latest.name} claims source "
-                    f"{assessment.get('source')!r} but was selected for source "
-                    f"{source.name!r}; refusing a cross-source proposal run."
-                )
-            recorded_sha = assessment.get("registry_sha256")
-            # A null recorded digest fails closed when the active registry
-            # has one: an edited or legacy assessment must not bypass binding
-            # to the current registry.
-            if (
-                registry.registry_sha256 is not None
-                and recorded_sha != registry.registry_sha256
-            ):
-                raise ValueError(
-                    f"Assessment {latest.name} was recorded under a different "
-                    "source registry (registry_sha256 mismatch); re-run "
-                    "steward-observe and steward-assess with the current "
-                    "registry before proposing."
-                )
-
-            batch: dict[str, Any] | None = None
-            batch_ref = assessment.get("change_batch_ref")
-            if isinstance(batch_ref, str):
+            created_here = 0
+            skipped_drifted_all: set[str] = set()
+            saw_any_proposal = False
+            for assessment_path in assessment_files:
+                try:
+                    assessment = json.loads(
+                        assessment_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError) as error:
+                    raise ValueError(
+                        f"Assessment {assessment_path.name} is not valid JSON: "
+                        f"{error}"
+                    ) from error
+                if assessment.get("source") != source.name:
+                    raise ValueError(
+                        f"Assessment {assessment_path.name} claims source "
+                        f"{assessment.get('source')!r} but was selected for "
+                        f"source {source.name!r}; refusing a cross-source "
+                        "proposal run."
+                    )
+                recorded_sha = assessment.get("registry_sha256")
+                # A null recorded digest fails closed when the active registry
+                # has one: an edited or legacy assessment must not bypass binding
+                # to the current registry.
                 if (
-                    "/" in batch_ref
-                    or "\\" in batch_ref
-                    or batch_ref in ("", ".", "..")
+                    registry.registry_sha256 is not None
+                    and recorded_sha != registry.registry_sha256
                 ):
                     raise ValueError(
-                        f"Assessment {latest.name} carries an invalid "
-                        f"change_batch_ref: {batch_ref!r}"
+                        f"Assessment {assessment_path.name} was recorded under a "
+                        "different source registry (registry_sha256 mismatch); "
+                        "re-run steward-observe and steward-assess with the "
+                        "current registry before proposing."
                     )
-                batch_path = changes_dir / batch_ref
-                if batch_path.is_file():
-                    batch_bytes = batch_path.read_bytes()
-                    pinned = assessment.get("change_batch_sha256")
-                    actual = hashlib.sha256(batch_bytes).hexdigest()
-                    if pinned is not None and actual != pinned:
-                        # The assessment pinned the exact batch it assessed; a
-                        # batch rewritten afterwards must never drive compiled
-                        # edits.
-                        raise ValueError(
-                            f"Change batch {batch_ref} no longer matches the "
-                            "digest its assessment pinned; re-run "
-                            "steward-observe and steward-assess before "
-                            "proposing."
-                        )
-                    try:
-                        batch = json.loads(batch_bytes.decode("utf-8"))
-                    except (UnicodeDecodeError, ValueError) as error:
-                        raise ValueError(
-                            f"Change batch {batch_ref} is not valid JSON: {error}"
-                        ) from error
 
-            skipped_drifted: list[str] = []
-            # The proposal set is deterministic in the (pinned) assessment, so
-            # recompute it every run rather than treating the presence of ONE
-            # proposal file as proof the whole set was written. A run that
-            # crashed after writing some proposals then completes the rest here,
-            # and an already-written file (possibly since applied) is never
-            # overwritten.
-            proposals = propose_from_assessment(
-                assessment,
-                batch,
-                database,
-                source.root,
-                now=generated_at,
-                skipped_drifted=skipped_drifted,
-            )
-            missing = 0
-            for proposal in proposals:
-                filename = f"{latest.stem}-{proposal['proposal_id']}.json"
-                is_new = not (proposals_dir / filename).exists()
-                all_computed.append((filename, proposal, is_new))
-                if is_new:
-                    missing += 1
-            if not proposals:
+                batch = _load_assessment_batch(
+                    assessment, assessment_path.name, changes_dir
+                )
+
+                skipped_drifted: list[str] = []
+                proposals = propose_from_assessment(
+                    assessment,
+                    batch,
+                    database,
+                    source.root,
+                    now=generated_at,
+                    skipped_drifted=skipped_drifted,
+                )
+                skipped_drifted_all.update(skipped_drifted)
+                if proposals:
+                    saw_any_proposal = True
+                for proposal in proposals:
+                    filename = (
+                        f"{assessment_path.stem}-{proposal['proposal_id']}.json"
+                    )
+                    is_new = not (proposals_dir / filename).exists()
+                    all_computed.append((filename, proposal, is_new))
+                    if is_new:
+                        created_here += 1
+
+            if not saw_any_proposal:
                 per_source.append(
                     {
                         "source": source.name,
-                        "assessment_ref": latest.name,
                         "proposals_created": 0,
-                        "skipped_drifted": sorted(set(skipped_drifted)),
+                        "skipped_drifted": sorted(skipped_drifted_all),
                     }
                 )
-            elif missing == 0:
+            elif created_here == 0:
                 per_source.append(
                     {"source": source.name, "reason": "already_proposed"}
                 )
@@ -887,9 +919,8 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                 per_source.append(
                     {
                         "source": source.name,
-                        "assessment_ref": latest.name,
-                        "proposals_created": missing,
-                        "skipped_drifted": sorted(set(skipped_drifted)),
+                        "proposals_created": created_here,
+                        "skipped_drifted": sorted(skipped_drifted_all),
                     }
                 )
 
