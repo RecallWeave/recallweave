@@ -77,6 +77,7 @@ class EnsureStateLayoutTest(unittest.TestCase):
                 "changes",
                 "assessments",
                 "proposals",
+                "proposed",
                 "receipts",
                 "reports",
                 "backups",

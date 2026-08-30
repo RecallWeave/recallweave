@@ -786,45 +786,37 @@ def _fully_processed_artifact_names(
     """Names of change-batch/assessment artifacts safe to prune.
 
     An artifact ``<ts>-<source>.json`` (the batch and its same-named assessment)
-    is safe to prune only once propose has consumed it: either a VALID proposal
-    of this registry cites it, or its assessment produced no proposal-eligible
-    relations at all. An unassessed batch is never in this set.
+    is safe to prune only once propose has fully consumed it: either its
+    assessment produced no proposal-eligible relations at all, or propose wrote a
+    durable completion marker for it (``proposed/<ts>-<source>.json``). An
+    unassessed batch is never in this set.
 
-    Pruning is destructive after the checkpoint has advanced, so a proposal only
-    authorizes pruning when it is a genuine, current-registry proposal: it must
-    be a proposal object, bound to the active ``registry_sha256``, and its source
-    must match the referenced assessment's source (parsed from the filename). A
-    stale, foreign-registry, forged, or cross-source proposal cannot make an
-    unprocessed artifact prunable."""
+    Pruning is destructive after the checkpoint has advanced, so completeness is
+    proven by the marker -- written by propose ONLY after EVERY proposal for the
+    assessment is on disk -- not by the mere presence of one proposal (a crash
+    after the first of several proposals must not authorize pruning the rest).
+    The marker must be a genuine current-registry marker; a foreign or malformed
+    one does not authorize pruning."""
 
-    proposed: set[str] = set()
-    for path in dirs["proposals"].glob("*.json"):
-        try:
-            document = _load_json(path)
-        except ValueError:
-            continue
-        if not isinstance(document, dict):
-            continue
-        if document.get("kind") != "proposal":
-            continue
-        # Bind to the active registry: a foreign-registry (or digest-less when
-        # one is active) proposal is not this registry's processing evidence.
-        if registry_sha256 is not None and (
-            document.get("registry_sha256") != registry_sha256
-        ):
-            continue
-        proposal_source = document.get("source")
-        for ref in document.get("assessment_refs") or []:
-            if not isinstance(ref, dict):
+    marked: set[str] = set()
+    proposed_dir = dirs.get("proposed")
+    if proposed_dir is not None and proposed_dir.is_dir():
+        for path in proposed_dir.glob("*.json"):
+            try:
+                document = _load_json(path)
+            except ValueError:
                 continue
-            name = ref.get("assessment_file")
-            if not isinstance(name, str):
+            if not isinstance(document, dict):
                 continue
-            # The proposal's source must own the assessment it claims to have
-            # processed (the source is encoded in the artifact filename).
-            if _source_name_from_artifact(name) != proposal_source:
+            if document.get("kind") != "propose_marker":
                 continue
-            proposed.add(name)
+            if registry_sha256 is not None and (
+                document.get("registry_sha256") != registry_sha256
+            ):
+                continue
+            name = document.get("assessment")
+            if isinstance(name, str):
+                marked.add(name)
 
     complete: set[str] = set()
     for path in dirs["assessments"].glob("*.json"):
@@ -843,7 +835,7 @@ def _fully_processed_artifact_names(
         eligible = any(
             int(summary.get(rel, 0) or 0) > 0 for rel in _PROPOSAL_ELIGIBLE_RELATIONS
         )
-        if not eligible or path.name in proposed:
+        if not eligible or path.name in marked:
             complete.add(path.name)
     return complete
 
@@ -928,6 +920,18 @@ def status_report(
             pruned["assessments"] = _prune_dir(
                 dirs["assessments"], cutoff_epoch, prunable_names=complete
             )
+            # Drop completion markers whose assessment has been pruned, so the
+            # proposed/ marker store stays bounded. A marker is removed only once
+            # its assessment is gone, never while the assessment it authorizes is
+            # still present.
+            proposed_dir = dirs.get("proposed")
+            if proposed_dir is not None and proposed_dir.is_dir():
+                for marker in proposed_dir.glob("*.json"):
+                    if not (dirs["assessments"] / marker.name).exists():
+                        try:
+                            marker.unlink()
+                        except OSError:
+                            pass
         pruned["total"] = pruned["reports"] + pruned["changes"] + pruned["assessments"]
 
     counts = {

@@ -826,9 +826,11 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
         assessments_dir = dirs["assessments"]
         changes_dir = dirs["changes"]
         proposals_dir = dirs["proposals"]
+        proposed_dir = dirs["proposed"]
 
         per_source: list[dict[str, Any]] = []
         all_computed: list[tuple[str, dict[str, Any], bool]] = []
+        processed_assessments: list[str] = []
 
         for source in registry.sources:
             # Match the source's assessments by EXACT recorded name, not a glob
@@ -892,6 +894,7 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                     skipped_drifted=skipped_drifted,
                 )
                 skipped_drifted_all.update(skipped_drifted)
+                processed_assessments.append(assessment_path.name)
                 if proposals:
                     saw_any_proposal = True
                 for proposal in proposals:
@@ -950,6 +953,24 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                 existing["conflicts_with"] = proposal.get("conflicts_with", [])
                 atomic_write_json(path, existing, within=proposals_dir)
                 conflicts_synced += 1
+
+        # Durable per-assessment completion markers, written ONLY after every
+        # proposal above is on disk. Pruning requires a marker before it may
+        # delete an assessment/change batch, so a crash that persisted only some
+        # of an assessment's proposals (no marker yet) can never make that
+        # assessment prunable -- the rerun completes the set and then marks it.
+        for assessment_name in sorted(set(processed_assessments)):
+            atomic_write_json(
+                proposed_dir / assessment_name,
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "propose_marker",
+                    "assessment": assessment_name,
+                    "registry_sha256": registry.registry_sha256,
+                    "generated_at": generated_at,
+                },
+                within=proposed_dir,
+            )
 
         return {
             "schema_version": STEWARD_SCHEMA_VERSION,

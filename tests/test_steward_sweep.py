@@ -671,12 +671,13 @@ class PruneTest(StewardSweepTest):
             + status["pruned"]["reports"],
         )
 
-    def test_pruning_ignores_foreign_and_cross_source_proposals(self) -> None:
+    def test_pruning_requires_valid_completion_marker(self) -> None:
         from recallweave.steward_sweep import _fully_processed_artifact_names
 
         dirs = self._dirs()
+        name = "20260101T000000Z-vault.json"
         # An eligible (has a DELETED) assessment for source "vault".
-        (dirs["assessments"] / "20260101T000000Z-vault.json").write_text(
+        (dirs["assessments"] / name).write_text(
             json.dumps(
                 {
                     "schema_version": STEWARD_SCHEMA_VERSION,
@@ -690,32 +691,32 @@ class PruneTest(StewardSweepTest):
             encoding="utf-8",
         )
 
-        def _proposal(name: str, **over) -> None:
+        def _marker(**over) -> None:
             doc = {
                 "schema_version": STEWARD_SCHEMA_VERSION,
-                "kind": "proposal",
-                "proposal_id": "prp-x",
-                "source": "vault",
+                "kind": "propose_marker",
+                "assessment": name,
                 "registry_sha256": "active",
-                "assessment_refs": [{"assessment_file": "20260101T000000Z-vault.json"}],
-                "edits": [],
             }
             doc.update(over)
-            (dirs["proposals"] / name).write_text(json.dumps(doc), encoding="utf-8")
+            (dirs["proposed"] / name).write_text(json.dumps(doc), encoding="utf-8")
 
-        # Foreign registry, wrong source, and non-proposal kind: none authorize.
-        _proposal("p-foreign.json", registry_sha256="stale")
-        _proposal("p-crosssrc.json", source="other")
-        _proposal("p-notproposal.json", kind="assessment_batch")
-        complete = _fully_processed_artifact_names(dirs, "active")
-        self.assertNotIn(
-            "20260101T000000Z-vault.json", complete,
-            "an eligible assessment was made prunable by an invalid proposal",
+        # No marker -> not prunable even though a (partial) proposal may exist.
+        (dirs["proposals"] / f"{name[:-5]}-prp-partial00.json").write_text(
+            json.dumps({"kind": "proposal", "source": "vault",
+                        "registry_sha256": "active",
+                        "assessment_refs": [{"assessment_file": name}], "edits": []}),
+            encoding="utf-8",
         )
-        # A valid current-registry proposal DOES authorize it.
-        _proposal("p-valid.json")
-        complete = _fully_processed_artifact_names(dirs, "active")
-        self.assertIn("20260101T000000Z-vault.json", complete)
+        self.assertNotIn(name, _fully_processed_artifact_names(dirs, "active"))
+
+        # Foreign-registry marker does not authorize.
+        _marker(registry_sha256="stale")
+        self.assertNotIn(name, _fully_processed_artifact_names(dirs, "active"))
+
+        # A valid current-registry completion marker authorizes pruning.
+        _marker()
+        self.assertIn(name, _fully_processed_artifact_names(dirs, "active"))
 
     def test_prune_preserves_unassessed_change_batch(self) -> None:
         # observe advances the checkpoint; an unassessed batch holds the only

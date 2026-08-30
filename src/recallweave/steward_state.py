@@ -19,6 +19,7 @@ STEWARD_SUBDIRS = (
     "changes",
     "assessments",
     "proposals",
+    "proposed",
     "receipts",
     "reports",
     "backups",
