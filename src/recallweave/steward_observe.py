@@ -480,7 +480,19 @@ def observe_source(
     # and additions before assessment ever saw them. With batch-first, a crash
     # merely re-observes against the old checkpoint and re-emits the batch
     # (digest-bound assessment deduplicates), never losing a change.
-    filename = f"{_file_timestamp(generated_at)}-{source.name}.json"
+    # Create-only, never-overwriting batch naming. Deriving the name solely
+    # from the timestamp is not collision-proof (clock rollback, an injected
+    # `now`, or two runs sharing a microsecond), and atomic_write_json REPLACES.
+    # A later empty run could otherwise overwrite an earlier run's real,
+    # not-yet-assessed batch and lose its changes. Pick the first name that does
+    # not yet exist, keeping the source name after the first hyphen so the
+    # assess/propose filename parsers still recover it exactly.
+    stamp = _file_timestamp(generated_at)
+    filename = f"{stamp}-{source.name}.json"
+    nonce = 1
+    while (state_dirs["changes"] / filename).exists():
+        filename = f"{stamp}_{nonce}-{source.name}.json"
+        nonce += 1
     atomic_write_json(
         state_dirs["changes"] / filename,
         receipt,

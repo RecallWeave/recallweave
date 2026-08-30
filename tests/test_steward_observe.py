@@ -280,6 +280,28 @@ class ObserveSourceTest(unittest.TestCase):
         self.assertEqual(batch["kind"], CHANGE_BATCH_KIND)
         self.assertEqual(batch["changes"][0]["change_type"], "added")
 
+    def test_same_timestamp_run_does_not_overwrite_an_earlier_batch(self) -> None:
+        # A second observation sharing the first's timestamp (clock rollback or
+        # injected `now`) must NOT overwrite the first's not-yet-assessed batch.
+        self.vault.write("a.md", "hello")
+        first = self.observe(now="2026-01-01T00:00:00+00:00")
+        self.assertEqual(
+            [c["change_type"] for c in first["changes"]], ["added"]
+        )
+        first_batch = self.dirs["changes"] / "20260101T000000000000Z-src.json"
+        self.assertTrue(first_batch.is_file())
+        # Second run, same timestamp, no tree change -> empty batch. It must land
+        # under a distinct name, leaving the first batch's change intact.
+        second = self.observe(now="2026-01-01T00:00:00+00:00")
+        self.assertEqual(second["changes"], [])
+        saved = json.loads(first_batch.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [c["change_type"] for c in saved["changes"]], ["added"],
+            "the earlier batch's recorded change was overwritten",
+        )
+        batches = list(self.dirs["changes"].glob("*-src.json"))
+        self.assertEqual(len(batches), 2, "the second batch reused the first's name")
+
     def test_checkpoint_from_a_different_registry_is_rebaselined(self) -> None:
         self.vault.write("a.md", "hello")
         observe_source(

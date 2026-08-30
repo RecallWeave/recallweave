@@ -44,10 +44,6 @@ from .steward_state import (
 
 ASSESS_ASSERTER = "recallweave.steward.assess.v1"
 ASSESSMENT_KIND = "assessment_batch"
-# Per-document ceiling on the emitted assessment records. Bounds the persisted,
-# user-facing assessment JSON; the summary counts remain complete and a
-# truncated document carries an explicit assessments_truncated marker.
-ASSESS_EVIDENCE_LIMIT = 1000
 STANDING_CAVEAT = (
     "Deterministic byte- and structure-level relations only; they do not "
     "judge meaning, support, or truth."
@@ -641,18 +637,12 @@ def assess_change_batch(
             summary[item["relation"]] = summary.get(item["relation"], 0) + 1
         summary["redacted_out_of_policy"] = redacted_out_of_policy
 
-        # Bound the persisted, user-facing evidence array so this document has a
-        # defined size ceiling and a consumer can tell complete output from one
-        # truncated in transit. The summary counts above reflect the FULL set;
-        # only the emitted records are capped, with an explicit flag.
-        assessments_truncated: dict[str, int] | None = None
-        if len(assessments) > ASSESS_EVIDENCE_LIMIT:
-            assessments_truncated = {
-                "reported": ASSESS_EVIDENCE_LIMIT,
-                "total": len(assessments),
-            }
-            assessments = assessments[:ASSESS_EVIDENCE_LIMIT]
-
+        # The assessment document is an INTERNAL pipeline artifact that
+        # propose_from_assessment reads in full to compile edits (like the
+        # change batch, it is not a bounded human-facing read-output). It must
+        # therefore stay complete: truncating it here would permanently drop the
+        # proposals for the omitted records. Presentation bounding lives in the
+        # sweep report projection instead.
         return {
             "schema_version": STEWARD_SCHEMA_VERSION,
             "kind": ASSESSMENT_KIND,
@@ -670,7 +660,6 @@ def assess_change_batch(
                 "database": database.name,
             },
             "assessments": assessments,
-            "assessments_truncated": assessments_truncated,
             "summary": summary,
             "content_drifted": sorted(set(content_drifted)),
             "baseline_divergence": sorted(set(baseline_divergence)),

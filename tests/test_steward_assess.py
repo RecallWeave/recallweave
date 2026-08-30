@@ -585,33 +585,19 @@ class AssessLatestTest(StewardAssessTest):
             assess_latest(registry, self.state_root, self.database)
 
 
-class AssessmentEvidenceBoundTest(StewardAssessTest):
-    def test_assessment_document_evidence_is_bounded(self) -> None:
-        import recallweave.steward_assess as sa
-
+class AssessmentEvidenceCompletenessTest(StewardAssessTest):
+    def test_assessment_document_retains_all_records_for_propose(self) -> None:
+        # The persisted assessment is an internal artifact propose reads in
+        # full; it must never be truncated (that would drop proposals).
         changes = []
         for i in range(5):
             p = self._write(f"New{i}.md", f"# New{i}\n\nunique {i}.\n")
             changes.append(_change(f"New{i}.md", "added", current=_hash(p)))
-        batch = _batch(changes=changes)
-        with patch.object(sa, "ASSESS_EVIDENCE_LIMIT", 2):
-            document = assess_change_batch(
-                batch, self.database, self.vault, now=FROZEN_NOW
-            )
-        self.assertEqual(len(document["assessments"]), 2)
-        self.assertEqual(
-            document["assessments_truncated"], {"reported": 2, "total": 5}
-        )
-        # The summary still reflects the FULL count, not the truncated array.
-        self.assertEqual(document["summary"]["NEW"], 5)
-
-    def test_untruncated_assessment_has_null_marker(self) -> None:
-        p = self._write("Solo.md", "# Solo\n\none.\n")
         document = assess_change_batch(
-            _batch(changes=[_change("Solo.md", "added", current=_hash(p))]),
-            self.database, self.vault, now=FROZEN_NOW,
+            _batch(changes=changes), self.database, self.vault, now=FROZEN_NOW
         )
-        self.assertIsNone(document["assessments_truncated"])
+        self.assertEqual(len(document["assessments"]), 5)
+        self.assertNotIn("assessments_truncated", document)
 
 
 class SingleFileSourceAssessTest(unittest.TestCase):
