@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -608,6 +609,33 @@ class AssessLatestTest(StewardAssessTest):
             return_value=(source.root_dev + 1, source.root_ino + 1),
         ):
             receipt = assess_latest(self.registry, self.state_root, self.database)
+        self.assertEqual(receipt["assessed"], [])
+        self.assertIn(
+            {"source": "vault", "reason": "source_identity_changed"},
+            receipt["skipped_sources"],
+        )
+        self.assertEqual(list(self.dirs["assessments"].glob("*.json")), [])
+
+    def test_symlinked_root_resolving_to_pinned_inode_is_refused(self) -> None:
+        # A root RENAMED aside and REPLACED by a symlink back to the original
+        # resolves, through the symlink, to the pinned (dev, ino) -- so an
+        # identity-only check would accept it. is_link_like must refuse the
+        # symlinked root before the identity comparison.
+        source = self.registry.sources[0]
+        if source.root_dev is None or source.root_ino is None:
+            self.skipTest("source identity is not pinned on this platform")
+        path = self._write("Newcomer.md", "# Newcomer\n\nBrand new note.\n")
+        self._write_batch_file(
+            "20260101T000000Z", [_change("Newcomer.md", "added", current=_hash(path))]
+        )
+        renamed = self.root / "vault-original"
+        os.rename(self.vault, renamed)
+        try:
+            self.vault.symlink_to(renamed, target_is_directory=True)
+        except OSError as error:
+            os.rename(renamed, self.vault)  # restore for teardown
+            self.skipTest(f"symlink creation unavailable: {error}")
+        receipt = assess_latest(self.registry, self.state_root, self.database)
         self.assertEqual(receipt["assessed"], [])
         self.assertIn(
             {"source": "vault", "reason": "source_identity_changed"},

@@ -35,7 +35,7 @@ from typing import Any
 from .index import SCHEMA_VERSION as INDEX_SCHEMA_VERSION
 from .parser import parse_note
 from .index import connect
-from .safe_write import path_identity
+from .safe_write import is_link_like, path_identity
 from .steward_sources import SourceRegistry
 from .steward_state import (
     STEWARD_SCHEMA_VERSION,
@@ -99,6 +99,12 @@ def _source_identity_ok(source: Any) -> bool:
 
     if source.root_dev is None or source.root_ino is None:
         return True
+    # A root REPLACED by a symlink to the renamed original resolves, through the
+    # symlink, to the pinned (dev, ino) -- so an identity check alone would accept
+    # it and read the source through a symlinked root. Refuse a link-like root
+    # outright (path_identity follows symlinks and cannot catch this).
+    if is_link_like(source.root):
+        return False
     try:
         return path_identity(source.root) == (source.root_dev, source.root_ino)
     except OSError:

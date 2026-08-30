@@ -1198,7 +1198,10 @@ def _write_backup(
     backup_dir: Path, name: str, data: bytes, *, within: Path
 ) -> Path:
     backup_path = backup_dir / name
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    # Do NOT pathname-mkdir backup_dir: atomic_write_bytes creates the missing
+    # proposal-specific directory descriptor-relative during its anchored descent,
+    # so a backups/ directory swapped for a symlink cannot make a pathname mkdir
+    # create a directory outside the state tree.
     # Write AND verify the backup descriptor-relative to the pinned state tree:
     # a pathname open/read would follow a backups/ directory swapped for a
     # symlink after guard_within, writing (and then "verifying") the copy outside

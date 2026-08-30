@@ -345,6 +345,34 @@ class BackupAnchorTest(unittest.TestCase):
                 _write_backup(within, "0-note.md", b"backup data", within=within)
             self.assertEqual(list((real_root / "backups").iterdir()), [])
 
+    def test_write_backup_creates_no_external_dir_through_symlinked_backups(
+        self,
+    ) -> None:
+        # backups/ swapped for a symlink to an external directory, and the
+        # proposal-specific backup subdir does NOT yet exist: the backup must be
+        # refused WITHOUT any pathname mkdir creating a directory in the external
+        # target. Regression for the pre-anchor mkdir following the symlink.
+        import recallweave.steward_state as _st
+
+        if not _st._DIR_FD_STATE_WRITES:
+            self.skipTest("descriptor-relative writes unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            state_root = base / "state"
+            state_root.mkdir()
+            external = base / "external"
+            external.mkdir()
+            backups_link = state_root / "backups"
+            try:
+                backups_link.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            backup_dir = backups_link / "20260101T000000000000Z-prp-x"
+            with self.assertRaises(ValueError):
+                _write_backup(backup_dir, "0-note.md", b"backup data", within=backups_link)
+            # Nothing was created inside the external directory the symlink points at.
+            self.assertEqual(list(external.iterdir()), [])
+
 
 class RollbackPinnedReadTest(unittest.TestCase):
     def test_rollback_reads_live_target_through_pinned_root(self) -> None:

@@ -376,7 +376,12 @@ def atomic_write_bytes(path: Path, data: bytes, *, within: Path | None = None) -
     if is_link_like(path):
         raise ValueError(f"Refusing to replace a symlink or junction: {path}")
     parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
+    # NB: do NOT pathname-mkdir the parent here. When anchored (below), missing
+    # intermediate directories are created descriptor-relative (mkdirat) during
+    # the O_NOFOLLOW descent, so a `backups/`-style directory swapped for a
+    # symlink cannot make a pathname mkdir create a directory outside the state
+    # tree. The non-anchored and pathname-fallback branches mkdir their own
+    # parent where their weaker guarantee already applies.
 
     if _DIR_FD_STATE_WRITES:
         # Reach the destination parent by a descriptor-relative, component-by-
@@ -413,13 +418,29 @@ def atomic_write_bytes(path: Path, data: bytes, *, within: Path | None = None) -
                     ) from error
                 try:
                     for part in descend:
-                        fds.append(
-                            os.open(
-                                part,
-                                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                                dir_fd=fds[-1],
+                        try:
+                            fds.append(
+                                os.open(
+                                    part,
+                                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fds[-1],
+                                )
                             )
-                        )
+                        except FileNotFoundError:
+                            # Create a missing intermediate directory ANCHORED
+                            # (mkdirat), then open it O_NOFOLLOW -- so a pathname
+                            # mkdir cannot create it outside the state tree through
+                            # a swapped ancestor symlink. A symlinked (not missing)
+                            # component fails the open with a different OSError and
+                            # is refused by the outer handler below.
+                            os.mkdir(part, 0o700, dir_fd=fds[-1])
+                            fds.append(
+                                os.open(
+                                    part,
+                                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                    dir_fd=fds[-1],
+                                )
+                            )
                 except OSError as error:
                     for open_fd in fds:
                         try:
@@ -439,7 +460,10 @@ def atomic_write_bytes(path: Path, data: bytes, *, within: Path | None = None) -
                         pass
 
         if dir_fd is None:
-            # Fall back to opening the parent O_NOFOLLOW directly (no anchor).
+            # No `within` anchor to descend from: create the parent by pathname
+            # (the weaker, non-anchored guarantee for this case), then open it
+            # O_NOFOLLOW directly.
+            parent.mkdir(parents=True, exist_ok=True)
             try:
                 dir_fd = os.open(
                     str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -485,6 +509,7 @@ def atomic_write_bytes(path: Path, data: bytes, *, within: Path | None = None) -
     # Pathname fallback (e.g. Windows without dir_fd): re-check the leaf is not a
     # symlink immediately before the replace; the parent-swap window cannot be
     # fully excluded here, matching the apply module's documented fallback.
+    parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
     )
