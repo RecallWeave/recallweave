@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from .index import SCHEMA_VERSION as INDEX_SCHEMA_VERSION
+from .parser import parse_note
 from .index import connect
 from .steward_sources import SourceRegistry
 from .steward_state import (
@@ -184,9 +185,10 @@ def assess_change_batch(
         )
     if (
         expected_registry_sha256 is not None
-        and batch.get("registry_sha256") is not None
         and batch.get("registry_sha256") != expected_registry_sha256
     ):
+        # A null digest fails closed too: an edited or legacy batch must not
+        # bypass binding to the current registry.
         raise ValueError(
             "Change batch was recorded under a different source registry "
             "(registry_sha256 mismatch); re-run steward-observe with the "
@@ -194,13 +196,45 @@ def assess_change_batch(
         )
 
     def _path_admitted(relative: str) -> bool:
-        # Project every index-derived path through the active source policy so
-        # an index built over a broader corpus cannot leak excluded paths into
-        # emitted assessments.
+        # Project every index-derived path through the FULL active source
+        # policy -- path rules, size cap, and frontmatter denial -- so an
+        # index built over a broader corpus cannot leak excluded paths into
+        # emitted assessments. Anything whose eligibility cannot be
+        # affirmatively established is redacted (fail closed).
         if policy is None:
             return True
-        allowed, _reason = policy.path_allowed(relative, 0)
-        return bool(allowed)
+        try:
+            _require_clean_relative_path(relative)
+        except ValueError:
+            return False
+        full = source_root / relative
+        try:
+            resolved = full.resolve(strict=True)
+        except OSError:
+            return False
+        resolved_source = source_root.resolve()
+        if not (
+            resolved == resolved_source or resolved_source in resolved.parents
+        ):
+            return False
+        try:
+            size = full.stat().st_size
+        except OSError:
+            return False
+        allowed, _reason = policy.path_allowed(relative, size)
+        if not allowed:
+            return False
+        if policy.deny_frontmatter:
+            try:
+                note = parse_note(full, source_root)
+            except (UnicodeError, RecursionError, OSError):
+                return False
+            allowed, _reason = policy.frontmatter_allowed(
+                note.frontmatter, valid=note.frontmatter_valid
+            )
+            if not allowed:
+                return False
+        return True
 
     redacted_out_of_policy = 0
 

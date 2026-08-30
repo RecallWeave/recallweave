@@ -75,6 +75,7 @@ from .steward_state import (
     ensure_state_layout,
     ensure_state_root_outside_sources,
     guard_within,
+    lock_state,
 )
 
 REPORT_KIND = "stewardship_report"
@@ -600,15 +601,16 @@ def status_report(
     prune_older_than_days: int | None = None,
     source_roots: list[Path] | None = None,
 ) -> dict[str, Any]:
-    if source_roots:
-        ensure_state_root_outside_sources(state_root, source_roots)
     """Report counts and lock state for ``state_root``; optionally prune.
 
-    Pruning (only when ``prune_older_than_days`` is given) deletes files
-    older than that many days, by mtime, from ``changes/``, ``assessments/``
-    and ``reports/`` only -- never ``proposals/``, ``receipts/`` or
-    ``backups/``. Counts reflect the state after any pruning.
+    Pruning (only when ``prune_older_than_days`` is given) runs under the
+    steward state lock and deletes files older than that many days, by mtime,
+    from ``changes/``, ``assessments/`` and ``reports/`` only -- never
+    ``proposals/``, ``receipts/`` or ``backups/``. Counts reflect the state
+    after any pruning.
     """
+    if source_roots:
+        ensure_state_root_outside_sources(state_root, source_roots)
     state_root = Path(state_root)
     generated_at = _utc_now()
     dirs = ensure_state_layout(state_root)
@@ -628,8 +630,11 @@ def status_report(
             prune_older_than_days * 86400
         )
         pruned = {}
-        for name in _PRUNABLE_SUBDIRS:
-            pruned[name] = _prune_dir(dirs[name], cutoff_epoch)
+        # Destructive pruning is serialized by the same lock the pipeline
+        # stages use, so a concurrent run cannot lose its selected inputs.
+        with lock_state(state_root):
+            for name in _PRUNABLE_SUBDIRS:
+                pruned[name] = _prune_dir(dirs[name], cutoff_epoch)
         pruned["total"] = sum(pruned.values())
 
     counts = {

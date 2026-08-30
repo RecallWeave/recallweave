@@ -729,9 +729,11 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
                     f"{source.name!r}; refusing a cross-source proposal run."
                 )
             recorded_sha = assessment.get("registry_sha256")
+            # A null recorded digest fails closed when the active registry
+            # has one: an edited or legacy assessment must not bypass binding
+            # to the current registry.
             if (
-                recorded_sha is not None
-                and registry.registry_sha256 is not None
+                registry.registry_sha256 is not None
                 and recorded_sha != registry.registry_sha256
             ):
                 raise ValueError(

@@ -31,7 +31,7 @@ from recallweave.steward_state import (
 )
 from recallweave.steward_sweep import _prune_dir, status_report, sweep_registry
 
-from steward_fixtures import TempVault, make_symlink
+from steward_fixtures import TempVault, hold_lock, make_symlink
 
 
 def _source(name: str, root: Path, policy: IndexPolicy | None = None) -> StewardSource:
@@ -509,6 +509,112 @@ class BatchPathHygieneTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "Invalid relative path"):
                 assess_change_batch(batch, self.database, self.vault.root)
+
+
+
+
+class FullAdmissionProjectionTest(unittest.TestCase):
+    """Index-neighbor projection applies the FULL policy, not just path rules."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        base = Path(self.temporary.name)
+        self.vault = TempVault(dir=base)
+        self.database = base / "index.sqlite"
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def _modified_batch(self, path: str, current_hash: str) -> dict:
+        return _batch(
+            "src",
+            [
+                {
+                    "relative_path": path,
+                    "change_type": "modified",
+                    "previous_content_hash": "0" * 64,
+                    "current_content_hash": current_hash,
+                }
+            ],
+        )
+
+    def test_frontmatter_denied_neighbor_is_redacted(self) -> None:
+        body = "# Same\n\nIdentical body bytes.\n"
+        sealed = "---\nsensitivity: sealed\n---\n" + body
+        self.vault.write("Public/Note.md", sealed)
+        self.vault.write("Restricted/Patient.md", sealed)
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        policy = IndexPolicy.from_payload(
+            {"deny_frontmatter": {"sensitivity": ["sealed"]}}
+        )
+        current = hashlib.sha256(sealed.encode()).hexdigest()
+        result = assess_change_batch(
+            self._modified_batch("Public/Note.md", current),
+            self.database,
+            self.vault.root,
+            policy=policy,
+        )
+        strings: list[str] = []
+        _walk_strings(result, strings)
+        self.assertFalse(any("Patient" in item for item in strings))
+
+    def test_oversized_neighbor_is_redacted(self) -> None:
+        body = "x" * 512
+        self.vault.write("Public/Note.md", body)
+        self.vault.write("Restricted/Big.md", body)
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+        policy = IndexPolicy.from_payload({"max_file_bytes": 100})
+        current = hashlib.sha256(body.encode()).hexdigest()
+        result = assess_change_batch(
+            self._modified_batch("Public/Note.md", current),
+            self.database,
+            self.vault.root,
+            policy=policy,
+        )
+        strings: list[str] = []
+        _walk_strings(result, strings)
+        self.assertFalse(any("Big" in item for item in strings))
+        self.assertGreaterEqual(result["summary"]["redacted_out_of_policy"], 1)
+
+
+class NullDigestBindingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        base = Path(self.temporary.name)
+        self.vault = TempVault(dir=base)
+        self.vault.write("a.md", "hello")
+        self.database = base / "index.sqlite"
+        build_index(self.vault.root, self.database, policy=IndexPolicy())
+
+    def tearDown(self) -> None:
+        self.vault.cleanup()
+        self.temporary.cleanup()
+
+    def test_null_batch_digest_fails_closed_when_registry_has_one(self) -> None:
+        batch = _batch("src", [], registry_sha256=None)
+        with self.assertRaisesRegex(ValueError, "registry_sha256 mismatch"):
+            assess_change_batch(
+                batch,
+                self.database,
+                self.vault.root,
+                expected_source="src",
+                expected_registry_sha256="currentdigest",
+            )
+
+
+class PruneLockingTest(unittest.TestCase):
+    def test_prune_refuses_while_lock_is_held(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            state_root = Path(name) / "state"
+            dirs = ensure_state_layout(state_root)
+            victim = dirs["changes"] / "old.json"
+            victim.write_text("{}", encoding="utf-8")
+            os.utime(victim, times=(0, 0))
+            with hold_lock(state_root / "steward.lock"):
+                with self.assertRaisesRegex(ValueError, "holds the lock"):
+                    status_report(state_root, prune_older_than_days=1)
+            self.assertTrue(victim.exists(), "prune deleted despite held lock")
 
 
 if __name__ == "__main__":

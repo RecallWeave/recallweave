@@ -552,10 +552,13 @@ class StewardAssessCliTest(StewardAssessTest):
     def test_cli_end_to_end_emits_single_json_object(self) -> None:
         path = self._write("Newcomer.md", "# Newcomer\n\nBrand new note.\n")
         batch_path = self.dirs["changes"] / "20260101T000000Z-vault.json"
-        batch_path.write_text(
-            json.dumps(_batch(changes=[_change("Newcomer.md", "added", current=_hash(path))])),
-            encoding="utf-8",
-        )
+        batch = _batch(changes=[_change("Newcomer.md", "added", current=_hash(path))])
+        # The CLI loads the registry from disk, so the digest binding is
+        # strict: the batch must carry the real registry digest.
+        batch["registry_sha256"] = hashlib.sha256(
+            self.sources_path.read_bytes()
+        ).hexdigest()
+        batch_path.write_text(json.dumps(batch), encoding="utf-8")
         exit_code, stdout, stderr = _run_cli(
             "steward-assess",
             str(self.sources_path),

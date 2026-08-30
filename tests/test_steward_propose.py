@@ -595,6 +595,11 @@ class StewardProposeCliTest(StewardProposeTest):
         batch_path.write_text(json.dumps(batch), encoding="utf-8")
         assessment = self._assess(batch)
         assessment["change_batch_ref"] = batch_path.name
+        # The CLI loads the registry from disk, so the digest binding is
+        # strict: the assessment must carry the real registry digest.
+        assessment["registry_sha256"] = hashlib.sha256(
+            self.sources_path.read_bytes()
+        ).hexdigest()
         (self.dirs["assessments"] / batch_path.name).write_text(
             json.dumps(assessment), encoding="utf-8"
         )
