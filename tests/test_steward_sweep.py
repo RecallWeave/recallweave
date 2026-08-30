@@ -494,6 +494,33 @@ class ApplyDetailsBoundTest(StewardSweepTest):
         self.assertEqual(report["result"], "validation_failed_rolled_back")
 
 
+class AssessFailurePropagationTest(StewardSweepTest):
+    def test_assess_identity_failure_elevates_no_change_to_findings(self) -> None:
+        # A source whose root identity changed between observe and assess is
+        # recorded by assess_latest as source_identity_changed; the sweep must
+        # propagate that so a would-be no_change is elevated to findings (the
+        # source was never actually assessed this run).
+        from recallweave.steward_state import ensure_state_layout
+
+        registry = self._registry()
+        dirs = ensure_state_layout(self.state_root)
+        common = dict(
+            generated_at="2026-01-01T00:00:00+00:00",
+            observe_receipt={"sources": []},
+            proposals_created_this_sweep=0,
+        )
+        clean = _assemble_report(registry, dirs, self.database, **common)
+        self.assertEqual(clean["result"], "no_change")
+        errored = _assemble_report(
+            registry,
+            dirs,
+            self.database,
+            assess_errored_sources={"vault"},
+            **common,
+        )
+        self.assertEqual(errored["result"], "findings")
+
+
 class PendingCarryoverTest(StewardSweepTest):
     def test_pending_proposals_keep_approval_required_on_next_no_change_sweep(self) -> None:
         self._baseline()

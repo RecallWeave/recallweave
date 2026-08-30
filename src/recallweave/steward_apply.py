@@ -2334,9 +2334,20 @@ def recover_journal(
                         f"{item['relative_path']} (created then edited; left in place)"
                     )
         elif state == "in_progress" and item["content_hash_before"] is None:
-            if live is not None and content_hash_after is not None:
-                if live == content_hash_after:
+            # An in_progress create whose install landed but crashed before the
+            # op advanced to `done`. Mirror the `done`-create branch exactly: undo
+            # it only if it still holds the exact planned bytes; if an operator
+            # edited it after the crash (live != content_hash_after), treat it as
+            # drift and fail closed rather than silently skipping it -- otherwise
+            # _rollback marks the journal rolled_back while the newer file (and
+            # any directories the apply created) stay in the vault.
+            if live is not None:
+                if content_hash_after is not None and live == content_hash_after:
                     creates_to_remove.append(target)
+                else:
+                    drifted.append(
+                        f"{item['relative_path']} (created then edited; left in place)"
+                    )
     if drifted:
         raise ApplyError(
             "Refusing to recover: these files changed after the interrupted "
@@ -2600,20 +2611,29 @@ def apply_latest(
                     execute=execute,
                     allow_sync_root=allow_sync_root,
                 )
-            except ApplyError as error:
+            except Exception as error:
+                # Attach partial progress for ANY failure, not only ApplyError: a
+                # later malformed artifact can raise e.g. TypeError from
+                # _validate_proposal, and the CLI envelope must still report which
+                # proposals already mutated the vault in this invocation rather
+                # than surfacing only the later error.
                 if receipts:
-                    error.partial_applied = [
-                        {
-                            "proposal_id": applied.get("proposal_id"),
-                            "journal_ref": applied.get("journal_ref"),
-                            "steward_vault_mutations": applied.get(
-                                "steward_vault_mutations", 0
-                            ),
-                        }
-                        for applied in receipts
-                        if applied.get("applied")
-                    ]
-                    error.failed_proposal_id = document.get("proposal_id")
+                    try:
+                        error.partial_applied = [
+                            {
+                                "proposal_id": applied.get("proposal_id"),
+                                "journal_ref": applied.get("journal_ref"),
+                                "steward_vault_mutations": applied.get(
+                                    "steward_vault_mutations", 0
+                                ),
+                            }
+                            for applied in receipts
+                            if applied.get("applied")
+                        ]
+                        error.failed_proposal_id = document.get("proposal_id")
+                    except Exception:
+                        # Never let progress annotation mask the original error.
+                        pass
                 raise
             receipts.append(receipt)
             if execute and receipt.get("applied"):

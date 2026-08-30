@@ -183,7 +183,10 @@ class ForgedJournalTest(unittest.TestCase):
 
     def test_forged_create_cannot_delete_unrelated_bytes(self) -> None:
         # In-source path, but the target holds bytes that do NOT match the
-        # journal's planned post-state: recovery must leave them alone.
+        # journal's planned post-state: recovery must leave them alone. A
+        # mismatched in-progress create is now treated as drift (fail closed,
+        # like the `done`-create branch), so recovery refuses loudly rather than
+        # silently skipping -- but either way the unrelated bytes are preserved.
         target = self.vault.root / "a.md"
         name = self._write_journal(
             "intent",
@@ -196,7 +199,8 @@ class ForgedJournalTest(unittest.TestCase):
             ],
         )
         before = target.read_bytes()
-        recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        with self.assertRaisesRegex(ApplyError, "created then edited"):
+            recover_journal(name, registry=self.registry, state_dirs=self.dirs)
         self.assertEqual(target.read_bytes(), before)
 
 

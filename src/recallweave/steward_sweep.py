@@ -417,12 +417,19 @@ def _assemble_report(
     observe_receipt: dict[str, Any],
     proposals_created_this_sweep: int,
     apply_summary: dict[str, Any] | None = None,
+    assess_errored_sources: set[str] | None = None,
 ) -> dict[str, Any]:
+    # A source is "errored" for this sweep if EITHER observation errored (missing,
+    # symlinked, or identity-changed root) OR assessment could not run against it
+    # (identity replaced between observe and assess). Both mean the source was not
+    # actually inspected, so its historical artifacts must be excluded and a clean
+    # no_change must be elevated to findings.
     sources_errored = {
         item["source"]
         for item in observe_receipt.get("sources", [])
         if isinstance(item, dict) and item.get("error") is not None
     }
+    sources_errored |= assess_errored_sources or set()
     batch_agg = _aggregate_from_batches(dirs, registry, sources_errored)
     relation_summary, broken_citations, duplicates = _aggregate_assessments(
         dirs, registry, sources_errored
@@ -736,8 +743,19 @@ def sweep_registry(
         )
 
     observe_receipt = observe_registry(registry, state_root)
-    assess_latest(registry, state_root, database)
+    assess_receipt = assess_latest(registry, state_root, database)
     propose_receipt = propose_latest(registry, state_root, database)
+
+    # A source can pass observation, then have its root identity replaced before
+    # assessment; assess_latest records that as `source_identity_changed` in its
+    # skipped_sources. Propagate those assess-stage failures so report assembly
+    # excludes the source and never returns a clean no_change for a source that
+    # was not actually assessed this sweep.
+    assess_errored_sources = {
+        item["source"]
+        for item in assess_receipt.get("skipped_sources", [])
+        if isinstance(item, dict) and item.get("reason") == "source_identity_changed"
+    }
 
     dirs = ensure_state_layout(state_root)
 
@@ -760,6 +778,7 @@ def sweep_registry(
         observe_receipt=observe_receipt,
         proposals_created_this_sweep=propose_receipt["proposals_created"],
         apply_summary=apply_summary,
+        assess_errored_sources=assess_errored_sources,
     )
 
     timestamp = _file_timestamp(generated_at)

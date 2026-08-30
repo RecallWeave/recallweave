@@ -690,6 +690,44 @@ class ApplyUnitTest(unittest.TestCase):
         self.assertEqual(summary["failures"], [])
         self.assertTrue(any(s.get("reason") == "not_auto_apply" for s in summary["skipped"]))
 
+    def test_approve_class_attaches_partial_progress_on_non_apply_error(self) -> None:
+        # A later proposal raising a NON-ApplyError (e.g. a malformed artifact
+        # tripping a TypeError) during --approve-class must still attach the
+        # partial progress of proposals already applied this invocation, so the
+        # CLI can report which mutations already touched the vault.
+        from recallweave.steward_apply import apply_latest
+
+        self._auto_proposal("prp-partialaaaaaaaa", "inbox/one.md")
+        self._auto_proposal("prp-partialbbbbbbbb", "bulk/0.md")
+        policy = _policy({"class_levels": {"create_new_file": "auto_apply"}})
+        calls = {"n": 0}
+
+        def flaky(document, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "applied": True,
+                    "proposal_id": document["proposal_id"],
+                    "journal_ref": "j1.json",
+                    "steward_vault_mutations": 1,
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "git": {},
+                }
+            raise TypeError("malformed artifact tripped a non-ApplyError")
+
+        with patch.object(steward_apply, "apply_proposal", side_effect=flaky):
+            with self.assertRaises(TypeError) as caught:
+                apply_latest(
+                    self.registry,
+                    self.state_root,
+                    self.database,
+                    write_policy=policy,
+                    approve_class="create_new_file",
+                    execute=True,
+                )
+        self.assertTrue(hasattr(caught.exception, "partial_applied"))
+        self.assertEqual(len(caught.exception.partial_applied), 1)
+
     def test_sweep_auto_apply_records_preflight_refusal_not_rollback(self) -> None:
         # An auto create_new_file whose target already exists fails at preflight,
         # before any mutation or journal. The sweep must record it distinctly as
