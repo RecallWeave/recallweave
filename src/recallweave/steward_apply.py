@@ -1157,7 +1157,12 @@ def _rollback(
                             f"retained at {op.get('backup_path')}"
                         )
                         continue
-                elif live != after:
+                elif live is not None and live != after:
+                    # A modification whose live bytes are neither the post-apply
+                    # state nor already the pre-apply state: another writer
+                    # changed it, so refuse rather than destroy that work. (A
+                    # VANISHED modification target -- live is None -- is not
+                    # drift: it is restored create-only below.)
                     failures.append(
                         f"{op['relative_path']}: target changed after the apply "
                         f"(drift); refusing to overwrite it, backup retained at "
@@ -1172,14 +1177,15 @@ def _rollback(
                         f"retained at {backup}"
                     )
                     continue
-                # Restoring a deletion writes into an expected-absent path. The
-                # absence check above is not atomic with the install, so use
-                # create_only=True: the link-based create-or-fail atomically
-                # refuses if another writer recreated the path in that window,
-                # rather than replacing (and destroying) their file.
+                # Restore into an expected-absent path -- a deletion, or a
+                # modification whose target vanished -- with create_only=True:
+                # the absence check is not atomic with the install, so the
+                # link-based create-or-fail atomically refuses if another writer
+                # created the path in that window rather than clobbering it. A
+                # present modification target is replaced normally.
                 _guarded_replace(
                     target, data, boundary,
-                    create_only=(after is None),
+                    create_only=(live is None),
                     restore_mode=op.get("original_mode"),
                     root_identity=root_identity,
                 )
@@ -2030,18 +2036,20 @@ def recover_journal(
         if target.is_file():
             live = _sha256_bytes(target.read_bytes())
 
-        # A deletion whose target is gone but whose backup is also missing is
-        # unrecoverable: proceeding would mark the journal rolled_back while the
-        # note stays deleted (a false success that unblocks later applies).
-        # Refuse the whole recovery and leave the journal unresolved.
+        # A had-a-file operation whose target is now absent but whose backup is
+        # also missing is unrecoverable: proceeding would mark the journal
+        # rolled_back while the note stays gone (a false success that unblocks
+        # later applies). This covers both a move_to_trash whose deletion landed
+        # and a modification (append/rewrite) whose target vanished. Refuse the
+        # whole recovery and leave the journal unresolved.
         if (
-            mutation_class == "move_to_trash"
+            item["content_hash_before"] is not None
             and live is None
             and not backup_exists
         ):
             drifted.append(
-                f"{item['relative_path']} (deletion backup missing at "
-                f"{item['backup_path']}; the deleted note cannot be restored)"
+                f"{item['relative_path']} (target absent and its backup is "
+                f"missing at {item['backup_path']}; the note cannot be restored)"
             )
             continue
 
@@ -2058,12 +2066,24 @@ def recover_journal(
                     # original bytes from the verified backup.
                     if backup_exists:
                         completed.append(item)
-                elif content_hash_after is not None and live == content_hash_after:
-                    completed.append(item)
                 elif live == item["content_hash_before"]:
                     pass  # already at pre-apply bytes; nothing to undo
-                elif state == "in_progress" and live is None:
-                    pass  # the mutation never landed
+                elif content_hash_after is not None and live == content_hash_after:
+                    completed.append(item)
+                elif content_hash_after is not None and live is None:
+                    # A modification (append_at_eof / fix_unresolved_link)
+                    # target is absent -- these edits replace in place, so the
+                    # file should still exist. Its disappearance is an anomaly:
+                    # restore the pre-apply bytes from the verified backup rather
+                    # than silently skip and finalize with the note missing. Fail
+                    # closed if the backup is gone.
+                    if backup_exists:
+                        completed.append(item)
+                    else:
+                        drifted.append(
+                            f"{item['relative_path']} (target vanished and its "
+                            f"backup is missing at {item['backup_path']})"
+                        )
                 else:
                     drifted.append(
                         f"{item['relative_path']} (backup: {item['backup_path']})"

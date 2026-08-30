@@ -915,6 +915,75 @@ class Round2G3RegressionTest(unittest.TestCase):
         saved = json.loads((self.dirs["journal"] / name).read_text(encoding="utf-8"))
         self.assertEqual(saved["status"], "rolled_back")
 
+    def test_recovery_restores_vanished_modification_target(self) -> None:
+        # An in_progress append/rewrite whose target vanished must be restored
+        # from its verified backup, not skipped-and-finalized with the note gone.
+        kept = self.vault.root / "kept.md"
+        original = kept.read_bytes()
+        backup_dir = self.dirs["backups"] / "vb"
+        backup_dir.mkdir()
+        (backup_dir / "0-kept.md").write_bytes(original)
+        kept.unlink()  # target vanished after the journal write
+        journal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "apply_journal",
+            "proposal_id": "prp-vanishedvanish",
+            "source": "src",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "status": "intent",
+            "backup_dir": "vb",
+            "operations": [
+                {
+                    "relative_path": "kept.md",
+                    "mutation_class": "append_at_eof",
+                    "content_hash_before": _sha(original),
+                    "content_hash_after": _sha(original + b"\nappended\n"),
+                    "backup_name": "0-kept.md",
+                    "state": "in_progress",
+                }
+            ],
+            "rollback_failures": [],
+            "registry_sha256": self.registry.registry_sha256,
+        }
+        name = "20260101T000000000000Z-vanish.json"
+        atomic_write_json(self.dirs["journal"] / name, journal, within=self.dirs["journal"])
+        recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        self.assertEqual(kept.read_bytes(), original, "vanished target not restored")
+        saved = json.loads((self.dirs["journal"] / name).read_text(encoding="utf-8"))
+        self.assertEqual(saved["status"], "rolled_back")
+
+    def test_recovery_refuses_vanished_modification_with_missing_backup(self) -> None:
+        kept = self.vault.root / "kept.md"
+        original = kept.read_bytes()
+        kept.unlink()
+        journal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "apply_journal",
+            "proposal_id": "prp-vanishnobackup",
+            "source": "src",
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "status": "intent",
+            "backup_dir": "gone",  # no backup on disk
+            "operations": [
+                {
+                    "relative_path": "kept.md",
+                    "mutation_class": "append_at_eof",
+                    "content_hash_before": _sha(original),
+                    "content_hash_after": _sha(original + b"\nx\n"),
+                    "backup_name": "0-kept.md",
+                    "state": "in_progress",
+                }
+            ],
+            "rollback_failures": [],
+            "registry_sha256": self.registry.registry_sha256,
+        }
+        name = "20260101T000000000000Z-vnb.json"
+        atomic_write_json(self.dirs["journal"] / name, journal, within=self.dirs["journal"])
+        with self.assertRaises(ApplyError):
+            recover_journal(name, registry=self.registry, state_dirs=self.dirs)
+        saved = json.loads((self.dirs["journal"] / name).read_text(encoding="utf-8"))
+        self.assertEqual(saved["status"], "intent")  # non-terminal, still blocking
+
     def test_recovery_refuses_when_deletion_backup_is_missing(self) -> None:
         # Deletion landed (target gone) but the backup is missing: recovery must
         # refuse (not falsely claim rolled_back) and leave the journal unresolved.
