@@ -63,6 +63,23 @@ class PruneAnchorTest(unittest.TestCase):
                     _sw._prune_dir(link, cutoff_epoch=1e18)
             self.assertTrue(victim.exists(), "prune deleted a file through a symlink")
 
+    def test_prune_fails_closed_without_dir_fd_support(self) -> None:
+        # On a platform without descriptor-relative deletion, pruning must refuse
+        # (delete nothing) rather than fall back to a pathname race, since a prune
+        # is irreversible. Regression for the fail-closed fallback.
+        import recallweave.steward_sweep as _sw
+
+        with tempfile.TemporaryDirectory() as name:
+            directory = Path(name) / "reports"
+            directory.mkdir()
+            old = directory / "old.json"
+            old.write_text("{}", encoding="utf-8")
+            os.utime(old, (0, 0))  # ancient: would be prunable
+            with patch("recallweave.steward_sweep._DIR_FD_PRUNE", False):
+                with self.assertRaisesRegex(ValueError, "descriptor-relative deletion"):
+                    _sw._prune_dir(directory, cutoff_epoch=1e18)
+            self.assertTrue(old.exists(), "fail-closed prune still deleted a file")
+
 
 class MarkdownReportAnchorTest(unittest.TestCase):
     def test_markdown_report_refuses_symlinked_state_root_ancestor(self) -> None:
@@ -318,6 +335,36 @@ class ApplyDetailsBoundTest(StewardSweepTest):
         self.assertIn("apply.skipped", truncated)
         self.assertEqual(truncated["apply.skipped"]["total"], REPORT_EVIDENCE_LIMIT + 5)
         self.assertEqual(truncated["apply.skipped"]["reported"], REPORT_EVIDENCE_LIMIT)
+
+    def test_apply_details_bounded_by_character_budget(self) -> None:
+        # The char budget (not only the element count) applies to apply details,
+        # across all three arrays: a single oversized entry is omitted and flagged.
+        from recallweave.steward_state import ensure_state_layout
+
+        registry = self._registry()
+        dirs = ensure_state_layout(self.state_root)
+        oversized = {"proposal": "prp-huge", "note": "y" * 250_000}
+        apply_summary = {
+            "applied": [oversized, {"proposal": "prp-small", "mutations": 1}],
+            "skipped": [],
+            "failures": [{"proposal": "prp-f", "error": "X", "rolled_back": True}],
+            "mutations": 1,
+        }
+        report = _assemble_report(
+            registry,
+            dirs,
+            self.database,
+            generated_at="2026-01-01T00:00:00+00:00",
+            observe_receipt={"sources": []},
+            proposals_created_this_sweep=0,
+            apply_summary=apply_summary,
+        )
+        self.assertNotIn(oversized, report["apply"]["applied"])
+        truncated = report["integrity"]["evidence_truncated"]
+        self.assertIn("apply.applied", truncated)
+        # The full summary still drove classification: the real rollback failure
+        # is reflected in the result, not lost to display truncation.
+        self.assertEqual(report["result"], "validation_failed_rolled_back")
 
 
 class PendingCarryoverTest(StewardSweepTest):
@@ -982,6 +1029,10 @@ class ObserveErrorResultTest(StewardSweepTest):
 
 class PruneTest(StewardSweepTest):
     def test_prune_deletes_only_old_changes_assessments_reports(self) -> None:
+        import recallweave.steward_sweep as _sw
+
+        if not _sw._DIR_FD_PRUNE:
+            self.skipTest("descriptor-relative pruning unavailable; prune fails closed")
         self._baseline()
         (self.vault / "Beta.md").rename(self.vault / "BetaNew.md")
         self._sweep()
@@ -1022,6 +1073,23 @@ class PruneTest(StewardSweepTest):
             + status["pruned"]["assessments"]
             + status["pruned"]["reports"],
         )
+
+    def test_status_prune_reports_unsupported_without_dir_fd(self) -> None:
+        # status_report must gate destructive pruning on descriptor-relative
+        # support: when unavailable it reports pruning unsupported and deletes
+        # nothing, rather than pathname-prune through a possibly-swapped dir.
+        self._baseline()
+        (self.vault / "Beta.md").rename(self.vault / "BetaNew.md")
+        self._sweep()
+        dirs = self._dirs()
+        old_report = next(dirs["reports"].glob("*.json"), None)
+        self.assertIsNotNone(old_report)
+        os.utime(old_report, (0, 0))
+        with patch("recallweave.steward_sweep._DIR_FD_PRUNE", False):
+            status = status_report(self.state_root, prune_older_than_days=0)
+        self.assertTrue(status["pruned"].get("unsupported_platform"))
+        self.assertEqual(status["pruned"]["total"], 0)
+        self.assertTrue(old_report.exists(), "fail-closed status pruned a file")
 
     def test_pruning_requires_valid_completion_marker(self) -> None:
         from recallweave.steward_sweep import _fully_processed_artifact_names

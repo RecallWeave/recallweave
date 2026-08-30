@@ -884,25 +884,18 @@ def _prune_dir(
         finally:
             os.close(dir_fd)
 
-    # Pathname fallback (e.g. Windows without dir_fd): the check-to-unlink window
-    # cannot be fully excluded here, matching the module's documented fallbacks.
-    deleted = 0
-    for entry in directory.iterdir():
-        if is_link_like(entry) or not entry.is_file():
-            continue
-        if prunable_names is not None and entry.name not in prunable_names:
-            continue
-        try:
-            mtime = entry.stat().st_mtime
-        except OSError:
-            continue
-        if mtime < cutoff_epoch:
-            try:
-                entry.unlink()
-                deleted += 1
-            except OSError:
-                pass
-    return deleted
+    # No dir_fd primitives (e.g. Windows without them): unlike the create-only,
+    # journaled WRITE fallbacks, pruning DELETES with no backup or rollback, so
+    # the check-to-unlink race cannot be tolerated -- a directory swapped for a
+    # symlink/junction after the check would let pathname iteration/unlink delete
+    # files in its external target (a vault). Fail closed. (status_report gates on
+    # _DIR_FD_PRUNE and never reaches this, but keep _prune_dir itself safe.)
+    raise ValueError(
+        f"Refusing to prune {directory}: descriptor-relative deletion is "
+        "unavailable on this platform, so pruning by pathname could delete files "
+        "outside the state tree through a directory swapped for a symlink or "
+        "junction."
+    )
 
 
 # Deterministic relations that cause propose to compile a proposal. An
@@ -1050,35 +1043,49 @@ def status_report(
         cutoff_epoch = datetime.now(timezone.utc).timestamp() - (
             prune_older_than_days * 86400
         )
-        pruned = {}
-        # Destructive pruning is serialized by the same lock the pipeline
-        # stages use, so a concurrent run cannot lose its selected inputs.
-        with lock_state(state_root):
-            # Reports are terminal output: prune purely by age. Change batches
-            # and assessments are pipeline inputs: prune only those whose
-            # downstream stage is durably complete, so an unprocessed backlog is
-            # never deleted after the checkpoint has advanced past it.
-            complete = _fully_processed_artifact_names(dirs, registry_sha256)
-            pruned["reports"] = _prune_dir(dirs["reports"], cutoff_epoch)
-            pruned["changes"] = _prune_dir(
-                dirs["changes"], cutoff_epoch, prunable_names=complete
+        if not _DIR_FD_PRUNE:
+            # Fail closed on platforms without descriptor-relative deletion:
+            # prune nothing and report it unsupported rather than delete by
+            # pathname through a possibly-swapped directory (see _prune_dir).
+            pruned = {
+                "unsupported_platform": True,
+                "reports": 0,
+                "changes": 0,
+                "assessments": 0,
+                "total": 0,
+            }
+        else:
+            pruned = {}
+            # Destructive pruning is serialized by the same lock the pipeline
+            # stages use, so a concurrent run cannot lose its selected inputs.
+            with lock_state(state_root):
+                # Reports are terminal output: prune purely by age. Change
+                # batches and assessments are pipeline inputs: prune only those
+                # whose downstream stage is durably complete, so an unprocessed
+                # backlog is never deleted after the checkpoint advanced past it.
+                complete = _fully_processed_artifact_names(dirs, registry_sha256)
+                pruned["reports"] = _prune_dir(dirs["reports"], cutoff_epoch)
+                pruned["changes"] = _prune_dir(
+                    dirs["changes"], cutoff_epoch, prunable_names=complete
+                )
+                pruned["assessments"] = _prune_dir(
+                    dirs["assessments"], cutoff_epoch, prunable_names=complete
+                )
+                # Drop completion markers whose assessment has been pruned, so
+                # the proposed/ marker store stays bounded. A marker is removed
+                # only once its assessment is gone, never while the assessment it
+                # authorizes is still present.
+                proposed_dir = dirs.get("proposed")
+                if proposed_dir is not None and proposed_dir.is_dir():
+                    for marker in proposed_dir.glob("*.json"):
+                        if not (dirs["assessments"] / marker.name).exists():
+                            try:
+                                marker.unlink()
+                            except OSError:
+                                pass
+            pruned["total"] = (
+                pruned["reports"] + pruned["changes"] + pruned["assessments"]
             )
-            pruned["assessments"] = _prune_dir(
-                dirs["assessments"], cutoff_epoch, prunable_names=complete
-            )
-            # Drop completion markers whose assessment has been pruned, so the
-            # proposed/ marker store stays bounded. A marker is removed only once
-            # its assessment is gone, never while the assessment it authorizes is
-            # still present.
-            proposed_dir = dirs.get("proposed")
-            if proposed_dir is not None and proposed_dir.is_dir():
-                for marker in proposed_dir.glob("*.json"):
-                    if not (dirs["assessments"] / marker.name).exists():
-                        try:
-                            marker.unlink()
-                        except OSError:
-                            pass
-        pruned["total"] = pruned["reports"] + pruned["changes"] + pruned["assessments"]
 
     counts = {
         "change_batches": _dir_file_count(dirs["changes"]),

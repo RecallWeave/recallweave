@@ -186,6 +186,19 @@ class ObserveSourceTest(unittest.TestCase):
         receipt = self.observe()
         self.assertEqual(receipt["rename_candidates"], [])
 
+    def test_two_removed_two_added_same_hash_no_rename_candidate(self) -> None:
+        # Ambiguity on BOTH sides: two removed and two added notes share one
+        # content hash. No compilable rename candidate may be emitted.
+        self.vault.write("a.md", "same content")
+        self.vault.write("b.md", "same content")
+        self.observe()
+        self.vault.remove("a.md")
+        self.vault.remove("b.md")
+        self.vault.write("c.md", "same content")
+        self.vault.write("d.md", "same content")
+        receipt = self.observe()
+        self.assertEqual(receipt["rename_candidates"], [])
+
     def test_symlink_skipped(self) -> None:
         self.vault.write("target.md", "real content")
         if not make_symlink(self.vault.root / "target.md", self.vault.root / "link.md"):
