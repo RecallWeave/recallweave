@@ -48,6 +48,7 @@ from typing import Any
 from .parser import parse_note
 from .policy import RESERVED_DIRECTORY_NAMES
 from .safe_write import is_link_like
+from .steward_git import GitError, check_apply_preconditions, commit_applied
 from .steward_policy import (
     MUTATION_CLASSES_SET,
     WritePolicy,
@@ -486,6 +487,18 @@ def apply_proposal(
             "Pass --allow-sync-root to override deliberately."
         )
 
+    # Git is an additional record, never the primary rollback; this refusal
+    # runs before any preflight or journal write, so a git-state problem
+    # leaves nothing behind to clean up.
+    touched_relative_paths = [
+        edit["relative_path"]
+        for edit in proposal["edits"]
+        if isinstance(edit, dict) and isinstance(edit.get("relative_path"), str)
+    ]
+    git_info = check_apply_preconditions(
+        source.root, touched_relative_paths, require_git=policy.require_git
+    )
+
     if len(proposal["edits"]) > policy.max_files_per_apply:
         raise ApplyError(
             f"Proposal {proposal_id} touches {len(proposal['edits'])} files; "
@@ -576,6 +589,7 @@ def apply_proposal(
             "steward_vault_mutations": 0,
             "network_calls": 0,
             "vault_writes": 0,
+            "git": {"used": git_info["git_used"], "commit": None},
         }
 
     # Pre-apply evidence for the validation gates (L1/L2/L3): structure
@@ -709,6 +723,31 @@ def apply_proposal(
     journal["receipt_ref"] = receipt_ref
     atomic_write_json(journal_path, journal, within=journal_dir)
 
+    if git_info["git_used"] and execute:
+        try:
+            commit_result = commit_applied(
+                source.root,
+                [edit["relative_path"] for edit in proposal["edits"]],
+                proposal_id=proposal_id,
+                journal_ref=journal_path.name,
+            )
+            git_receipt: dict[str, Any] = {
+                "used": True,
+                "head_before": git_info["head"],
+                "commit": commit_result["commit"],
+                "branch": git_info["branch"],
+            }
+        except GitError as error:
+            # The apply already succeeded and is journaled; a failure to
+            # record it in git is reported, not raised.
+            git_receipt = {
+                "used": True,
+                "commit": None,
+                "commit_error": str(error),
+            }
+    else:
+        git_receipt = {"used": False}
+
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": APPLY_RECEIPT_KIND,
@@ -727,6 +766,7 @@ def apply_proposal(
         "steward_vault_mutations": mutations,
         "network_calls": 0,
         "vault_writes": mutations,
+        "git": git_receipt,
     }
 
 
