@@ -63,6 +63,40 @@ class PruneAnchorTest(unittest.TestCase):
                     _sw._prune_dir(link, cutoff_epoch=1e18)
             self.assertTrue(victim.exists(), "prune deleted a file through a symlink")
 
+    def test_prune_refuses_swapped_state_root_ancestor(self) -> None:
+        # O_NOFOLLOW on the target directory alone protects only its final
+        # component. If the STATE ROOT (the target's parent) is swapped for a
+        # symlink to an external tree that itself contains a real reports/ dir,
+        # pruning must still refuse -- the parent is opened O_NOFOLLOW and the
+        # target reached relative to it. Regression for the ancestor-replacement
+        # bypass.
+        import recallweave.steward_sweep as _sw
+
+        if not _sw._DIR_FD_PRUNE:
+            self.skipTest("descriptor-relative pruning unavailable")
+        with tempfile.TemporaryDirectory() as name:
+            base = Path(name)
+            state_root = base / "state"
+            (state_root / "reports").mkdir(parents=True)
+            external = base / "external"
+            (external / "reports").mkdir(parents=True)
+            victim = external / "reports" / "old-victim.json"
+            victim.write_text("{}", encoding="utf-8")
+            os.utime(victim, (0, 0))  # ancient: would be prunable
+            # Swap the state root for a symlink to the external tree. The target
+            # `reports` is a real directory in the external tree, so only the
+            # parent (state root) symlink can be caught.
+            os.rename(state_root, base / "state-real")
+            try:
+                state_root.symlink_to(external, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+            with self.assertRaisesRegex(
+                ValueError, "symlinked or missing state root"
+            ):
+                _sw._prune_dir(state_root / "reports", cutoff_epoch=1e18)
+            self.assertTrue(victim.exists(), "prune deleted through a swapped state root")
+
     def test_prune_fails_closed_without_dir_fd_support(self) -> None:
         # On a platform without descriptor-relative deletion, pruning must refuse
         # (delete nothing) rather than fall back to a pathname race, since a prune
