@@ -1039,8 +1039,11 @@ class WriteRaceHardeningTest(unittest.TestCase):
         real_chain = steward_apply._open_parent_chain
         state = {"swapped": False}
 
-        def swapping_chain(boundary, target, *, create_dirs):
-            result = real_chain(boundary, target, create_dirs=create_dirs)
+        def swapping_chain(boundary, target, *, create_dirs, root_identity=None):
+            result = real_chain(
+                boundary, target, create_dirs=create_dirs,
+                root_identity=root_identity,
+            )
             # After the parent fd is open, swap the on-disk `sub` directory for
             # a symlink to an outside tree, then let the write proceed relative
             # to the already-open fd.

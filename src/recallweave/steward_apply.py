@@ -182,7 +182,15 @@ def _require_root_identity(source: Any) -> Path:
     return resolved
 
 
-def _guarded_unlink(target: Path, boundary: Path) -> None:
+def _source_identity(source: Any) -> tuple[int, int] | None:
+    if source.root_dev is not None and source.root_ino is not None:
+        return (source.root_dev, source.root_ino)
+    return None
+
+
+def _guarded_unlink(
+    target: Path, boundary: Path, root_identity: tuple[int, int] | None = None
+) -> None:
     """Remove ``target`` with the same rigor as guarded writes.
 
     Where the platform supports dir_fd operations, the parent directory is
@@ -208,12 +216,17 @@ def _guarded_unlink(target: Path, boundary: Path) -> None:
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     fds: list[int] = []
     try:
-        fd = os.open(boundary, os.O_RDONLY | os.O_DIRECTORY)
-        fds.append(fd)
+        fds.append(_open_verified_root(boundary, root_identity))
         for part in parts[:-1]:
-            fd = os.open(part, flags, dir_fd=fd)
-            fds.append(fd)
+            fds.append(os.open(part, flags, dir_fd=fds[-1]))
         os.unlink(parts[-1], dir_fd=fds[-1])
+    except ApplyError:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
     except OSError as error:
         raise ApplyError(
             f"Guarded unlink failed for {target} ({type(error).__name__})."
@@ -226,28 +239,71 @@ def _guarded_unlink(target: Path, boundary: Path) -> None:
                 pass
 
 
-def _remove_created_dirs(created_dirs: list[Path], boundary: Path) -> None:
+def _remove_created_dirs(
+    created_dirs: list[Path],
+    boundary: Path,
+    root_identity: tuple[int, int] | None = None,
+) -> None:
     """Remove directories this apply created, deepest first, on rollback.
 
-    Only empty directories are removed and only those inside the boundary;
-    a directory that has since gained other content is left in place."""
+    Descriptor-relative like every other Action-plane mutation: each parent
+    is reached by an O_NOFOLLOW openat chain from the identity-verified root,
+    and rmdir(dir_fd=...) removes only the empty directory named there. rmdir
+    fails atomically on a non-empty directory, so a dir that has since gained
+    content is left in place. On platforms without dir_fd, the pathname
+    fallback keeps the link/containment/emptiness checks."""
 
-    resolved_boundary = boundary.resolve()
+    use_dir_fd = (
+        os.rmdir in os.supports_dir_fd
+        and os.open in os.supports_dir_fd
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+    )
     for directory in sorted(set(created_dirs), key=lambda p: len(p.parts), reverse=True):
-        try:
-            if is_link_like(directory):
+        if use_dir_fd:
+            try:
+                relative = directory.absolute().relative_to(boundary.absolute())
+            except ValueError:
                 continue
-            resolved = directory.resolve()
-            if not (
-                resolved != resolved_boundary
-                and resolved_boundary in resolved.parents
-            ):
+            parts = relative.parts
+            if not parts:
                 continue
-            if any(directory.iterdir()):
+            fds: list[int] = []
+            try:
+                fds.append(_open_verified_root(boundary, root_identity))
+                for part in parts[:-1]:
+                    fds.append(
+                        os.open(
+                            part,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=fds[-1],
+                        )
+                    )
+                os.rmdir(parts[-1], dir_fd=fds[-1])
+            except OSError:
                 continue
-            directory.rmdir()
-        except OSError:
-            continue
+            finally:
+                for fd in fds:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+        else:
+            resolved_boundary = boundary.resolve()
+            try:
+                if is_link_like(directory):
+                    continue
+                resolved = directory.resolve()
+                if not (
+                    resolved != resolved_boundary
+                    and resolved_boundary in resolved.parents
+                ):
+                    continue
+                if any(directory.iterdir()):
+                    continue
+                directory.rmdir()
+            except OSError:
+                continue
 
 
 def _validate_proposal(proposal: Any) -> None:
@@ -561,15 +617,42 @@ _DIR_FD_WRITES = (
 )
 
 
-def _open_parent_chain(boundary: Path, target: Path, *, create_dirs: bool):
+def _open_verified_root(boundary: Path, root_identity: tuple[int, int] | None) -> int:
+    """Open the boundary root as a directory fd and verify its identity.
+
+    O_NOFOLLOW refuses a root swapped for a symlink; the fstat identity check
+    refuses a root swapped for a different real directory after the earlier
+    _require_root_identity() call. All descriptor-relative traversal is
+    anchored to the fd this returns, so the anchor itself is trustworthy."""
+
+    fd = os.open(boundary, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    if root_identity is not None:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != root_identity:
+            os.close(fd)
+            raise ApplyError(
+                "Source root identity changed during the apply; refusing to "
+                "anchor a mutation to a replaced directory."
+            )
+    return fd
+
+
+def _open_parent_chain(
+    boundary: Path,
+    target: Path,
+    *,
+    create_dirs: bool,
+    root_identity: tuple[int, int] | None = None,
+):
     """Open the parent directory of ``target`` by an O_NOFOLLOW openat chain
     anchored at ``boundary``, returning ``(parent_fd, filename, created)``.
 
     Because every descent is dir_fd-relative and O_NOFOLLOW, a directory
     swapped for a symlink between validation and the mutation syscall cannot
     redirect the write: the swapped component fails to open rather than being
-    followed. ``created`` lists directories this call made (deepest last), for
-    rollback. The caller must close ``parent_fd``."""
+    followed. The boundary root descriptor is identity-verified against the
+    registry-pinned (st_dev, st_ino). ``created`` lists directories this call
+    made (deepest last), for rollback. The caller must close ``parent_fd``."""
 
     relative = target.absolute().relative_to(boundary.absolute())
     parts = relative.parts
@@ -577,7 +660,7 @@ def _open_parent_chain(boundary: Path, target: Path, *, create_dirs: bool):
     created: list[Path] = []
     fds: list[int] = []
     try:
-        fds.append(os.open(boundary, os.O_RDONLY | os.O_DIRECTORY))
+        fds.append(_open_verified_root(boundary, root_identity))
         made = boundary
         for part in parts[:-1]:
             made = made / part
@@ -619,6 +702,7 @@ def _guarded_replace(
     boundary: Path,
     *,
     create_dirs: bool = False,
+    root_identity: tuple[int, int] | None = None,
 ) -> list[Path]:
     """Write ``data`` to ``target`` via a same-directory fsync'd temp file and
     an atomic replace, anchored by a descriptor to ``boundary`` so a
@@ -631,7 +715,7 @@ def _guarded_replace(
     temp_name = f".{target.name}.steward-apply.tmp"
     if _DIR_FD_WRITES:
         parent_fd, filename, created = _open_parent_chain(
-            boundary, target, create_dirs=create_dirs
+            boundary, target, create_dirs=create_dirs, root_identity=root_identity
         )
         try:
             try:
@@ -737,6 +821,7 @@ def _rollback(
     journal: dict[str, Any],
     journal_dir: Path,
     boundary: Path,
+    root_identity: tuple[int, int] | None = None,
 ) -> None:
     """Reverse-order verified restore of every completed operation."""
 
@@ -771,7 +856,7 @@ def _rollback(
                         f"retained at {backup}"
                     )
                     continue
-                _guarded_replace(target, data, boundary)
+                _guarded_replace(target, data, boundary, root_identity=root_identity)
                 restored = target.read_bytes()
                 if _sha256_bytes(restored) != before:
                     failures.append(
@@ -791,7 +876,7 @@ def _rollback(
                     )
                     continue
                 try:
-                    _guarded_unlink(target, boundary)
+                    _guarded_unlink(target, boundary, root_identity)
                 except ApplyError:
                     if target.exists():
                         raise
@@ -854,6 +939,7 @@ def apply_proposal(
             "to change that."
         )
     _require_root_identity(source)
+    root_identity = _source_identity(source)
     recorded_sha = proposal.get("registry_sha256")
     # Null fails closed when the active registry has a digest: an edited or
     # legacy proposal must not bypass registry binding.
@@ -1073,7 +1159,7 @@ def apply_proposal(
                 trash_path = _write_backup(
                     trash_dir, op["backup_name"], plan["current"], within=trash_root
                 )
-                _guarded_unlink(target, source.root)
+                _guarded_unlink(target, source.root, root_identity)
                 op["trash_path"] = str(trash_path.relative_to(trash_root))
             else:
                 # create_new_file may need new parent dirs; append_at_eof and
@@ -1084,6 +1170,7 @@ def apply_proposal(
                     plan["post"],
                     source.root,
                     create_dirs=(edit["mutation_class"] == "create_new_file"),
+                    root_identity=root_identity,
                 )
                 created_dirs.extend(made)
                 written = target.read_bytes()
@@ -1105,18 +1192,21 @@ def apply_proposal(
         receipt_after = rebuild_receipt(source, state_root_dir)
         index_deltas = validate_l1(receipt_before, receipt_after, plans)
     except ApplyError:
-        _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
-        _remove_created_dirs(created_dirs, source.root)
+        _rollback(completed, journal_path, journal, journal_dir,
+                  boundary=source.root, root_identity=root_identity)
+        _remove_created_dirs(created_dirs, source.root, root_identity)
         raise
     except ValidationError as error:
-        _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
-        _remove_created_dirs(created_dirs, source.root)
+        _rollback(completed, journal_path, journal, journal_dir,
+                  boundary=source.root, root_identity=root_identity)
+        _remove_created_dirs(created_dirs, source.root, root_identity)
         raise ApplyError(
             f"Validation failed and the apply was rolled back: {error}"
         ) from error
     except Exception as error:
-        _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
-        _remove_created_dirs(created_dirs, source.root)
+        _rollback(completed, journal_path, journal, journal_dir,
+                  boundary=source.root, root_identity=root_identity)
+        _remove_created_dirs(created_dirs, source.root, root_identity)
         raise ApplyError(
             f"Apply failed and was rolled back: {type(error).__name__}: {error}"
         ) from error
@@ -1501,10 +1591,12 @@ def recover_journal(
             f"{sorted(drifted)}. Inspect the named backups and resolve by "
             "hand, then remove or edit the journal."
         )
+    _recover_identity = _source_identity(source)
     for target in creates_to_remove:
-        _guarded_unlink(target, source.root)
+        _guarded_unlink(target, source.root, _recover_identity)
         creates_removed += 1
-    _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
+    _rollback(completed, journal_path, journal, journal_dir,
+              boundary=source.root, root_identity=_source_identity(source))
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": "apply_recovery_receipt",
@@ -1590,7 +1682,8 @@ def revert_journal(
         }
         for item in candidates
     ]
-    _rollback(completed, journal_path, journal, journal_dir, boundary=source.root)
+    _rollback(completed, journal_path, journal, journal_dir,
+              boundary=source.root, root_identity=_source_identity(source))
     journal["status"] = "reverted"
     atomic_write_json(journal_path, journal, within=journal_dir)
     return {
