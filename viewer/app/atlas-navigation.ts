@@ -113,33 +113,27 @@ const FORMAT_OR_IGNORABLE =
  */
 export function normalizeObsidianVaultLabel(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  // Trim only plain U+0020 from the ends (NOT String.trim, which would also
-  // discard an edge tab/newline/NBSP that may be part of the real name). Internal
-  // spaces are preserved EXACTLY — consecutive U+0020 are valid in real vault
-  // names ("Research  Notes") — so collapsing/trimming other whitespace would
-  // silently target a different or nonexistent vault; such whitespace is instead
-  // rejected below.
-  const trimmed = value.replace(/^ +/u, "").replace(/ +$/u, "");
-  // Validate the COMPLETE value FIRST, before any length truncation: otherwise a
-  // forbidden character beginning after the 120th code point (e.g. a separator
-  // in "A"*120 + "/Other") would be sliced away and the prefix wrongly accepted.
-  if (!trimmed) return null;
-  // Reject any whitespace that is not a plain space (tab, newline, NBSP, other
-  // Unicode spaces) rather than silently collapsing it — fail closed.
-  if (/\s/u.test(trimmed.replace(/ /gu, ""))) return null;
-  if (trimmed.startsWith(".")) return null;
+  // A vault name is a navigation IDENTITY, so it is validated and stored VERBATIM
+  // with NO rewriting — no trimming, no whitespace collapsing. Any silent edit
+  // (edge or internal spaces, tabs, etc.) could target a different vault. The
+  // value is accepted exactly as given or rejected outright (fail closed).
+  const label = value;
+  // Reject empty or all-whitespace (checked without mutating the stored value).
+  if (!label.trim()) return null;
+  // Only the plain space U+0020 is permitted as whitespace, at any position;
+  // any other whitespace (tab, newline, NBSP, other Unicode spaces) is rejected.
+  if (/\s/u.test(label.replace(/ /gu, ""))) return null;
+  if (label.startsWith(".")) return null;
   // Reject path separators and the scheme/host separator so the label cannot be
   // shaped into a path or a URI fragment.
-  if (/[/\\:]/u.test(trimmed)) return null;
-  if (hasControlChars(trimmed)) return null;
-  if (hasLoneSurrogate(trimmed)) return null;
-  if (FORMAT_OR_IGNORABLE.test(trimmed)) return null;
-  // Reject an overlength label rather than truncating it: a vault name is a
-  // navigation IDENTITY, so a silently truncated prefix could target a different
-  // or nonexistent vault. Count by Unicode code points (Array.from), not UTF-16
-  // units. Fail closed.
-  if (Array.from(trimmed).length > MAX_VAULT_LABEL_LENGTH) return null;
-  return trimmed;
+  if (/[/\\:]/u.test(label)) return null;
+  if (hasControlChars(label)) return null;
+  if (hasLoneSurrogate(label)) return null;
+  if (FORMAT_OR_IGNORABLE.test(label)) return null;
+  // Reject an overlength label rather than truncating it (a truncated prefix
+  // could name a different vault). Count by Unicode code points, not UTF-16 units.
+  if (Array.from(label).length > MAX_VAULT_LABEL_LENGTH) return null;
+  return label;
 }
 
 /**

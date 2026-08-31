@@ -55,11 +55,13 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
       `should reject: ${JSON.stringify(value)}`,
     );
   }
-  // Valid labels: ends trimmed, internal spaces preserved EXACTLY (consecutive
-  // spaces are valid in real vault names), length-capped. Non-space whitespace
-  // (tab, newline) is rejected, not collapsed.
+  // Valid labels are stored VERBATIM — no trimming, no collapsing (a vault name
+  // is a navigation identity). Edge and internal U+0020 are preserved; non-space
+  // whitespace (tab, newline) is rejected; all-whitespace is rejected.
   assert.equal(normalizeObsidianVaultLabel("My Vault"), "My Vault");
-  assert.equal(normalizeObsidianVaultLabel("  Research  Notes  "), "Research  Notes");
+  assert.equal(normalizeObsidianVaultLabel("  Research  Notes  "), "  Research  Notes  ");
+  assert.equal(normalizeObsidianVaultLabel(" Research"), " Research");
+  assert.equal(normalizeObsidianVaultLabel("   "), null);
   assert.equal(normalizeObsidianVaultLabel("with\nnewline"), null);
   assert.equal(normalizeObsidianVaultLabel("a\tb"), null);
   assert.equal(normalizeObsidianVaultLabel("nbsp here"), null);
@@ -67,7 +69,8 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
   // U+0020 is trimmed from the ends); C1 controls (U+0080–U+009F) fail closed.
   assert.equal(normalizeObsidianVaultLabel(String.fromCharCode(0x00a0) + "Vault"), null);
   assert.equal(normalizeObsidianVaultLabel("Vault" + String.fromCharCode(0x09)), null);
-  assert.equal(normalizeObsidianVaultLabel("  My Vault  "), "My Vault");
+  // Edge U+0020 is preserved verbatim (identity-exact), not trimmed away.
+  assert.equal(normalizeObsidianVaultLabel("  My Vault  "), "  My Vault  ");
   assert.equal(normalizeObsidianVaultLabel("Va" + String.fromCharCode(0x0085) + "ult"), null);
   assert.equal(normalizeObsidianVaultLabel("Va" + String.fromCharCode(0x009f) + "ult"), null);
   // Length is a HARD limit: a label at the cap is accepted verbatim, one over is
@@ -179,8 +182,8 @@ test("save/load/clear roundtrip and reject-and-store-nothing on invalid input", 
   // Invalid input is rejected and NOTHING is stored (no fabricated value).
   assert.equal(saveObsidianVault("bad/vault", store), null);
   assert.equal(store.map.has(ATLAS_OBSIDIAN_VAULT_STORAGE_KEY), false);
-  // Valid input normalizes and persists.
-  assert.equal(saveObsidianVault("  My Vault  ", store), "My Vault");
+  // Valid input persists verbatim (identity-exact; no trimming).
+  assert.equal(saveObsidianVault("My Vault", store), "My Vault");
   assert.equal(loadObsidianVault(store), "My Vault");
   clearObsidianVault(store);
   assert.equal(loadObsidianVault(store), null);
