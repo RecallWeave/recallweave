@@ -336,7 +336,12 @@ def _aggregate_assessments(
                 for citation in (item.get("inputs") or {}).get("broken_citations") or []:
                     text = citation.get("citation") if isinstance(citation, dict) else None
                     if isinstance(text, str):
-                        broken_citations.append(text)
+                        # Qualify every citation with its source before dedup: two
+                        # registered sources sharing a relative path + line range
+                        # would otherwise collapse to one ambiguous entry (e.g.
+                        # `Note.md:1-2`) while the relation count reports two, so the
+                        # operator could not tell which source is broken (#24).
+                        broken_citations.append(f"{source_name}: {text}")
             elif relation in relation_counts:
                 relation_counts[relation].add((source_name, path))
 
@@ -532,6 +537,24 @@ def _assemble_report(
                 f"apply.{detail_key}", apply_summary.get(detail_key) or []
             )
 
+    # Bound the per-source changes projection with the same count/char budget as
+    # the integrity arrays and record truncation. Source names are individually
+    # bounded, but the registry source COUNT is not, so a registry with very many
+    # sources could otherwise grow the report past the ceiling while
+    # integrity.evidence_truncated stayed empty (#23).
+    changes_projection = batch_agg["changes"]
+    if isinstance(changes_projection, dict):
+        change_items = [
+            {"source": name, **totals}
+            for name, totals in sorted(changes_projection.items())
+        ]
+        changes_projection = {
+            item["source"]: {
+                key: value for key, value in item.items() if key != "source"
+            }
+            for item in _bound("changes", change_items)
+        }
+
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": REPORT_KIND,
@@ -548,7 +571,7 @@ def _assemble_report(
             "checkpoint_invalid": checkpoint_invalid,
             "evidence_truncated": evidence_truncation,
         },
-        "changes": batch_agg["changes"],
+        "changes": changes_projection,
         "assessments": relation_summary,
         "proposals": {
             "created_this_sweep": proposals_created_this_sweep,
@@ -687,6 +710,49 @@ def render_sweep_markdown(report: dict[str, Any]) -> str:
     for action in sorted(by_action):
         lines.append(f"- {action}: {by_action[action]}")
     lines.append("")
+
+    # Project the auto-apply results too. With `--format markdown --apply` the
+    # JSON report carries an `apply` section and vault_writes; the Markdown must
+    # not skip straight from Proposals to Observe, leaving the persisted report
+    # unable to name the applied proposals, journal refs, failures, or mutation
+    # count behind a bare `Result: applied` (#29). Strings sourced from proposal
+    # artifacts are fenced, like every other content-derived value here.
+    lines.append("## Apply")
+    lines.append("")
+    apply_section = report.get("apply")
+    if not apply_section:
+        lines.append("Not run (read-only sweep).")
+        lines.append("")
+    else:
+        lines.append(
+            f"- vault writes: "
+            f"{apply_section.get('vault_writes', apply_section.get('mutations', 0))}"
+        )
+        applied = apply_section.get("applied") or []
+        lines.append(f"- proposals applied: {len(applied)}")
+        for item in applied:
+            lines.append("Applied proposal:")
+            lines.append(_fenced(str(item.get("proposal_id"))))
+            lines.append(f"- mutations: {item.get('mutations', 0)}")
+            lines.append("- journal:")
+            lines.append(_fenced(str(item.get("journal_ref"))))
+            lines.append("")
+        failures = apply_section.get("failures") or []
+        if failures:
+            lines.append(f"- failures: {len(failures)}")
+            for item in failures:
+                lines.append("Failed proposal:")
+                lines.append(_fenced(str(item.get("proposal"))))
+                lines.append(
+                    f"- error: {item.get('error')}, "
+                    f"rolled_back: {item.get('rolled_back')}, "
+                    f"forward_writes: {item.get('forward_writes', 0)}"
+                )
+                lines.append("")
+        skipped = apply_section.get("skipped") or []
+        if skipped:
+            lines.append(f"- skipped: {len(skipped)}")
+        lines.append("")
 
     lines.append("## Observe")
     lines.append("")
