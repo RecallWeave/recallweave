@@ -14,3 +14,12 @@ Before opening a pull request:
 
 Large dependencies and model SDKs should be proposed as optional extras with a
 clear offline fallback.
+
+## Scope: local and single-user
+
+RecallWeave OSS is local and single-user by construction. Features that require
+hosted execution, cross-machine orchestration, multi-user/RBAC, centralized
+approvals, managed secrets/connectors, fleet management, billing/metering, or a
+proprietary control plane are out of scope for this repository — they belong in
+the separate commercial control plane. See the "Product boundary" section of
+[ARCHITECTURE.md](ARCHITECTURE.md).

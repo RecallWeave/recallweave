@@ -1,0 +1,23 @@
+{
+  "spec_version": "recallweave.steward.policy.v1",
+  "default_level": "propose_only",
+  "class_levels": {
+    "create_new_file": "require_approval",
+    "append_at_eof": "propose_only",
+    "replace_whole_section": "require_approval",
+    "fix_unresolved_link": "propose_only",
+    "move_to_trash": "require_approval"
+  },
+  "protected": {
+    "globs": [
+      "Restricted/**"
+    ]
+  },
+  "source_overrides": {
+    "ci-pipeline": {
+      "append_at_eof": "auto_apply"
+    }
+  },
+  "require_git": true,
+  "max_files_per_apply": 20
+}

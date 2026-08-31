@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -14,6 +15,12 @@ from .contract_spec import TaskSpec
 from .index import SCHEMA_VERSION, build_index, default_database_for_vault
 from .policy import IndexPolicy
 from .query import connections, context_packet, doctor, path_between, resurface, stats
+from .steward_assess import assess_latest
+from .steward_observe import observe_registry
+from .steward_propose import propose_latest
+from .steward_sources import load_registry
+from .steward_state import steward_state_root
+from .steward_sweep import SWEEP_EXIT_CODES, status_report, sweep_registry
 from .viewer import export_viewer_graph
 
 
@@ -33,6 +40,25 @@ def _emit(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=True))
 
 
+# From a path start, consume through spaces and dots-inside-filenames until a
+# newline or a sentence boundary (". " or end of string). Colons, semicolons,
+# and quotes are all legal POSIX filename characters, so none of them terminate
+# a match -- a path component that follows one must never survive redaction.
+# Paths with spaces redact whole; over-redacting neighboring words (or a
+# trailing quote around the path) is the safe failure direction -- the failure
+# must be "too much removed", never a leaked component.
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:)?[\\/](?:[^.\n]|\.(?!\s|$))*"
+)
+
+
+def _redact_local_paths(message: str) -> str:
+    """Steward failure envelopes are machine-forwardable; strip absolute
+    local paths so an error receipt cannot disclose filesystem layout."""
+
+    return _ABSOLUTE_PATH_RE.sub("<local-path>", message)
+
+
 def _add_database_locator(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--database",
@@ -44,6 +70,19 @@ def _add_database_locator(parser: argparse.ArgumentParser) -> None:
         type=_path,
         help="Vault whose default external RecallWeave index should be queried.",
     )
+
+
+def _load_write_policy(path: Path | None):
+    # Imported lazily: only steward-apply and sweep --apply reach the write
+    # policy, matching the apply module's import isolation.
+    from .steward_policy import WritePolicy
+
+    if path is None:
+        raise ValueError(
+            "steward-sweep --apply requires an explicit --write-policy; "
+            "there is no permissive default."
+        )
+    return WritePolicy.from_file(path)
 
 
 def _query_database(args: argparse.Namespace) -> Path:
@@ -178,6 +217,169 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Replace an existing contract artifact.",
     )
+
+    steward_observe = subparsers.add_parser(
+        "steward-observe",
+        help="Detect changes in steward sources and record a change batch.",
+    )
+    steward_observe.add_argument(
+        "sources",
+        type=_path,
+        help="Path to the sources registry JSON.",
+    )
+    steward_observe.add_argument(
+        "--state-dir",
+        type=_path,
+        help="Explicit steward state root. Defaults to the platform state root for this registry.",
+    )
+
+    steward_assess_parser = subparsers.add_parser(
+        "steward-assess",
+        help=(
+            "Classify observed source changes against the index "
+            "(deterministic only; no vault or index writes)."
+        ),
+    )
+    steward_assess_parser.add_argument("sources", type=_path)
+    _add_database_locator(steward_assess_parser)
+    steward_assess_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
+
+    steward_propose_parser = subparsers.add_parser(
+        "steward-propose",
+        help=(
+            "Compile reviewable proposals with hash-pinned edit scripts from "
+            "the latest assessment (propose_only; no vault or index writes)."
+        ),
+    )
+    steward_propose_parser.add_argument("sources", type=_path)
+    _add_database_locator(steward_propose_parser)
+    steward_propose_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
+
+    steward_sweep_parser = subparsers.add_parser(
+        "steward-sweep",
+        help=(
+            "One-shot local sweep: observe, assess, and propose in sequence, "
+            "then write a stewardship report (no vault or index writes)."
+        ),
+    )
+    steward_sweep_parser.add_argument("sources", type=_path)
+    _add_database_locator(steward_sweep_parser)
+    steward_sweep_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
+    steward_sweep_parser.add_argument(
+        "--format",
+        choices=["json", "markdown"],
+        default="json",
+        help="Stewardship report format. Defaults to json.",
+    )
+    steward_sweep_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "After proposing, execute pending proposals whose every edit the "
+            "write policy resolves to auto_apply. Requires --write-policy."
+        ),
+    )
+    steward_sweep_parser.add_argument(
+        "--write-policy",
+        type=_path,
+        dest="write_policy",
+        help="Explicit write policy JSON; required with --apply.",
+    )
+
+    steward_status_parser = subparsers.add_parser(
+        "steward-status",
+        help="Report steward state directory counts, lock state, and optionally prune.",
+    )
+    steward_status_parser.add_argument("sources", type=_path)
+    steward_status_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
+    steward_status_parser.add_argument(
+        "--prune-older-than-days",
+        type=int,
+        dest="prune_older_than_days",
+        help=(
+            "Delete files older than this many days from changes/, "
+            "assessments/, and reports/ only."
+        ),
+    )
+
+    steward_apply_parser = subparsers.add_parser(
+        "steward-apply",
+        help=(
+            "Apply one approved proposal (or an approved mutation class) "
+            "under an explicit write policy. Dry-run without --execute."
+        ),
+    )
+    steward_apply_parser.add_argument("sources", type=_path)
+    _add_database_locator(steward_apply_parser)
+    steward_apply_parser.add_argument(
+        "--state-dir",
+        type=_path,
+        dest="state_dir",
+        help="Override the default steward state directory.",
+    )
+    steward_apply_parser.add_argument(
+        "--write-policy",
+        type=_path,
+        dest="write_policy",
+        help=(
+            "Explicit write policy JSON. Required to apply a proposal or class "
+            "(there is no permissive default); not needed for --recover/--revert, "
+            "which restore from the journal and verified backups only."
+        ),
+    )
+    apply_selector = steward_apply_parser.add_mutually_exclusive_group(required=True)
+    apply_selector.add_argument(
+        "--proposal-id",
+        dest="proposal_id",
+        help="Apply exactly this pending proposal.",
+    )
+    apply_selector.add_argument(
+        "--approve-class",
+        dest="approve_class",
+        help="Apply every pending proposal whose edits are all of this mutation class.",
+    )
+    apply_selector.add_argument(
+        "--recover",
+        dest="recover",
+        help="Roll back an interrupted apply by its journal file name.",
+    )
+    apply_selector.add_argument(
+        "--revert",
+        dest="revert",
+        help="Restore an APPLIED journal's targets from their verified backups.",
+    )
+    steward_apply_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Actually write. Without this flag the command is a dry run.",
+    )
+    steward_apply_parser.add_argument(
+        "--allow-sync-root",
+        action="store_true",
+        dest="allow_sync_root",
+        help="Deliberately apply inside a detected sync-service folder.",
+    )
+
     return parser
 
 
@@ -233,8 +435,103 @@ def main(argv: list[str] | None = None) -> int:
             return receipt
 
         action: Callable[[], dict[str, Any]] = run_index
+    elif args.command == "steward-observe":
+
+        def run_observe() -> dict[str, Any]:
+            with load_registry(args.sources) as registry:
+                state_root = args.state_dir or steward_state_root(args.sources)
+                return observe_registry(registry, state_root)
+
+        action = run_observe
+    elif args.command == "steward-apply":
+
+        def run_apply() -> dict[str, Any]:
+            # Imported here, not at module level: the engine's import graph
+            # must never reach the apply module (see steward_apply docstring).
+            from .steward_apply import apply_latest
+            from .steward_policy import WritePolicy
+
+            # --recover/--revert restore from the journal and verified backups
+            # and never consult the write policy, so they must remain usable
+            # even if the policy file was removed or corrupted after an
+            # interrupted apply -- exactly when recovery matters most. Only load
+            # (and require) the policy for proposal/class execution.
+            is_restore = bool(args.recover or args.revert)
+            if is_restore:
+                write_policy = None
+            else:
+                if args.write_policy is None:
+                    raise ValueError(
+                        "steward-apply requires --write-policy to apply a "
+                        "proposal or mutation class; there is no permissive "
+                        "default."
+                    )
+                write_policy = WritePolicy.from_file(args.write_policy)
+
+            with load_registry(args.sources) as registry:
+                state_root = args.state_dir or steward_state_root(args.sources)
+                database = _query_database(args)
+                return apply_latest(
+                    registry,
+                    state_root,
+                    database,
+                    write_policy=write_policy,
+                    proposal_id=args.proposal_id,
+                    approve_class=args.approve_class,
+                    recover=args.recover,
+                    revert=args.revert,
+                    execute=args.execute,
+                    allow_sync_root=args.allow_sync_root,
+                )
+
+        action = run_apply
+    elif args.command == "steward-status":
+
+        def run_status() -> dict[str, Any]:
+            with load_registry(args.sources) as registry:
+                state_root = args.state_dir or steward_state_root(args.sources)
+                return status_report(
+                    state_root,
+                    prune_older_than_days=args.prune_older_than_days,
+                    source_roots=[source.root for source in registry.sources],
+                    registry_sha256=registry.registry_sha256,
+                )
+
+        action = run_status
     else:
         database = _query_database(args)
+
+        def run_assess() -> dict[str, Any]:
+            with load_registry(args.sources) as registry:
+                return assess_latest(
+                    registry,
+                    args.state_dir or steward_state_root(args.sources),
+                    database,
+                )
+
+        def run_propose() -> dict[str, Any]:
+            with load_registry(args.sources) as registry:
+                return propose_latest(
+                    registry,
+                    args.state_dir or steward_state_root(args.sources),
+                    database,
+                )
+
+        def run_sweep() -> dict[str, Any]:
+            with load_registry(args.sources) as registry:
+                return sweep_registry(
+                    registry,
+                    args.state_dir or steward_state_root(args.sources),
+                    database,
+                    report_format=args.format,
+                    apply=args.apply,
+                    write_policy=(
+                        _load_write_policy(args.write_policy)
+                        if args.apply
+                        else None
+                    ),
+                )
+
         commands: dict[str, Callable[[], dict[str, Any]]] = {
             "query": lambda: context_packet(
                 database,
@@ -284,22 +581,77 @@ def main(argv: list[str] | None = None) -> int:
                 # `vault_writes: 0` false.
                 vault=args.vault or Path.cwd(),
             ),
+            "steward-assess": run_assess,
+            "steward-propose": run_propose,
+            "steward-sweep": run_sweep,
         }
         action = commands[args.command]
     try:
-        _emit(action())
+        payload = action()
+        _emit(payload)
+        if args.command == "steward-sweep":
+            return SWEEP_EXIT_CODES[payload["result"]]
         return 0
     except (OSError, ValueError, json.JSONDecodeError, sqlite3.Error) as error:
+        message = str(error)
+        if args.command.startswith("steward-"):
+            message = _redact_local_paths(message)
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "error": type(error).__name__,
+            "message": message,
+            "operation": args.command,
+        }
+        # A multi-proposal apply that fails partway records the proposals it
+        # already applied on the exception; surface them so an operator learns
+        # the vault is in a partial state instead of assuming nothing changed.
+        partial = getattr(error, "partial_applied", None)
+        if partial:
+            envelope["partial_applied"] = partial
+            envelope["failed_proposal_id"] = getattr(
+                error, "failed_proposal_id", None
+            )
+            if getattr(error, "receipt_persist_failed", False):
+                # The vault + journal were mutated but the receipt/status write
+                # failed; the mutation stands and can be reverted by journal.
+                envelope["receipt_persist_failed"] = True
         print(
-            json.dumps(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "error": type(error).__name__,
-                    "message": str(error),
-                    "operation": args.command,
-                },
-                ensure_ascii=True,
-            ),
+            json.dumps(envelope, ensure_ascii=True),
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as error:
+        # Structural safety net for the steward-* write pipeline: any
+        # otherwise-unhandled exception (e.g. an AttributeError from a
+        # malformed on-disk artifact) becomes the same single, path-redacted
+        # JSON error envelope with exit 2 — never a raw traceback. Only
+        # Exception is caught, so KeyboardInterrupt, SystemExit, and other
+        # BaseException control-flow are never swallowed. Non-steward commands
+        # keep their original behavior: the exception propagates unchanged.
+        if not args.command.startswith("steward-"):
+            raise
+        envelope = {
+            "schema_version": SCHEMA_VERSION,
+            "error": type(error).__name__,
+            "message": _redact_local_paths(str(error)),
+            "operation": args.command,
+        }
+        # A multi-proposal apply that already mutated the vault can fail on a
+        # LATER proposal with a non-ApplyError (e.g. a TypeError from a malformed
+        # artifact); apply_latest annotates the exception with the partial
+        # progress, and this generic branch must surface it too -- otherwise the
+        # operator would see no indication that earlier proposals already changed
+        # the vault (same fields as the OSError/ValueError branch above).
+        partial = getattr(error, "partial_applied", None)
+        if partial:
+            envelope["partial_applied"] = partial
+            envelope["failed_proposal_id"] = getattr(
+                error, "failed_proposal_id", None
+            )
+            if getattr(error, "receipt_persist_failed", False):
+                envelope["receipt_persist_failed"] = True
+        print(
+            json.dumps(envelope, ensure_ascii=True),
             file=sys.stderr,
         )
         return 2

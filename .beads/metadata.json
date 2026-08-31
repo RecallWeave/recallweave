@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "recallweave",
-  "project_id": "ffe5b636-27b6-4169-87ff-410af2d034d2"
-}

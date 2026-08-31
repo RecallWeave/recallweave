@@ -47,12 +47,12 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Beads / Dolt files (added by bd init)
+# Beads / Dolt issue tracker — internal development infrastructure, not part of
+# the public OSS product. The live database and its passive JSONL exports are
+# not tracked in this repo; public issue tracking is GitHub Issues.
 .dolt/
 .beads-credential-key
-.beads/proxieddb/
-.beads/dolt
-.beads/dolt-*
+/.beads/
 
 # bv (beads viewer) local config and caches
 .bv/
@@ -61,14 +61,27 @@ Thumbs.db
 # the project directory. Those are local orchestration artifacts, not source.
 .ntm/
 
-# Local Codex review output. Generated, not source — except the verdict
-# markdown files, which the promotion handoff cites by name and must be
-# inspectable in a clean checkout (cycle-21 Codex PR review).
-# Un-ignore the directory itself first; a bare `.codex-reviews/` ignore
-# prevents later file negations from applying to newly generated verdicts.
-.codex-reviews/**
-!.codex-reviews/
-!.codex-reviews/review-*.md
+# Local Codex review output — generated development artifacts, not source.
+.codex-reviews/
+
+# Internal development infrastructure kept out of the public OSS tree: private
+# orchestration doctrine, session/planner handoffs, and the local AI-agent tool
+# configuration tied to the internal Beads workflow. These describe how one
+# maintainer runs a private multi-agent dev swarm and are not needed to build,
+# test, or use RecallWeave.
+SWARM-RUNBOOK.md
+docs/SESSION-HANDOFF.md
+/.claude/
+/.codex/
+/.agents/
+
+# Local checkpoint-authorization state written by the private supervisor's push
+# gate. It is machine-local supervisor state and must never be tracked or reach
+# origin. (The gate reads it from a gitignored path; see the supervisor's
+# ensure_checkpoint_marker.) The bare root filename is also ignored so the older
+# tracked-marker location can never be recreated as a tracked file.
+/.rw-supervisor/
+/CHECKPOINT_NOT_APPROVED.md
 
 # Local uv lockfile (project uses pip/setuptools packaging)
 uv.lock
