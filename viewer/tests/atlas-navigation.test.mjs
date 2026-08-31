@@ -61,6 +61,15 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
   assert.equal(normalizeObsidianVaultLabel("with\nnewline"), "with newline");
   assert.equal(normalizeObsidianVaultLabel("a\tb"), "a b");
   assert.equal(normalizeObsidianVaultLabel("x".repeat(200)).length, 120);
+  // Truncation is by code point, so a supplementary character at the boundary is
+  // never split into a lone surrogate that would make encodeURIComponent throw.
+  const emojiAtBoundary = normalizeObsidianVaultLabel("a".repeat(119) + "😀");
+  assert.equal([...emojiAtBoundary].length, 120);
+  assert.doesNotThrow(() => encodeURIComponent(emojiAtBoundary));
+  const emojiPastBoundary = normalizeObsidianVaultLabel("a".repeat(120) + "😀");
+  assert.equal([...emojiPastBoundary].length, 120);
+  assert.doesNotThrow(() => encodeURIComponent(emojiPastBoundary));
+  assert.ok(!emojiPastBoundary.includes("😀"));
 });
 
 // Founder proof: no absolute source path may enter a URI.
@@ -160,9 +169,53 @@ test("storage helpers never throw when storage is unavailable or throwing", () =
   };
   assert.equal(loadObsidianVault(throwing), null);
   assert.equal(saveObsidianVault("V", throwing), null);
-  assert.doesNotThrow(() => clearObsidianVault(throwing));
+  // clear reports failure rather than a false success when storage throws.
+  assert.equal(clearObsidianVault(throwing), false);
   assert.equal(loadObsidianVault(null), null);
   assert.equal(saveObsidianVault("V", null), null);
+});
+
+test("clearObsidianVault reports success when the value is removed", () => {
+  const store = memoryStorage();
+  saveObsidianVault("V", store);
+  assert.equal(clearObsidianVault(store), true);
+  assert.equal(loadObsidianVault(store), null);
+});
+
+test("subscribeObsidianVault also reacts to cross-tab storage events", () => {
+  // Simulate a same-origin sibling tab changing storage: the browser dispatches
+  // a `storage` event, and our subscription must fire so useSyncExternalStore
+  // re-reads instead of launching a stale vault.
+  const handlers = new Set();
+  const fakeWindow = {
+    addEventListener: (type, handler) => {
+      if (type === "storage") handlers.add(handler);
+    },
+    removeEventListener: (type, handler) => {
+      if (type === "storage") handlers.delete(handler);
+    },
+  };
+  const priorWindow = globalThis.window;
+  globalThis.window = fakeWindow;
+  try {
+    let count = 0;
+    const unsubscribe = subscribeObsidianVault(() => {
+      count += 1;
+    });
+    // A change to our key notifies; an unrelated key does not; clear-all (null) does.
+    for (const handler of handlers) {
+      handler({ key: ATLAS_OBSIDIAN_VAULT_STORAGE_KEY });
+      handler({ key: "some.other.key" });
+      handler({ key: null });
+    }
+    unsubscribe();
+    for (const handler of handlers) handler({ key: ATLAS_OBSIDIAN_VAULT_STORAGE_KEY });
+    assert.equal(count, 2);
+    assert.equal(handlers.size, 0, "unsubscribe must remove the storage listener");
+  } finally {
+    if (priorWindow === undefined) delete globalThis.window;
+    else globalThis.window = priorWindow;
+  }
 });
 
 test("subscribeObsidianVault notifies on successful save and on clear only", () => {

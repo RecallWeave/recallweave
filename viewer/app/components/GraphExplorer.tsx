@@ -145,6 +145,9 @@ export function GraphExplorer({
     () => null,
   );
   const [vaultInput, setVaultInput] = useState("");
+  // Status for the footer vault-config form, shown regardless of graph
+  // selection (copyStatus renders only inside a selected note's drawer).
+  const [vaultStatus, setVaultStatus] = useState("");
   const [nodeNavigatorFocusId, setNodeNavigatorFocusId] = useState<string | null>(null);
   const [resetKey, setResetKey] = useState(0);
   const [coldTrailsOpen, setColdTrailsOpen] = useState(false);
@@ -312,19 +315,25 @@ export function GraphExplorer({
     // external store, which re-renders obsidianVault. Never fabricate a value.
     const normalized = saveObsidianVault(vaultInput);
     if (normalized === null) {
-      setCopyStatus(
-        "That vault name is not valid (no slashes, colons, or leading dot). Nothing was saved.",
+      setVaultStatus(
+        vaultInput.trim()
+          ? "That vault name is not valid (no slashes, colons, or leading dot), or browser storage is unavailable. Nothing was saved."
+          : "Enter a vault name to save.",
       );
       return;
     }
     setVaultInput("");
-    setCopyStatus(`Obsidian vault set to "${normalized}". Open in Obsidian is available.`);
+    setVaultStatus(`Obsidian vault set to “${normalized}”. Open in Obsidian is now available on notes.`);
   }
 
   function clearVaultConfig() {
-    clearObsidianVault();
+    const cleared = clearObsidianVault();
     setVaultInput("");
-    setCopyStatus("Obsidian vault cleared. Copy path remains available.");
+    setVaultStatus(
+      cleared
+        ? "Obsidian vault cleared. Copy path remains available."
+        : "Could not clear the vault from browser storage; it may still be configured.",
+    );
   }
 
   function openInObsidian(path: string) {
@@ -738,11 +747,16 @@ export function GraphExplorer({
                 Clear
               </button>
             </div>
-            <p className="obsidian-config-state" role="status">
+            <p className="obsidian-config-state">
               {obsidianVault
                 ? `Configured: ${obsidianVault} — "Open in Obsidian" is available on notes.`
                 : "Not configured — notes show Copy path only."}
             </p>
+            {vaultStatus && (
+              <p className="obsidian-config-status" role="status" aria-live="polite">
+                {vaultStatus}
+              </p>
+            )}
           </div>
         </details>
         <span>

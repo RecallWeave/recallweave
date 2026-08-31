@@ -23,11 +23,32 @@ export const ATLAS_OBSIDIAN_VAULT_STORAGE_KEY =
 // the server snapshot is always null, the client reads storage after mount).
 const vaultListeners = new Set<() => void>();
 
-/** Subscribe to local Obsidian-vault config changes. Returns an unsubscribe. */
+/**
+ * Subscribe to local Obsidian-vault config changes. Returns an unsubscribe.
+ *
+ * Also listens for the browser `storage` event so a change made in ANOTHER
+ * same-origin Atlas tab (including clearing all storage, key === null) updates
+ * this tab too, instead of leaving it launching a stale vault until an unrelated
+ * re-render.
+ */
 export function subscribeObsidianVault(listener: () => void): () => void {
   vaultListeners.add(listener);
+  let storageHandler: ((event: StorageEvent) => void) | undefined;
+  const canListen =
+    typeof window !== "undefined" && typeof window.addEventListener === "function";
+  if (canListen) {
+    storageHandler = (event: StorageEvent) => {
+      if (event.key === null || event.key === ATLAS_OBSIDIAN_VAULT_STORAGE_KEY) {
+        listener();
+      }
+    };
+    window.addEventListener("storage", storageHandler);
+  }
   return () => {
     vaultListeners.delete(listener);
+    if (storageHandler && canListen) {
+      window.removeEventListener("storage", storageHandler);
+    }
   };
 }
 
@@ -56,7 +77,11 @@ function hasControlChars(value: string): boolean {
  */
 export function normalizeObsidianVaultLabel(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const label = value.replace(/\s+/gu, " ").trim().slice(0, MAX_VAULT_LABEL_LENGTH);
+  const collapsed = value.replace(/\s+/gu, " ").trim();
+  // Truncate by Unicode code points, not UTF-16 code units, so a supplementary
+  // character (e.g. an emoji) at the boundary is never split into a lone
+  // surrogate that would later make encodeURIComponent throw at click time.
+  const label = Array.from(collapsed).slice(0, MAX_VAULT_LABEL_LENGTH).join("");
   if (!label) return null;
   if (label.startsWith(".")) return null;
   // Reject path separators and the scheme/host separator so the label cannot be
@@ -101,12 +126,18 @@ export function buildObsidianOpenUri(
   const vault = normalizeObsidianVaultLabel(vaultName);
   if (vault === null) return null;
   if (!isNavigableRelativePath(relativePath)) return null;
-  return (
-    "obsidian://open?vault=" +
-    encodeURIComponent(vault) +
-    "&file=" +
-    encodeURIComponent(relativePath)
-  );
+  try {
+    return (
+      "obsidian://open?vault=" +
+      encodeURIComponent(vault) +
+      "&file=" +
+      encodeURIComponent(relativePath)
+    );
+  } catch {
+    // encodeURIComponent throws on a lone surrogate (e.g. a note path carrying
+    // an unpaired surrogate). Fail closed rather than surface a click-time crash.
+    return null;
+  }
 }
 
 /** Load the locally-configured Obsidian vault name, or null. Never throws. */
@@ -144,16 +175,25 @@ export function saveObsidianVault(
   return normalized;
 }
 
-/** Clear the locally-configured Obsidian vault name. Never throws. */
+/**
+ * Clear the locally-configured Obsidian vault name. Returns true when the value
+ * was removed (or was already absent), false when storage threw and the value
+ * may persist — so the caller can report a failure instead of a false success.
+ * Never throws.
+ */
 export function clearObsidianVault(
   storage: Pick<Storage, "removeItem"> | null | undefined = safeLocalStorage(),
-): void {
+): boolean {
+  let removed = true;
   try {
     storage?.removeItem(ATLAS_OBSIDIAN_VAULT_STORAGE_KEY);
   } catch {
-    // best-effort; a viewer with storage disabled simply keeps no configuration
+    removed = false;
   }
+  // Notify regardless so subscribers re-read the true current state (a failed
+  // removal leaves the prior value in place).
   notifyVaultChange();
+  return removed;
 }
 
 function safeLocalStorage(): Storage | null {

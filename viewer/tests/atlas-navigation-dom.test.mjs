@@ -123,6 +123,43 @@ async function renderAndSelect(window, localStorageState, node) {
   return capturedHtml;
 }
 
+test("vault-config feedback renders in the footer form with no note selected", async () => {
+  // Regression for the bug where config feedback was written only to the
+  // selected-note drawer's status line: with no note selected, a failed Save
+  // must still surface feedback in the footer form itself.
+  const window = installDom(memoryStorage());
+  const container = window.document.createElement("div");
+  window.document.body.appendChild(container);
+  await withGraphExplorer(async (GraphExplorer) => {
+    const initialGraph = graphWith([
+      { id: "alpha", title: "AlphaNote", path: "notes/alpha.md", content_hash: "a".repeat(64) },
+    ]);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(GraphExplorer, { initialGraph }));
+    });
+    await flush();
+    // No note is selected, so the note drawer's status line is not rendered.
+    assert.equal(container.querySelector(".detail-panel .copy-status"), null);
+    const save = [...container.querySelectorAll(".obsidian-config-row button")].find(
+      (button) => button.textContent === "Save",
+    );
+    assert.ok(save, "Save button must be present");
+    await act(async () => {
+      save.dispatchEvent(new window.Event("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+    const status = container.querySelector(".obsidian-config .obsidian-config-status");
+    assert.ok(status, "footer config status must render feedback without a selection");
+    assert.match(status.textContent, /vault name/i);
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  window.close();
+});
+
 test("unconfigured viewer exposes Copy path but no Open in Obsidian", async () => {
   const window = installDom(memoryStorage());
   const html = await renderAndSelect(window, null, {

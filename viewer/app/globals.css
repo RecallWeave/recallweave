@@ -671,6 +671,13 @@ button {
   font-size: 11px;
 }
 
+.obsidian-config-status {
+  margin: 0;
+  color: #b8c0bd;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .node-summary {
   margin: 0;
   color: #b8c0bd;
