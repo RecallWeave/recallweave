@@ -826,7 +826,7 @@ def observe_registry(registry: SourceRegistry, state_root: Path) -> dict:
     receipt; a missing source root is reported without writing a batch or
     touching its checkpoint."""
     ensure_state_root_outside_sources(
-        state_root, [source.root for source in registry.sources]
+        state_root, list(registry.sources)
     )
     state_dirs = ensure_state_layout(state_root)
     receipts: list[dict] = []

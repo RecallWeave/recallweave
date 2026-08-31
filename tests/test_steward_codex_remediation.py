@@ -167,7 +167,7 @@ class StateRootOverlapTest(unittest.TestCase):
             lambda: propose_latest(self.registry, inside, self.database),
             lambda: sweep_registry(self.registry, inside, self.database),
             lambda: status_report(
-                inside, source_roots=[s.root for s in self.registry.sources]
+                inside, sources=list(self.registry.sources)
             ),
         ]
         for call in entry_points:
@@ -176,7 +176,9 @@ class StateRootOverlapTest(unittest.TestCase):
 
     def test_state_root_containing_a_source_is_refused(self) -> None:
         with self.assertRaisesRegex(ValueError, "overlaps a registered source"):
-            ensure_state_root_outside_sources(self.base, [self.vault.root])
+            ensure_state_root_outside_sources(
+                self.base, [_source("vault", self.vault.root)]
+            )
 
 
 class SymlinkedStateTest(unittest.TestCase):

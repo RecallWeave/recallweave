@@ -494,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
                 return status_report(
                     state_root,
                     prune_older_than_days=args.prune_older_than_days,
-                    source_roots=[source.root for source in registry.sources],
+                    sources=list(registry.sources),
                     registry_sha256=registry.registry_sha256,
                 )
 

@@ -7,11 +7,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from recallweave.policy import IndexPolicy
+from recallweave.steward_sources import StewardSource
 from recallweave.steward_state import (
     STEWARD_SCHEMA_VERSION,
     StateLock,
     atomic_write_json,
     ensure_state_layout,
+    ensure_state_root_outside_sources,
     steward_state_root,
 )
 
@@ -58,6 +61,40 @@ class StewardStateRootTest(unittest.TestCase):
             steward_state_root(Path("/vault/sources.json")),
             steward_state_root(Path("/vault/sources.json")),
         )
+
+
+class EnsureStateRootOutsideSourcesTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    @staticmethod
+    def _file_source(root: Path) -> StewardSource:
+        return StewardSource(
+            name="file-src",
+            type="file",
+            root=root,
+            mode="read_only",
+            policy=IndexPolicy(),
+        )
+
+    def test_missing_file_source_still_boundaries_to_parent(self) -> None:
+        # A `type: file` source whose file has been removed from disk must
+        # still treat its CONTAINING directory as the boundary. The state root
+        # must be rejected when placed inside that directory even though the
+        # file no longer exists.
+        vault = self.base / "vault"
+        vault.mkdir()
+        missing_file = vault / "note.md"
+        self.assertFalse(missing_file.exists())
+        inside = vault / "StewardState"
+        with self.assertRaisesRegex(ValueError, "overlaps a registered source"):
+            ensure_state_root_outside_sources(
+                inside, [self._file_source(missing_file)]
+            )
 
 
 class EnsureStateLayoutTest(unittest.TestCase):

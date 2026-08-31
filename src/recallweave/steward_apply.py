@@ -2757,7 +2757,7 @@ def apply_latest(
     state_root = Path(state_root)
     database = Path(database)
     ensure_state_root_outside_sources(
-        state_root, [source.root for source in registry.sources]
+        state_root, list(registry.sources)
     )
     dirs = ensure_state_layout(state_root)
 

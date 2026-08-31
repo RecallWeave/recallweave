@@ -68,7 +68,7 @@ from .safe_write import is_link_like
 from .steward_assess import DETERMINISTIC_RELATIONS, assess_latest
 from .steward_observe import observe_registry
 from .steward_propose import propose_latest
-from .steward_sources import SourceRegistry
+from .steward_sources import SourceRegistry, StewardSource
 from .steward_state import (
     STEWARD_SCHEMA_VERSION,
     STEWARD_SUBDIRS,
@@ -804,7 +804,7 @@ def sweep_registry(
     database = Path(database)
     generated_at = _utc_now()
     ensure_state_root_outside_sources(
-        state_root, [source.root for source in registry.sources]
+        state_root, list(registry.sources)
     )
 
     if apply and write_policy is None:
@@ -1370,7 +1370,7 @@ def status_report(
     state_root: Path,
     *,
     prune_older_than_days: int | None = None,
-    source_roots: list[Path] | None = None,
+    sources: list["StewardSource"] | None = None,
     registry_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Report counts and lock state for ``state_root``; optionally prune.
@@ -1381,8 +1381,8 @@ def status_report(
     ``proposals/``, ``receipts/`` or ``backups/``. Counts reflect the state
     after any pruning.
     """
-    if source_roots:
-        ensure_state_root_outside_sources(state_root, source_roots)
+    if sources:
+        ensure_state_root_outside_sources(state_root, sources)
     state_root = Path(state_root)
     generated_at = _utc_now()
     dirs = ensure_state_layout(state_root)

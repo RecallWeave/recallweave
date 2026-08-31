@@ -8,9 +8,12 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 from .safe_write import is_link_like
+
+if TYPE_CHECKING:
+    from .steward_sources import StewardSource
 
 STEWARD_SCHEMA_VERSION = "recallweave.steward.v1"
 
@@ -55,7 +58,9 @@ def steward_state_root(registry_path: Path) -> Path:
     return _application_data_root() / "steward" / fingerprint
 
 
-def ensure_state_root_outside_sources(root: Path, source_roots: list[Path]) -> None:
+def ensure_state_root_outside_sources(
+    root: Path, sources: list["StewardSource"]
+) -> None:
     """Refuse a state root that overlaps any registered source root.
 
     Steward state writes report ``vault_writes: 0``; that claim is only true
@@ -63,13 +68,16 @@ def ensure_state_root_outside_sources(root: Path, source_roots: list[Path]) -> N
     """
 
     resolved_root = root.expanduser().resolve()
-    for source_root in source_roots:
-        resolved_source = Path(source_root).expanduser().resolve()
-        # A file source's boundary is its containing directory; a folder
-        # source's boundary is itself -- including when it is currently
-        # missing (a deleted root must not widen the boundary to its parent).
+    for source in sources:
+        resolved_source = Path(source.root).expanduser().resolve()
+        # A file source's boundary is its CONTAINING directory, whether or not
+        # the file still exists (a removed file must not narrow the boundary to
+        # its own path); a folder source's boundary is itself -- including when
+        # it is currently missing (a deleted root must not widen the boundary
+        # to its parent). The type comes from the registered source, not a live
+        # filesystem stat, so a disappeared file still contributes its parent.
         candidates = (
-            resolved_source.parent if resolved_source.is_file() else resolved_source
+            resolved_source.parent if source.type == "file" else resolved_source
         )
         if (
             resolved_root == candidates
