@@ -48,20 +48,23 @@ subdirectory, using ``atomic_write_json``.
 
 import hashlib
 import json
+import os
+import posixpath
 import re
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .index import connect
+from .index import _path_key, connect
 from .parser import (
     MARKDOWN_LINK_RE,
     WIKILINK_RE,
     _markdown_target,
     normalize_name,
-    parse_note,
+    parse_frontmatter,
 )
 from .policy import IndexPolicy
+from .safe_write import is_link_like
 from .steward_assess import ASSESSMENT_KIND
 from .steward_policy import MUTATION_CLASSES_SET, PRINCIPAL_KEY_NAMES
 from .steward_sources import SourceRegistry
@@ -200,21 +203,103 @@ def _dedup_skipped(skipped: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted(seen.values(), key=lambda item: item["relative_path"])
 
 
-def _count_rename_occurrences(raw: str, old_path: str) -> int:
+_DIR_FD_PROPOSE = (
+    os.open in os.supports_dir_fd
+    and hasattr(os, "O_NOFOLLOW")
+    and hasattr(os, "O_DIRECTORY")
+)
+
+
+def _open_referrer_fd(source_root: Path, relative: str) -> int:
+    """Open a rename referrer WITHOUT following a symlink at any component, so a
+    referrer (or an ancestor) replaced by a symlink cannot make proposal
+    generation read bytes outside the registered source. Raises OSError on any
+    symlinked/non-directory component, a missing leaf, or a failed open (the
+    caller treats that as drift). Mirrors observe/apply's pinned reads."""
+
+    parts = Path(relative).parts
+    if not parts:
+        raise OSError("empty relative path")
+    if _DIR_FD_PROPOSE:
+        fds: list[int] = [
+            os.open(source_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        ]
+        try:
+            for part in parts[:-1]:
+                fds.append(
+                    os.open(
+                        part,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=fds[-1],
+                    )
+                )
+            return os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fds[-1])
+        finally:
+            for fd in fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+    # Pathname fallback (e.g. Windows): reject a symlink at any component.
+    current = source_root
+    for part in parts[:-1]:
+        current = current / part
+        if is_link_like(current):
+            raise OSError(f"symlinked ancestor: {current}")
+    full = source_root / relative
+    if is_link_like(full):
+        raise OSError(f"symlink leaf: {full}")
+    return os.open(full, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+
+
+def _read_fd_all(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(fd, 1 << 20)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _frontmatter_from_bytes(data: bytes) -> tuple[dict, bool]:
+    """Frontmatter + validity from a referrer's already-read bytes, decoded as
+    parse_note does, so admission is bound to the exact bytes (never a second
+    pathname read that could follow a swapped symlink)."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raise UnicodeError("UTF-16 Markdown is not supported.")
+    raw = data.decode("utf-8-sig", errors="strict")
+    lines = re.split(r"\r\n|\r|\n", raw)
+    frontmatter, _body_start, frontmatter_valid, _error = parse_frontmatter(lines)
+    return frontmatter, frontmatter_valid
+
+
+def _count_rename_occurrences(raw: str, old_path: str, referrer_path: str) -> int:
     """Count every wikilink or markdown link in ``raw`` that targets ``old_path``.
 
-    WIKILINK_RE's group 1 is already the bare target (anchor and alias
-    stripped); a markdown link matches when its path component (before any
-    ``#`` fragment) equals ``old_path``."""
+    WIKILINK_RE's group 1 is already the bare target (anchor and alias stripped).
+    A markdown link matches when EITHER its path component or that component
+    resolved relative to the referrer's directory maps to ``old_path`` under the
+    index's key normalization -- so a relative form like ``[y](../Old.md)`` that
+    the index resolves to ``Old.md`` is counted alongside the exact ``Old.md``.
+    Missing this made the count return 1 for a referrer with both forms, so the
+    compiled rewrite fixed one and left the other dangling."""
 
     old_stem = normalize_name(Path(old_path).stem)
+    old_key = _path_key(old_path)
+    source_parent = PurePosixPath(referrer_path).parent.as_posix()
     total = 0
     for line_text, _ending in _split_lines_keepends(raw):
         for match in WIKILINK_RE.finditer(line_text):
             if normalize_name(match.group(1).strip()) == old_stem:
                 total += 1
         for match in MARKDOWN_LINK_RE.finditer(line_text):
-            if _markdown_target(match.group(1)).split("#", 1)[0] == old_path:
+            without_anchor = _markdown_target(match.group(1)).split("#", 1)[0]
+            keys = {
+                _path_key(without_anchor),
+                _path_key(posixpath.join(source_parent, without_anchor)),
+            }
+            if old_key in keys:
                 total += 1
     return total
 
@@ -239,39 +324,45 @@ def _resolve_rename_edit(
     if expected_hash is None:
         return ("skip", "referrer_not_in_index")
 
-    full_path = source_root / referrer_path
-    # Admit the referrer through the SOURCE policy before reading it. The SQLite
-    # index may have been built with a broader policy than this source, so it can
-    # list referrers the source's include_paths / deny terms / size cap exclude.
-    # Check the path + size (from a stat, not a content read) first, so an
-    # excluded referrer's bytes are never read or emitted as an executable edit.
+    # Read the referrer WITHOUT following a symlink at any component -- a
+    # referrer (or an ancestor) replaced by a symlink must never redirect the
+    # read outside the registered source -- and admit it through the SOURCE
+    # policy from the fstat size BEFORE reading the bytes (the SQLite index may
+    # have been built with a broader policy, so it can list referrers this
+    # source's include_paths / deny terms / size cap exclude).
     try:
-        referrer_size = full_path.stat().st_size
+        fd = _open_referrer_fd(source_root, referrer_path)
     except OSError:
         return ("drift", None)
-    admitted, _reason = policy.path_allowed(referrer_path, referrer_size)
-    if not admitted:
-        return ("skip", "referrer_not_admitted")
-
     try:
-        data = full_path.read_bytes()
-    except OSError:
-        return ("drift", None)
+        try:
+            referrer_size = os.fstat(fd).st_size
+        except OSError:
+            return ("drift", None)
+        admitted, _reason = policy.path_allowed(referrer_path, referrer_size)
+        if not admitted:
+            return ("skip", "referrer_not_admitted")
+        try:
+            data = _read_fd_all(fd)
+        except OSError:
+            return ("drift", None)
+    finally:
+        os.close(fd)
 
     actual_hash = hashlib.sha256(data).hexdigest()
     if actual_hash != expected_hash:
         return ("drift", None)
 
-    # Frontmatter-denied referrers are also outside the admitted corpus; a broad
-    # index can contain them, so apply the policy's frontmatter rule too before
-    # emitting an edit for one.
+    # Frontmatter-denied referrers are outside the admitted corpus; evaluate the
+    # policy's frontmatter rule from the ALREADY-READ bytes (never a second
+    # pathname read that could follow a swapped symlink).
     if policy.deny_frontmatter:
         try:
-            note = parse_note(full_path, source_root)
-        except (UnicodeError, RecursionError, OSError):
+            frontmatter, frontmatter_valid = _frontmatter_from_bytes(data)
+        except (UnicodeError, RecursionError):
             return ("skip", "referrer_frontmatter_unverifiable")
         allowed, _fm_reason = policy.frontmatter_allowed(
-            note.frontmatter, valid=note.frontmatter_valid
+            frontmatter, valid=frontmatter_valid
         )
         if not allowed:
             return ("skip", "referrer_frontmatter_denied")
@@ -289,7 +380,7 @@ def _resolve_rename_edit(
     # Re-scan the whole hash-pinned referrer: unless there is exactly one
     # occurrence to rewrite, refuse to compile a partial edit and hand the
     # referrer to the operator for manual review instead.
-    if _count_rename_occurrences(raw, old_path) != 1:
+    if _count_rename_occurrences(raw, old_path, referrer_path) != 1:
         return ("skip", "multiple_occurrences_manual_review")
 
     try:
@@ -717,6 +808,17 @@ def propose_from_assessment(
     assessment_file = assessment.get("change_batch_ref")
     indexed_at = (assessment.get("index") or {}).get("indexed_at")
 
+    # Bind compilation to the exact index snapshot the assessment ran against. If
+    # the index was rebuilt between steward-assess and steward-propose its
+    # `indexed_at` changes and its notes/edges may differ, so compiling rename or
+    # advisory edits against it would use a snapshot the assessment never saw.
+    # Refuse to compile for a mismatched snapshot (fail closed, no proposals);
+    # re-running assess against the current index restores agreement.
+    if indexed_at is not None:
+        current_indexed_at = _current_indexed_at(database)
+        if current_indexed_at is not None and current_indexed_at != indexed_at:
+            return []
+
     rename_map: dict[str, tuple[str, str | None]] = {}
     if batch is not None:
         for candidate in batch.get("rename_candidates") or []:
@@ -837,6 +939,21 @@ def propose_from_assessment(
     return proposals
 
 
+def _current_indexed_at(database: Path) -> str | None:
+    """The current index's ``indexed_at`` (meta table), or None if unavailable."""
+    try:
+        with connect(database, readonly=True) as connection:
+            row = connection.execute(
+                "SELECT value FROM meta WHERE key = 'indexed_at'"
+            ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    value = row["value"] if hasattr(row, "keys") else row[0]
+    return str(value) if value is not None else None
+
+
 def _load_assessment_batch(
     assessment: dict, assessment_name: str, changes_dir: Path
 ) -> dict | None:
@@ -855,8 +972,19 @@ def _load_assessment_batch(
         return None
     batch_bytes = batch_path.read_bytes()
     pinned = assessment.get("change_batch_sha256")
+    # An assessment that references a batch MUST carry a well-formed digest for
+    # it (assess_latest always writes one). A missing/null/malformed digest --
+    # from a legacy, truncated, or hand-edited artifact -- must NOT silently load
+    # whatever batch now occupies that filename (a rewritten batch could drive
+    # proposals under an unbound assessment). Fail closed.
+    if not (isinstance(pinned, str) and len(pinned) == 64):
+        raise ValueError(
+            f"Assessment {assessment_name} references change batch {batch_ref} "
+            "without a well-formed change_batch_sha256; refusing to load an "
+            "unbound batch. Re-run steward-assess before proposing."
+        )
     actual = hashlib.sha256(batch_bytes).hexdigest()
-    if pinned is not None and actual != pinned:
+    if actual != pinned:
         # The assessment pinned the exact batch it assessed; a batch rewritten
         # afterwards must never drive compiled edits.
         raise ValueError(
@@ -890,7 +1018,7 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
     database = Path(database)
     generated_at = _utc_now()
     ensure_state_root_outside_sources(
-        state_root, [source.root for source in registry.sources]
+        state_root, list(registry.sources)
     )
 
     dirs = ensure_state_layout(state_root)
@@ -1017,18 +1145,52 @@ def propose_latest(registry: SourceRegistry, state_root: Path, database: Path) -
             ):
                 applied_ids.add(doc["proposal_id"])
 
-        # Conflict-link across the computed set, EXCLUDING proposals whose id is
-        # already applied on disk. An applied proposal is terminal; if it were a
-        # pending counterpart, a new proposal for the same path would carry the
-        # applied id in conflicts_with and _validate_proposal would reject the
-        # new work permanently against a counterpart that can never conflict.
+        # PENDING proposals already on disk whose assessment was pruned (so they
+        # were NOT recomputed into all_computed this run) must still take part in
+        # conflict detection: otherwise a new proposal touching the same
+        # (source, path) would not be linked to the surviving pending proposal,
+        # and a class approval could apply one over the other. Collect them
+        # (excluding applied/reverted and anything already recomputed by id),
+        # include them in the conflict pass, and persist any conflicts_with change
+        # back onto them. (#35)
+        computed_ids = {
+            proposal.get("proposal_id") for _fn, proposal, _new in all_computed
+        }
+        pruned_pending: list[tuple[Path, dict[str, Any]]] = []
+        for existing_path in proposals_dir.glob("*.json"):
+            try:
+                doc = json.loads(existing_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(doc, dict):
+                continue
+            pid = doc.get("proposal_id")
+            if not isinstance(pid, str) or pid in computed_ids or pid in applied_ids:
+                continue
+            if doc.get("status") in ("applied", "reverted"):
+                continue
+            pruned_pending.append((existing_path, doc))
+
+        # Conflict-link across the computed set PLUS the pruned-pending on-disk
+        # proposals, EXCLUDING proposals whose id is already applied on disk. An
+        # applied proposal is terminal; if it were a pending counterpart, a new
+        # proposal for the same path would carry the applied id in conflicts_with
+        # and _validate_proposal would reject the new work permanently against a
+        # counterpart that can never conflict.
+        original_conflicts = {
+            id(doc): list(doc.get("conflicts_with", [])) for _p, doc in pruned_pending
+        }
         _assign_conflicts(
             [
                 proposal
                 for _fn, proposal, _new in all_computed
                 if proposal.get("proposal_id") not in applied_ids
             ]
+            + [doc for _p, doc in pruned_pending]
         )
+        for existing_path, doc in pruned_pending:
+            if doc.get("conflicts_with", []) != original_conflicts[id(doc)]:
+                atomic_write_json(existing_path, doc, within=proposals_dir)
 
         # Proposal ids already present on disk under ANY filename. A re-emitted
         # batch (observe wrote a batch, then save_checkpoint failed, so the next

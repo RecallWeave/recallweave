@@ -22,6 +22,7 @@ from .steward_sources import SourceRegistry, StewardSource
 from .steward_state import (
     STEWARD_SCHEMA_VERSION,
     StateLock,
+    _verify_locked_root_identity,
     atomic_write_json,
     ensure_state_layout,
     ensure_state_root_outside_sources,
@@ -196,6 +197,14 @@ def _retract_change_batch(changes_dir: Path, filename: str) -> bool:
         except OSError:
             return False
         try:
+            # Descriptor continuity: while the observe StateLock is held the
+            # reopened state root must still be the inode the lock pinned; a
+            # rename+replace of the state root means this retraction would target
+            # a rebound tree, so decline it rather than unlink there (#31).
+            try:
+                _verify_locked_root_identity(root_fd, state_root)
+            except ValueError:
+                return False
             try:
                 changes_fd = os.open(
                     changes_dir.name,
@@ -826,7 +835,7 @@ def observe_registry(registry: SourceRegistry, state_root: Path) -> dict:
     receipt; a missing source root is reported without writing a batch or
     touching its checkpoint."""
     ensure_state_root_outside_sources(
-        state_root, [source.root for source in registry.sources]
+        state_root, list(registry.sources)
     )
     state_dirs = ensure_state_layout(state_root)
     receipts: list[dict] = []

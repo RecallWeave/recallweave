@@ -898,7 +898,7 @@ def assess_latest(registry: SourceRegistry, state_root: Path, database: Path) ->
         )
 
     ensure_state_root_outside_sources(
-        state_root, [source.root for source in registry.sources]
+        state_root, list(registry.sources)
     )
 
     dirs = ensure_state_layout(state_root)

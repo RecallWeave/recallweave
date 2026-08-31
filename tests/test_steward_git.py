@@ -288,35 +288,57 @@ class CommitAppliedTest(unittest.TestCase):
         # git will not synthesize a name: the apply commit must still land, with
         # the fallback name and the operator's real email. Regression for the
         # identity fallback that only checked user.email.
-        _git(["init", "-q"], self.root)
-        _git(["config", "user.email", "real@operator.test"], self.root)
-        _git(["config", "user.useConfigOnly", "true"], self.root)
-        (self.root / "a.md").write_text("a", encoding="utf-8")
-        result = commit_applied(
-            self.root,
-            ["a.md"],
-            proposal_id="prp-identitytesttest0",
-            journal_ref="20260101T000000000000Z-prp-identitytesttest0.json",
-        )
-        self.assertTrue(result["committed"])
-        author = _git(["log", "-1", "--pretty=%an <%ae>"], self.root).stdout.strip()
+        # Point global/system git config at the null device so a machine-level
+        # identity cannot supply the "missing" field and mask the fallback.
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_SYSTEM": os.devnull,
+            },
+        ):
+            _git(["init", "-q"], self.root)
+            _git(["config", "user.email", "real@operator.test"], self.root)
+            _git(["config", "user.useConfigOnly", "true"], self.root)
+            (self.root / "a.md").write_text("a", encoding="utf-8")
+            result = commit_applied(
+                self.root,
+                ["a.md"],
+                proposal_id="prp-identitytesttest0",
+                journal_ref="20260101T000000000000Z-prp-identitytesttest0.json",
+            )
+            self.assertTrue(result["committed"])
+            author = _git(
+                ["log", "-1", "--pretty=%an <%ae>"], self.root
+            ).stdout.strip()
         self.assertEqual(author, "RecallWeave Steward <real@operator.test>")
 
     def test_commit_preserves_configured_name_when_only_email_missing(self) -> None:
         # The mirror case: a configured name must NOT be overwritten by the
         # fallback when only the email is missing -- the fallback is per-field.
-        _git(["init", "-q"], self.root)
-        _git(["config", "user.name", "Real Operator"], self.root)
-        _git(["config", "user.useConfigOnly", "true"], self.root)
-        (self.root / "a.md").write_text("a", encoding="utf-8")
-        result = commit_applied(
-            self.root,
-            ["a.md"],
-            proposal_id="prp-identitytesttest1",
-            journal_ref="20260101T000000000000Z-prp-identitytesttest1.json",
-        )
-        self.assertTrue(result["committed"])
-        author = _git(["log", "-1", "--pretty=%an <%ae>"], self.root).stdout.strip()
+        # Point global/system git config at the null device so a machine-level
+        # identity cannot supply the "missing" field and mask the fallback.
+        with patch.dict(
+            os.environ,
+            {
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_SYSTEM": os.devnull,
+            },
+        ):
+            _git(["init", "-q"], self.root)
+            _git(["config", "user.name", "Real Operator"], self.root)
+            _git(["config", "user.useConfigOnly", "true"], self.root)
+            (self.root / "a.md").write_text("a", encoding="utf-8")
+            result = commit_applied(
+                self.root,
+                ["a.md"],
+                proposal_id="prp-identitytesttest1",
+                journal_ref="20260101T000000000000Z-prp-identitytesttest1.json",
+            )
+            self.assertTrue(result["committed"])
+            author = _git(
+                ["log", "-1", "--pretty=%an <%ae>"], self.root
+            ).stdout.strip()
         self.assertEqual(author, "Real Operator <steward@localhost>")
 
     def test_commits_exactly_the_touched_paths(self) -> None:

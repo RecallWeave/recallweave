@@ -550,7 +550,8 @@ class IntegritySectionTest(StewardSweepTest):
         self.assertIn("Beta.md", report["integrity"]["dangling_references"])
         self.assertTrue(report["integrity"]["broken_citations"])
         for citation in report["integrity"]["broken_citations"]:
-            self.assertTrue(citation.startswith("Beta.md:"))
+            # Citations are qualified with their source before dedup (#24).
+            self.assertIn("Beta.md:", citation)
 
 
 class ReportJsonShapeTest(StewardSweepTest):
@@ -775,7 +776,9 @@ class ReportBacklogAggregationTest(StewardSweepTest):
         )
         summary, broken, _d = _aggregate_assessments(self._dirs(), self._registry())
         self.assertEqual(summary["CITATION_BROKEN"], 1)
-        self.assertIn("A.md:1-2", broken)
+        # Citations are source-qualified before dedup (#24): the "vault" source
+        # prefixes the entry so two sources sharing a path stay distinguishable.
+        self.assertIn("vault: A.md:1-2", broken)
 
     def test_duplicate_persists_when_unrelated_note_changes(self) -> None:
         from recallweave.steward_sweep import _aggregate_assessments
@@ -878,7 +881,8 @@ class ReportBacklogAggregationTest(StewardSweepTest):
             }), encoding="utf-8")
         summary, broken, _d = _aggregate_assessments(self._dirs(), self._registry())
         self.assertEqual(summary["CITATION_BROKEN"], 1, "an unresolved finding was erased")
-        self.assertIn("A.md:1-1", broken)
+        # Citations are source-qualified before dedup (#24).
+        self.assertIn("vault: A.md:1-1", broken)
 
     def test_newest_report_filters_by_registry_digest(self) -> None:
         from recallweave.steward_sweep import _newest_report
@@ -1547,3 +1551,30 @@ class SweepApplyLegTest(StewardSweepTest):
         self.assertEqual(report["result"], "validation_failed_rolled_back")
         self.assertEqual(base.read_bytes(), data, "rollback did not restore")
         self.assertTrue(report["apply"]["failures"])
+        # The write landed and was rolled back: it must be counted, not reported
+        # as vault_writes: 0 (#28). The forward count rides the failure record and
+        # the report's vault_writes reflects it even though the net change is zero.
+        self.assertGreaterEqual(report["apply"]["failures"][0]["forward_writes"], 1)
+        self.assertGreaterEqual(report["apply"]["vault_writes"], 1)
+        self.assertGreaterEqual(report["vault_writes"], 1)
+
+    def test_markdown_projection_renders_apply_section(self) -> None:
+        # With `--format markdown --apply`, the Markdown must project the apply
+        # results (vault writes, applied proposals, journal refs) rather than
+        # skipping from Proposals straight to Observe (#29).
+        self._baseline()
+        self._seed_auto_proposal()
+        report = self._sweep(
+            apply=True,
+            write_policy=self._write_policy(),
+            report_format="markdown",
+        )
+        self.assertEqual(report["result"], "applied")
+        dirs = self._dirs()
+        md_files = list(dirs["reports"].glob("*-sweep.md"))
+        self.assertEqual(len(md_files), 1)
+        markdown = md_files[0].read_text(encoding="utf-8")
+        self.assertIn("## Apply", markdown)
+        self.assertIn("proposals applied: 1", markdown)
+        self.assertIn("vault writes: 1", markdown)
+        self.assertIn("prp-sweepapplytest0", markdown)

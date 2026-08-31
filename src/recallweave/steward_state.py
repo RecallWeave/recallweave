@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -8,9 +9,12 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 from .safe_write import is_link_like
+
+if TYPE_CHECKING:
+    from .steward_sources import StewardSource
 
 STEWARD_SCHEMA_VERSION = "recallweave.steward.v1"
 
@@ -55,7 +59,9 @@ def steward_state_root(registry_path: Path) -> Path:
     return _application_data_root() / "steward" / fingerprint
 
 
-def ensure_state_root_outside_sources(root: Path, source_roots: list[Path]) -> None:
+def ensure_state_root_outside_sources(
+    root: Path, sources: list["StewardSource"]
+) -> None:
     """Refuse a state root that overlaps any registered source root.
 
     Steward state writes report ``vault_writes: 0``; that claim is only true
@@ -63,13 +69,16 @@ def ensure_state_root_outside_sources(root: Path, source_roots: list[Path]) -> N
     """
 
     resolved_root = root.expanduser().resolve()
-    for source_root in source_roots:
-        resolved_source = Path(source_root).expanduser().resolve()
-        # A file source's boundary is its containing directory; a folder
-        # source's boundary is itself -- including when it is currently
-        # missing (a deleted root must not widen the boundary to its parent).
+    for source in sources:
+        resolved_source = Path(source.root).expanduser().resolve()
+        # A file source's boundary is its CONTAINING directory, whether or not
+        # the file still exists (a removed file must not narrow the boundary to
+        # its own path); a folder source's boundary is itself -- including when
+        # it is currently missing (a deleted root must not widen the boundary
+        # to its parent). The type comes from the registered source, not a live
+        # filesystem stat, so a disappeared file still contributes its parent.
         candidates = (
-            resolved_source.parent if resolved_source.is_file() else resolved_source
+            resolved_source.parent if source.type == "file" else resolved_source
         )
         if (
             resolved_root == candidates
@@ -158,6 +167,41 @@ def ensure_state_layout(root: Path) -> dict[str, Path]:
 _LOCK_NAME = "steward.lock"
 
 
+# The (st_dev, st_ino) of the state root the currently-held StateLock pinned,
+# set by lock_state for the duration of a locked operation. State writes consult
+# it to verify descriptor continuity before mutating (see
+# _verify_locked_root_identity). A ContextVar keeps it bound to the running
+# operation's call stack, so a direct, unlocked write (e.g. a unit test) sees
+# None and skips the check.
+_LOCKED_ROOT_IDENTITY: contextvars.ContextVar[tuple[int, int] | None] = (
+    contextvars.ContextVar("steward_locked_root_identity", default=None)
+)
+
+
+def _verify_locked_root_identity(root_fd: int, anchor: Path) -> None:
+    """Fail closed if the anchored state root is not the inode the held
+    StateLock pinned.
+
+    The anchored write descent reopens the state root by pathname (O_NOFOLLOW on
+    the final component only). While a StateLock is held, ``lock_state`` records
+    the locked root's ``(st_dev, st_ino)``; if a concurrent rename+replace
+    swapped the state root (or an ancestor) for another real directory between
+    lock acquisition and this write, the freshly opened root is a DIFFERENT
+    inode. Refuse the write rather than mutate a rebound tree -- descriptor
+    continuity against the pinned root (#31). No lock held (contextvar unset)
+    means a direct, unlocked call: there is nothing to verify against."""
+
+    pinned = _LOCKED_ROOT_IDENTITY.get()
+    if pinned is None:
+        return
+    info = os.fstat(root_fd)
+    if (info.st_dev, info.st_ino) != pinned:
+        raise ValueError(
+            f"Refusing to write: the state root {anchor} is no longer the "
+            "directory the steward lock pinned (it was renamed or replaced)."
+        )
+
+
 class StateLock:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -170,6 +214,23 @@ class StateLock:
         # replacement process's lock, nor let this process acquire in a
         # replacement tree while the original lock is still held.
         self._dir_fd: int | None = None
+        # ContextVar token for the published pinned-root identity, so descriptor
+        # continuity is enforced for EVERY acquisition path -- both `lock_state`
+        # and a direct `with StateLock(...)` (as observation uses) -- not only
+        # via lock_state (#31).
+        self._identity_token: contextvars.Token | None = None
+
+    @property
+    def root_identity(self) -> tuple[int, int] | None:
+        """``(st_dev, st_ino)`` of the pinned state-root descriptor, or None on
+        the pathname fallback (no dir_fd) where there is nothing to pin."""
+        if self._dir_fd is None:
+            return None
+        try:
+            info = os.fstat(self._dir_fd)
+        except OSError:
+            return None
+        return (info.st_dev, info.st_ino)
 
     def acquire(self) -> None:
         root = self.root
@@ -230,6 +291,7 @@ class StateLock:
                 raise
             self._dir_fd = dir_fd
             self._held = True
+            self._publish_identity()
             return
 
         # Pathname fallback (e.g. Windows without dir_fd): a state-root swap
@@ -296,9 +358,29 @@ class StateLock:
             return None
         return self._detail_from_text(text)
 
+    def _publish_identity(self) -> None:
+        """Publish the pinned root identity so anchored state writes made while
+        this lock is held verify descriptor continuity (see
+        _verify_locked_root_identity). No dir_fd (pathname fallback) means no
+        identity to pin, so the check stays inactive there."""
+        identity = self.root_identity
+        if identity is not None:
+            self._identity_token = _LOCKED_ROOT_IDENTITY.set(identity)
+
+    def _retract_identity(self) -> None:
+        if self._identity_token is not None:
+            try:
+                _LOCKED_ROOT_IDENTITY.reset(self._identity_token)
+            except (ValueError, LookupError):
+                pass
+            self._identity_token = None
+
     def release(self) -> None:
         if not self._held:
             return
+        # Retract the published identity before dropping the lock, so a later
+        # unlocked write in the same context is not checked against a stale root.
+        self._retract_identity()
         if self._dir_fd is not None:
             try:
                 os.unlink(_LOCK_NAME, dir_fd=self._dir_fd)
@@ -326,6 +408,9 @@ class StateLock:
 
 @contextmanager
 def lock_state(root: Path) -> Iterator[StateLock]:
+    # StateLock.acquire/release publish and retract the pinned root identity, so
+    # descriptor continuity (#31) holds for this path and for a direct
+    # `with StateLock(...)` alike -- nothing extra to do here.
     lock = StateLock(root)
     lock.acquire()
     try:
@@ -416,6 +501,19 @@ def atomic_write_bytes(path: Path, data: bytes, *, within: Path | None = None) -
                         f"Refusing to write through a symlinked or missing state "
                         f"root: {anchor} ({type(error).__name__})"
                     ) from error
+                try:
+                    # Descriptor continuity: the anchor is the state root; while a
+                    # StateLock is held it must still be the inode the lock pinned
+                    # (#31). Verified before the descent, so a rebound state tree
+                    # is refused before any directory is created or file written.
+                    _verify_locked_root_identity(fds[0], anchor)
+                except ValueError:
+                    for open_fd in fds:
+                        try:
+                            os.close(open_fd)
+                        except OSError:
+                            pass
+                    raise
                 try:
                     for part in descend:
                         try:
