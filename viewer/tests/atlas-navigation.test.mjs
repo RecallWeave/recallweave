@@ -63,6 +63,13 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
   assert.equal(normalizeObsidianVaultLabel("with\nnewline"), null);
   assert.equal(normalizeObsidianVaultLabel("a\tb"), null);
   assert.equal(normalizeObsidianVaultLabel("nbsp here"), null);
+  // Edge non-space whitespace is rejected, not silently trimmed (only plain
+  // U+0020 is trimmed from the ends); C1 controls (U+0080–U+009F) fail closed.
+  assert.equal(normalizeObsidianVaultLabel(String.fromCharCode(0x00a0) + "Vault"), null);
+  assert.equal(normalizeObsidianVaultLabel("Vault" + String.fromCharCode(0x09)), null);
+  assert.equal(normalizeObsidianVaultLabel("  My Vault  "), "My Vault");
+  assert.equal(normalizeObsidianVaultLabel("Va" + String.fromCharCode(0x0085) + "ult"), null);
+  assert.equal(normalizeObsidianVaultLabel("Va" + String.fromCharCode(0x009f) + "ult"), null);
   assert.equal(normalizeObsidianVaultLabel("x".repeat(200)).length, 120);
   // Truncation is by code point, so a supplementary character at the boundary is
   // never split into a lone surrogate that would make encodeURIComponent throw.

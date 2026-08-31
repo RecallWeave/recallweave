@@ -58,11 +58,20 @@ function notifyVaultChange(): void {
 
 const MAX_VAULT_LABEL_LENGTH = 120;
 
-/** True if the string carries any C0/DEL control char or a line/para separator. */
+/**
+ * True if the string carries any C0 or C1 control character (U+0000–U+001F,
+ * U+007F–U+009F) or a line/paragraph separator — matching the graph import
+ * sanitizer's control range so navigation labels fail closed consistently.
+ */
 function hasControlChars(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f || code === 0x2028 || code === 0x2029) {
+    if (
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      code === 0x2028 ||
+      code === 0x2029
+    ) {
       return true;
     }
   }
@@ -104,10 +113,13 @@ const FORMAT_OR_IGNORABLE =
  */
 export function normalizeObsidianVaultLabel(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  // Trim only the ends. Internal spaces are preserved EXACTLY — consecutive
-  // U+0020 are valid in real vault/directory names ("Research  Notes"), so
-  // collapsing them would silently target a different or nonexistent vault.
-  const trimmed = value.trim();
+  // Trim only plain U+0020 from the ends (NOT String.trim, which would also
+  // discard an edge tab/newline/NBSP that may be part of the real name). Internal
+  // spaces are preserved EXACTLY — consecutive U+0020 are valid in real vault
+  // names ("Research  Notes") — so collapsing/trimming other whitespace would
+  // silently target a different or nonexistent vault; such whitespace is instead
+  // rejected below.
+  const trimmed = value.replace(/^ +/u, "").replace(/ +$/u, "");
   // Validate the COMPLETE value FIRST, before any length truncation: otherwise a
   // forbidden character beginning after the 120th code point (e.g. a separator
   // in "A"*120 + "/Other") would be sliced away and the prefix wrongly accepted.
