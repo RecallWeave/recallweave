@@ -70,16 +70,19 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
   assert.equal(normalizeObsidianVaultLabel("  My Vault  "), "My Vault");
   assert.equal(normalizeObsidianVaultLabel("Va" + String.fromCharCode(0x0085) + "ult"), null);
   assert.equal(normalizeObsidianVaultLabel("Va" + String.fromCharCode(0x009f) + "ult"), null);
-  assert.equal(normalizeObsidianVaultLabel("x".repeat(200)).length, 120);
-  // Truncation is by code point, so a supplementary character at the boundary is
-  // never split into a lone surrogate that would make encodeURIComponent throw.
+  // Length is a HARD limit: a label at the cap is accepted verbatim, one over is
+  // rejected (never truncated — truncation would change the navigation identity).
+  assert.equal(normalizeObsidianVaultLabel("x".repeat(120)), "x".repeat(120));
+  assert.equal(normalizeObsidianVaultLabel("x".repeat(121)), null);
+  assert.equal(normalizeObsidianVaultLabel("x".repeat(200)), null);
+  // A supplementary character (emoji) counts as ONE code point: 119 ASCII + 1
+  // emoji = 120 is accepted whole (no split surrogate); 120 ASCII + 1 emoji =
+  // 121 is over the cap and rejected (not truncated).
   const emojiAtBoundary = normalizeObsidianVaultLabel("a".repeat(119) + "😀");
   assert.equal([...emojiAtBoundary].length, 120);
   assert.doesNotThrow(() => encodeURIComponent(emojiAtBoundary));
-  const emojiPastBoundary = normalizeObsidianVaultLabel("a".repeat(120) + "😀");
-  assert.equal([...emojiPastBoundary].length, 120);
-  assert.doesNotThrow(() => encodeURIComponent(emojiPastBoundary));
-  assert.ok(!emojiPastBoundary.includes("😀"));
+  assert.ok(emojiAtBoundary.includes("😀"));
+  assert.equal(normalizeObsidianVaultLabel("a".repeat(120) + "😀"), null);
   // A pre-existing unpaired surrogate in the input is rejected outright (it would
   // make encodeURIComponent throw at click time), not accepted and persisted.
   assert.equal(normalizeObsidianVaultLabel(String.fromCharCode(0xd800) + "vault"), null);
@@ -91,8 +94,8 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
   // sliced away leaving an accepted prefix (which could name a different vault).
   assert.equal(normalizeObsidianVaultLabel("A".repeat(120) + "/Other"), null);
   assert.equal(normalizeObsidianVaultLabel("A".repeat(130) + ":smuggled"), null);
-  // A long but wholly-valid label is still accepted and truncated to the cap.
-  assert.equal(normalizeObsidianVaultLabel("A".repeat(200)).length, 120);
+  // A wholly-valid but overlength label is rejected (never truncated to a prefix).
+  assert.equal(normalizeObsidianVaultLabel("A".repeat(200)), null);
   // Bidi controls and zero-width / default-ignorable format characters are
   // rejected (they can spoof or reorder the displayed label vs. the real value).
   assert.equal(normalizeObsidianVaultLabel("Work" + String.fromCharCode(0x200b)), null);

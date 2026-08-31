@@ -134,10 +134,12 @@ export function normalizeObsidianVaultLabel(value: unknown): string | null {
   if (hasControlChars(trimmed)) return null;
   if (hasLoneSurrogate(trimmed)) return null;
   if (FORMAT_OR_IGNORABLE.test(trimmed)) return null;
-  // Only now bound the length, truncating by Unicode code points (not UTF-16
-  // units) so a supplementary character at the boundary is never split into a
-  // lone surrogate that would make encodeURIComponent throw at click time.
-  return Array.from(trimmed).slice(0, MAX_VAULT_LABEL_LENGTH).join("");
+  // Reject an overlength label rather than truncating it: a vault name is a
+  // navigation IDENTITY, so a silently truncated prefix could target a different
+  // or nonexistent vault. Count by Unicode code points (Array.from), not UTF-16
+  // units. Fail closed.
+  if (Array.from(trimmed).length > MAX_VAULT_LABEL_LENGTH) return null;
+  return trimmed;
 }
 
 /**
