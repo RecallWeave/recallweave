@@ -424,12 +424,24 @@ class ObserveSourceTest(unittest.TestCase):
                 return (real_ident[0], real_ident[1] + 1)
             return real_ident
 
+        import recallweave.steward_observe as _obs
+
         with patch("recallweave.steward_observe.path_identity", side_effect=ident):
-            receipt = self.observe(now="2026-01-01T00:00:00+00:00")
-        self.assertEqual(receipt.get("error"), "source_identity_changed")
-        self.assertEqual(list(self.dirs["changes"].glob("*.json")), [],
-                         "the batch was not retracted after the root swap")
-        self.assertIsNone(self.checkpoint())
+            if _obs._DIR_FD_RETRACT:
+                receipt = self.observe(now="2026-01-01T00:00:00+00:00")
+                self.assertEqual(receipt.get("error"), "source_identity_changed")
+                self.assertEqual(
+                    list(self.dirs["changes"].glob("*.json")), [],
+                    "the batch was not retracted after the root swap",
+                )
+                self.assertIsNone(self.checkpoint())
+            else:
+                # Without descriptor-relative deletion the batch cannot be
+                # retracted safely, so observe fails closed (raises) rather than
+                # risk a pathname delete, and never advances the checkpoint.
+                with self.assertRaises(OSError):
+                    self.observe(now="2026-01-01T00:00:00+00:00")
+                self.assertIsNone(self.checkpoint())
 
     def test_failed_batch_retraction_raises(self) -> None:
         # If the out-of-scope batch cannot be retracted, fail closed (raise)
