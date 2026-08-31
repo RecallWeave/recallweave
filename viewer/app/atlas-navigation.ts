@@ -89,6 +89,13 @@ function hasLoneSurrogate(value: string): boolean {
   return false;
 }
 
+// Bidi controls, zero-width and other default-ignorable format characters can
+// make a stored label display identically to (or reordered from) its real
+// value, so every launch would target a nonexistent or unintended vault. Reject
+// them up front, matching the graph import sanitizers for displayed identifiers.
+const FORMAT_OR_IGNORABLE =
+  /[\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
+
 /**
  * Validate a locally-configured Obsidian vault name as a navigation label,
  * INDEPENDENTLY of the export's provenance `vault_name`. Fail closed: return the
@@ -109,6 +116,7 @@ export function normalizeObsidianVaultLabel(value: unknown): string | null {
   if (/[/\\:]/u.test(collapsed)) return null;
   if (hasControlChars(collapsed)) return null;
   if (hasLoneSurrogate(collapsed)) return null;
+  if (FORMAT_OR_IGNORABLE.test(collapsed)) return null;
   // Only now bound the length, truncating by Unicode code points (not UTF-16
   // units) so a supplementary character at the boundary is never split into a
   // lone surrogate that would make encodeURIComponent throw at click time.

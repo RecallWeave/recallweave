@@ -85,9 +85,15 @@ When it is absent or invalid, Atlas uses the neutral reserved origin
 - Exported graph files may contain private metadata. Keep them outside Git and
   do not share them unless you have reviewed their contents.
 - Note and evidence excerpts are opt-in at export time.
-- Direct Obsidian open links are deferred pending a broader vault-navigation
-  redesign. Until then Atlas copies relative note paths only; do not invent
-  vault labels in fixtures.
+- Copy-relative-path is the permanent, always-available way to reach a source.
+  Atlas also offers an **opt-in "Open in Obsidian"** deep link (`obsidian://open`)
+  that appears only when you locally configure an Obsidian vault name in the
+  viewer. That configuration is local presentation state only: it never touches
+  export bytes, the export schema, hashes, or provenance, the frozen
+  `viewer.v2` `vault_name` field stays provenance-only, and the URI is assembled
+  in the browser at click time from the configured name and the note's validated
+  relative path. Do not invent vault labels in fixtures. See
+  [docs/cold-trails.md](../docs/cold-trails.md) ("Vault navigation").
 
 ## Cold Trails
 

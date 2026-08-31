@@ -837,12 +837,30 @@ class NullableTimestampTest(unittest.TestCase):
         )
 
 
-class ViewerNavigationExportInvariantsTest(ViewerExportTest):
+class ViewerNavigationExportInvariantsTest(unittest.TestCase):
     """Founder rulings for recallweave-fkd: Atlas Obsidian navigation is LOCAL
     presentation state. The export never carries an actionable navigation URI,
     never gains a navigation field, and cannot be parameterized by any
     viewer-side navigation configuration — so export bytes are identical
-    regardless of how a viewer is (or is not) configured to open notes."""
+    regardless of how a viewer is (or is not) configured to open notes.
+
+    A standalone TestCase (not a subclass of ViewerExportTest) so it does not
+    re-run and re-`setUp` every inherited export test."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(
+            dir=Path(tempfile.gettempdir()).resolve()
+        )
+        self.database = Path(self.temporary.name) / "index.sqlite"
+        build_index(
+            VAULT,
+            self.database,
+            policy=IndexPolicy(deny_frontmatter={"sensitivity": ["sealed"]}),
+            minimum_candidate_score=0.08,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
 
     def test_export_carries_no_obsidian_uri_or_navigation_field(self) -> None:
         for kwargs in (
@@ -853,9 +871,10 @@ class ViewerNavigationExportInvariantsTest(ViewerExportTest):
         ):
             document = build_viewer_document(self.database, **kwargs)
             serialized = json.dumps(document, ensure_ascii=True, sort_keys=True)
-            # No actionable deep-link URI of any scheme is ever emitted.
+            # No actionable Obsidian deep-link URI, and no navigation field, is
+            # ever emitted. (A note's own text may legitimately contain a URL, so
+            # this checks the obsidian scheme specifically, not any "://".)
             self.assertNotIn("obsidian://", serialized)
-            self.assertNotIn("://", serialized)
             self.assertNotIn("obsidian_vault", document)
             self.assertNotIn("navigation", document)
 

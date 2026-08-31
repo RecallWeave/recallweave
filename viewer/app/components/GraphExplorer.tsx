@@ -574,7 +574,9 @@ export function GraphExplorer({
                     >
                       Copy path
                     </button>
-                    {obsidianVault && isNavigableRelativePath(selected.path) && (
+                    {obsidianVault &&
+                      selected.path_exact !== false &&
+                      isNavigableRelativePath(selected.path) && (
                       <button
                         type="button"
                         className="node-action node-action-obsidian"

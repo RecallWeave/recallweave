@@ -83,6 +83,11 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
   assert.equal(normalizeObsidianVaultLabel("A".repeat(130) + ":smuggled"), null);
   // A long but wholly-valid label is still accepted and truncated to the cap.
   assert.equal(normalizeObsidianVaultLabel("A".repeat(200)).length, 120);
+  // Bidi controls and zero-width / default-ignorable format characters are
+  // rejected (they can spoof or reorder the displayed label vs. the real value).
+  assert.equal(normalizeObsidianVaultLabel("Work" + String.fromCharCode(0x200b)), null);
+  assert.equal(normalizeObsidianVaultLabel(String.fromCharCode(0x202e) + "Vault"), null);
+  assert.equal(normalizeObsidianVaultLabel("Va" + String.fromCharCode(0x200e) + "ult"), null);
 });
 
 // Founder proof: no absolute source path may enter a URI.

@@ -243,6 +243,24 @@ test("configured viewer exposes Open in Obsidian for a relative-path note", asyn
   window.close();
 });
 
+test("configured viewer hides Open in Obsidian when import sanitized the path", async () => {
+  // A path carrying a zero-width character is stripped by import sanitization,
+  // so node.path no longer equals the exported path (path_exact === false). Open
+  // in Obsidian must be withheld rather than silently opening a different note.
+  const window = installDom(
+    memoryStorage({ [ATLAS_OBSIDIAN_VAULT_STORAGE_KEY]: "My Vault" }),
+  );
+  const html = await renderAndSelect(window, "My Vault", {
+    id: "zwsp",
+    title: "ZeroWidthNote",
+    path: "notes/plan" + String.fromCharCode(0x200b) + ".md",
+    content_hash: "c".repeat(64),
+  });
+  assert.match(html, /Copy path/);
+  assert.doesNotMatch(html, /Open in Obsidian/);
+  window.close();
+});
+
 test("configured viewer still hides Open in Obsidian for a non-relative path", async () => {
   const window = installDom(
     memoryStorage({ [ATLAS_OBSIDIAN_VAULT_STORAGE_KEY]: "My Vault" }),

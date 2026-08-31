@@ -33,6 +33,11 @@ export type GraphNode = {
   id: string;
   title: string;
   path: string;
+  // True only when the exported path survived import sanitization byte-for-byte.
+  // Navigation (Open in Obsidian) is offered only for exact paths, so a path
+  // that lost a zero-width/bidi/control character or was truncated cannot
+  // silently resolve to a DIFFERENT note.
+  path_exact?: boolean;
   status?: string;
   domain?: string;
   summary?: string;
@@ -403,10 +408,13 @@ export function normalizeGraph(value: unknown): GraphDocument {
       ? node.tags.map((tag) => safeLabel(tag)).filter(Boolean)
       : [];
     validationTagsById.set(id, sanitizedTags);
+    const safePath = safeIdentifier(node.path, id);
     const normalized: GraphNode = {
       id,
       title: safeLabel(node.title, id),
-      path: safeIdentifier(node.path, id),
+      path: safePath,
+      // Only an unaltered raw string path is exact enough to navigate to.
+      path_exact: typeof node.path === "string" && node.path === safePath,
       status: safeLabel(node.status),
       domain: safeLabel(node.domain, "Unclassified"),
       summary: safeText(node.summary),
