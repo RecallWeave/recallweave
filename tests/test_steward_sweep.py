@@ -918,8 +918,8 @@ class ReportBacklogAggregationTest(StewardSweepTest):
                     "registry_sha256": "some-foreign-digest",
                     "summary": {"CITATION_BROKEN": 1},
                     "assessments": [{
-                        "relation": "CITATION_BROKEN", "relative_path": "Secret.md",
-                        "inputs": {"broken_citations": [{"citation": "Secret.md:9-9"}]},
+                        "relation": "CITATION_BROKEN", "relative_path": "leak.md",
+                        "inputs": {"broken_citations": [{"citation": "leak.md:9-9"}]},
                     }],
                 }
             ),
@@ -1068,6 +1068,312 @@ class ReportBacklogAggregationTest(StewardSweepTest):
         summary, _broken, _dupes = _aggregate_assessments(dirs, self._registry())
         self.assertEqual(summary["DELETED"], 1, "a recurring finding was double-counted")
 
+    def test_duplicate_with_unsafe_relative_path_dropped_and_counted(self) -> None:
+        # A tampered assessment (keeping the active digest) with an absolute
+        # relative_path in a DUPLICATES finding must not reach integrity.duplicates
+        # (the module promise). The whole finding is dropped -- count AND string
+        # stay consistent -- and the drop is recorded in `rejected`.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_assessment(
+            "20260101T000000Z-vault.json",
+            [
+                {"relation": "DUPLICATES_EXACT_BYTES",
+                 "relative_path": "/nonexistent/leak.md",
+                 "inputs": {"duplicate_of": ["other.md"], "duplicate_in_batch": []}},
+                {"relation": "DUPLICATES_EXACT_BYTES", "relative_path": "safe.md",
+                 "inputs": {"duplicate_of": ["other.md"], "duplicate_in_batch": []}},
+            ],
+        )
+        rejected: dict = {}
+        summary, _b, dupes = _aggregate_assessments(
+            self._dirs(), self._registry(), rejected=rejected
+        )
+        self.assertEqual(dupes, ["vault: safe.md"])
+        self.assertEqual(summary["DUPLICATES_EXACT_BYTES"], 1)
+        self.assertEqual(rejected.get("duplicates"), 1)
+
+    def test_citation_with_unsafe_path_dropped_and_counted(self) -> None:
+        # A broken citation carrying an absolute path must not leak; the safe
+        # citation on the same note is kept and the note still counts as having
+        # a broken citation.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_assessment(
+            "20260101T000000Z-vault.json",
+            [{"relation": "CITATION_BROKEN", "relative_path": "Note.md",
+              "inputs": {"broken_citations": [
+                  {"citation": "/nonexistent/leak.md:1-2"},
+                  {"citation": "Note.md:3-4"},
+              ]}}],
+        )
+        rejected: dict = {}
+        summary, broken, _d = _aggregate_assessments(
+            self._dirs(), self._registry(), rejected=rejected
+        )
+        self.assertEqual(broken, ["vault: Note.md:3-4"])
+        self.assertEqual(summary["CITATION_BROKEN"], 1)
+        self.assertEqual(rejected.get("broken_citations"), 1)
+
+    def test_non_object_inputs_do_not_crash_aggregation(self) -> None:
+        # ADVERSARIAL: a tampered finding whose `inputs` is a truthy non-object
+        # must not crash aggregation ("str".get(...) -> AttributeError). Covered
+        # for both DUPLICATES and CITATION_BROKEN; the malformed citation field
+        # is counted once (not per character).
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        for bad_inputs in ("malformed", ["a", "b"], 123, True):
+            with self.subTest(bad_inputs=bad_inputs):
+                self._write_assessment(
+                    "20260101T000000Z-vault.json",
+                    [
+                        {"relation": "DUPLICATES_EXACT_BYTES",
+                         "relative_path": "dup.md", "inputs": bad_inputs},
+                        {"relation": "CITATION_BROKEN",
+                         "relative_path": "Note.md", "inputs": bad_inputs},
+                    ],
+                )
+                rejected: dict = {}
+                summary, broken, dupes = _aggregate_assessments(
+                    self._dirs(), self._registry(), rejected=rejected
+                )
+                # No crash. The duplicate keeps its safe path (currency just
+                # cannot be refined); the citation field is malformed -> one
+                # rejection, no citation string.
+                self.assertEqual(dupes, ["vault: dup.md"])
+                self.assertEqual(broken, [])
+                self.assertEqual(rejected.get("broken_citations"), 1)
+
+    def test_non_list_broken_citations_counted_once(self) -> None:
+        # A broken_citations that is a string (or other non-list) is a single
+        # malformed field -- one rejection, not one per character/key.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_assessment(
+            "20260101T000000Z-vault.json",
+            [{"relation": "CITATION_BROKEN", "relative_path": "Note.md",
+              "inputs": {"broken_citations": "abcdef"}}],
+        )
+        rejected: dict = {}
+        _s, broken, _d = _aggregate_assessments(
+            self._dirs(), self._registry(), rejected=rejected
+        )
+        self.assertEqual(broken, [])
+        self.assertEqual(rejected.get("broken_citations"), 1)
+
+    def test_injected_assessment_summary_key_is_dropped(self) -> None:
+        # A modified assessment summary carrying an unknown (e.g. Markdown/
+        # absolute-path) key must not surface that key in report["assessments"].
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        injected = "## /nonexistent/leak.md"
+        (self._dirs()["assessments"] / "20260101T000000Z-vault.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": STEWARD_SCHEMA_VERSION,
+                    "kind": "assessment_batch",
+                    "source": "vault",
+                    "registry_sha256": self._registry().registry_sha256,
+                    "summary": {"index_current": 1, injected: 3},
+                    "assessments": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary, _b, _d = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(summary.get("index_current"), 1)
+        self.assertNotIn(injected, summary)
+
+    def test_citation_range_must_be_one_based_and_ordered(self) -> None:
+        # Shape alone is not enough: an impossible physical range (0-based or
+        # end<start) is rejected like an absolute path.
+        from recallweave.steward_sweep import _citation_path_is_safe
+
+        for good in ("Note.md:1-1", "Note.md:1-2", "Note.md:3-100"):
+            self.assertTrue(_citation_path_is_safe(good), good)
+        for bad in ("Note.md:0-0", "Note.md:0-1", "Note.md:9-2", "Note.md:2-1"):
+            self.assertFalse(_citation_path_is_safe(bad), bad)
+
+    def test_path_with_embedded_control_char_is_rejected(self) -> None:
+        # A value like "safe.md\n/nonexistent/leak.md" is not "absolute" to
+        # pathlib but would carry an absolute path onto a second Markdown line;
+        # any control/separator/bidi character is refused outright.
+        from recallweave.steward_sweep import (
+            _citation_path_is_safe,
+            _is_safe_relative_path,
+        )
+
+        for bad in (
+            "safe.md\n/nonexistent/leak.md",
+            "a\tb.md",
+            "a\rb.md",
+            "x y.md",
+            "x‮y.md",   # bidi override
+            "x\x00y.md",
+        ):
+            self.assertFalse(_is_safe_relative_path(bad), repr(bad))
+        self.assertFalse(_citation_path_is_safe("Note.md\n/nonexistent/x:1-2"))
+        # A plain space is fine (not a control character).
+        self.assertTrue(_is_safe_relative_path("a b/c d.md"))
+
+    def test_arabic_letter_mark_and_directional_controls_rejected(self) -> None:
+        # U+061C and the deprecated U+206A-U+206F directional controls must be
+        # rejected like the other bidi format characters.
+        from recallweave.steward_sweep import _is_safe_relative_path
+
+        for cp in ("؜", "⁪", "⁯"):
+            self.assertFalse(_is_safe_relative_path(f"a{cp}b.md"), hex(ord(cp)))
+
+    def test_citation_range_with_excessive_digits_dropped_not_crash(self) -> None:
+        # A range whose numbers exceed Python's int-string limit must be dropped
+        # (regex bounds the digit count), never raise ValueError from int().
+        from recallweave.steward_sweep import (
+            _aggregate_assessments,
+            _citation_path_is_safe,
+        )
+
+        huge = "9" * 5000
+        self.assertFalse(_citation_path_is_safe(f"Note.md:{huge}-{huge}"))
+        self._write_assessment(
+            "20260101T000000Z-vault.json",
+            [{"relation": "CITATION_BROKEN", "relative_path": "Note.md",
+              "inputs": {"broken_citations": [{"citation": f"Note.md:{huge}-1"}]}}],
+        )
+        rejected: dict = {}
+        _s, broken, _d = _aggregate_assessments(
+            self._dirs(), self._registry(), rejected=rejected
+        )
+        self.assertEqual(broken, [])
+        self.assertEqual(rejected.get("broken_citations"), 1)
+
+    def test_duplicate_with_embedded_newline_path_dropped(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_assessment(
+            "20260101T000000Z-vault.json",
+            [{"relation": "DUPLICATES_EXACT_BYTES",
+              "relative_path": "safe.md\n/nonexistent/leak.md",
+              "inputs": {"duplicate_of": ["other.md"], "duplicate_in_batch": []}}],
+        )
+        rejected: dict = {}
+        summary, _b, dupes = _aggregate_assessments(
+            self._dirs(), self._registry(), rejected=rejected
+        )
+        self.assertEqual(dupes, [])
+        self.assertEqual(summary["DUPLICATES_EXACT_BYTES"], 0)
+        self.assertEqual(rejected.get("duplicates"), 1)
+
+    def _write_change_batch(self, source: str, batch: dict) -> None:
+        (self._dirs()["changes"] / f"20260101T000000Z-{source}.json").write_text(
+            json.dumps(batch), encoding="utf-8"
+        )
+
+    def test_aggregate_from_batches_buckets_hostile_skip_key(self) -> None:
+        # A modified change batch with a hostile `skipped` reason (Markdown +
+        # absolute path) must bucket it, never emit the raw key, and never leak.
+        from recallweave.steward_sweep import _aggregate_from_batches
+
+        hostile = "## Forged\n- /nonexistent/leak.md"
+        self._write_change_batch(
+            "vault",
+            {"change_summary": {"added": 1, "modified": 0, "removed": 0},
+             "skipped": {hostile: 2, "symlink": 1}},
+        )
+        agg = _aggregate_from_batches(self._dirs(), self._registry())
+        self.assertNotIn(hostile, agg["skipped_total"])
+        self.assertEqual(agg["skipped_total"].get("unrecognized"), 2)
+        self.assertEqual(agg["skipped_total"].get("symlink"), 1)
+        self.assertNotIn("/nonexistent/leak.md", json.dumps(agg))
+
+    def test_aggregate_from_batches_survives_malformed_containers(self) -> None:
+        # Non-object change_summary/skipped and non-int/negative counters must
+        # not crash aggregation and must coerce to safe zeros.
+        from recallweave.steward_sweep import _aggregate_from_batches
+
+        self._write_change_batch(
+            "vault",
+            {"change_summary": "not-an-object", "skipped": "not-an-object",
+             "changed_during_observe": "x", "rename_candidates": 5},
+        )
+        agg = _aggregate_from_batches(self._dirs(), self._registry())
+        self.assertEqual(agg["changes"]["vault"],
+                         {"added": 0, "modified": 0, "removed": 0})
+        self.assertEqual(agg["skipped_total"], {})
+        self.assertEqual(agg["changed_during_observe"], 0)
+        self.assertEqual(agg["rename_candidates_pending"], 0)
+
+    def test_aggregate_from_batches_rejects_negative_and_bool_counters(self) -> None:
+        from recallweave.steward_sweep import _aggregate_from_batches
+
+        self._write_change_batch(
+            "vault",
+            {"change_summary": {"added": -5, "modified": True, "removed": "9"},
+             "skipped": {"symlink": -3}},
+        )
+        agg = _aggregate_from_batches(self._dirs(), self._registry())
+        self.assertEqual(agg["changes"]["vault"],
+                         {"added": 0, "modified": 0, "removed": 0})
+        self.assertEqual(agg["skipped_total"].get("symlink"), 0)
+
+    def _write_raw_assessment(self, name: str, **fields: Any) -> None:
+        doc = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "assessment_batch",
+            "source": "vault",
+            "registry_sha256": self._registry().registry_sha256,
+        }
+        doc.update(fields)
+        (self._dirs()["assessments"] / name).write_text(
+            json.dumps(doc), encoding="utf-8"
+        )
+
+    def test_non_list_assessment_containers_do_not_crash(self) -> None:
+        # A truthy non-list `assessments`/`covered_paths` (int/bool/str/dict)
+        # must not raise a TypeError during aggregation.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        for bad in (1, True, "x", {"a": 1}):
+            with self.subTest(bad=bad):
+                self._write_raw_assessment(
+                    "20260101T000000Z-vault.json",
+                    summary={}, assessments=bad, covered_paths=bad,
+                )
+                summary, broken, dupes = _aggregate_assessments(
+                    self._dirs(), self._registry()
+                )
+                self.assertIsInstance(summary, dict)
+                self.assertEqual(broken, [])
+                self.assertEqual(dupes, [])
+
+    def test_negative_bookkeeping_counter_coerced_to_zero(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_raw_assessment(
+            "20260101T000000Z-vault.json",
+            summary={"never_indexed": -10, "index_current": 3},
+            assessments=[], covered_paths=[],
+        )
+        summary, _b, _d = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(summary["never_indexed"], 0)
+        self.assertEqual(summary["index_current"], 3)
+
+    def test_valid_evidence_survives_alongside_malformed_container(self) -> None:
+        # A valid duplicate finding in one assessment is still reported even
+        # when a sibling assessment has a malformed container.
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        self._write_raw_assessment(
+            "20260101T000000Z-vault.json", summary={}, assessments=999,
+        )
+        self._write_assessment(
+            "20260102T000000Z-vault.json",
+            [{"relation": "DUPLICATES_EXACT_BYTES", "relative_path": "A.md",
+              "inputs": {"duplicate_of": ["B.md"], "duplicate_in_batch": []}}],
+        )
+        summary, _b, dupes = _aggregate_assessments(self._dirs(), self._registry())
+        self.assertEqual(dupes, ["vault: A.md"])
+        self.assertEqual(summary["DUPLICATES_EXACT_BYTES"], 1)
+
 
 class ForeignProposalPendingTest(StewardSweepTest):
     def test_foreign_registry_proposal_excluded_from_pending(self) -> None:
@@ -1166,13 +1472,25 @@ class SourceQualifiedIntegrityTest(StewardSweepTest):
         source: Any = _OMIT,
         deleted_path: Any = _OMIT,
         evidence: Any = _OMIT,
+        provenance_source: Any = _OMIT,
+        provenance_path: Any = _OMIT,
+        provenance_relation: Any = "DELETED",
+        assessment_refs: Any = _OMIT,
         registry_sha256: str,
     ) -> None:
         """Write one pending review_dangling_references proposal. ``source``,
         ``deleted_path`` and ``evidence`` are written verbatim (may be
         non-strings, absolute paths, non-objects, etc.) so tests can exercise
         the untrusted-content path. Pass ``evidence`` to override the whole
-        evidence value; otherwise it is ``{"deleted_path": deleted_path}``."""
+        evidence value; otherwise it is ``{"deleted_path": deleted_path}``.
+
+        Attribution is DERIVED from the proposal's matching ``DELETED``
+        assessment reference. ``provenance_source`` sets the source encoded in
+        that reference's ``assessment_file`` (``<ts>-<source>.json``);
+        ``provenance_path`` (default: ``deleted_path``) and
+        ``provenance_relation`` (default ``DELETED``) let a test break the
+        binding. Pass ``assessment_refs`` to write the whole refs list verbatim
+        (e.g. a decoy first ref). Omit all for no assessment_refs (rejected)."""
         dirs = self._dirs()
         proposal: dict[str, Any] = {
             "schema_version": STEWARD_SCHEMA_VERSION,
@@ -1190,6 +1508,17 @@ class SourceQualifiedIntegrityTest(StewardSweepTest):
             }
         if source is not _OMIT:
             proposal["source"] = source
+        if assessment_refs is not _OMIT:
+            proposal["assessment_refs"] = assessment_refs
+        elif provenance_source is not _OMIT:
+            ref_path = deleted_path if provenance_path is _OMIT else provenance_path
+            proposal["assessment_refs"] = [
+                {
+                    "assessment_file": f"20260101T000000Z-{provenance_source}.json",
+                    "relation": provenance_relation,
+                    "relative_path": ref_path,
+                }
+            ]
         (dirs["proposals"] / f"20260101T000000Z-x-prp-{stem}.json").write_text(
             json.dumps(proposal), encoding="utf-8"
         )
@@ -1200,10 +1529,12 @@ class SourceQualifiedIntegrityTest(StewardSweepTest):
         dirs = self._dirs()
         reg = self._registry()
         # Two REGISTERED sources with a pending dangling-reference proposal over
-        # the SAME deleted relative path (Gone.md).
+        # the SAME deleted relative path (Gone.md). The qualifier is derived from
+        # each proposal's assessment provenance, not its free-form source field.
         for source_name in ("alpha", "beta"):
             self._write_dangling_proposal(
                 f"{source_name}0000", source=source_name,
+                provenance_source=source_name,
                 deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
             )
         total, by_action, dangling = _aggregate_proposals(
@@ -1214,85 +1545,92 @@ class SourceQualifiedIntegrityTest(StewardSweepTest):
         self.assertEqual(by_action, {"review_dangling_references": 2})
         self.assertEqual(dangling, ["alpha: Gone.md", "beta: Gone.md"])
 
-    def test_dangling_reference_falls_back_to_bare_path_without_source(self) -> None:
+    def test_dangling_reference_rejected_without_provenance(self) -> None:
         from recallweave.steward_sweep import _aggregate_proposals
 
         dirs = self._dirs()
         reg = self._registry()
-        # A malformed proposal missing a source must not crash the sweep; the
-        # deleted path is recorded bare rather than qualified.
+        # A proposal with no assessment provenance cannot be attributed, so it
+        # is rejected (not emitted bare) and counted -- never crashing the sweep.
         self._write_dangling_proposal(
-            "nosource00", source=_OMIT, deleted_path="Gone.md",
+            "noprov0000", source="vault", deleted_path="Gone.md",
             registry_sha256=reg.registry_sha256,
         )
+        rejected: dict = {}
         total, _by_action, dangling = _aggregate_proposals(
             dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+            rejected=rejected,
         )
         self.assertEqual(total, 1)
-        self.assertEqual(dangling, ["Gone.md"])
+        self.assertEqual(dangling, [])
+        self.assertEqual(rejected.get("dangling_references"), 1)
 
     def test_dangling_reference_never_leaks_absolute_path_source(self) -> None:
         # ADVERSARIAL: a tampered proposal carrying the ACTIVE registry digest
-        # but an absolute-path `source` must NOT copy that path into the report
-        # (the module promises never to emit an absolute path). The source is
-        # not a registered name, so only the bare, vault-relative deleted_path
-        # survives.
+        # but an absolute-path `source` must NOT copy that path into the report.
+        # The free-form source is ignored entirely; with no verifiable provenance
+        # the entry is rejected, so nothing (least of all the path) is emitted.
         from recallweave.steward_sweep import _aggregate_proposals
 
         dirs = self._dirs()
         reg = self._registry()
         self._write_dangling_proposal(
-            "abspath0000", source="/Users/alice/PrivateVault",
+            "abspath0000", source="/nonexistent/leak",
             deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
         )
+        rejected: dict = {}
         total, _by_action, dangling = _aggregate_proposals(
             dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+            rejected=rejected,
         )
         self.assertEqual(total, 1)
-        self.assertEqual(dangling, ["Gone.md"])
-        self.assertNotIn("/Users/alice/PrivateVault", " ".join(dangling))
+        self.assertEqual(dangling, [])
+        self.assertEqual(rejected.get("dangling_references"), 1)
+        self.assertNotIn("/nonexistent/leak", " ".join(dangling))
 
-    def test_dangling_reference_drops_foreign_and_empty_source_names(self) -> None:
-        # ADVERSARIAL: source strings that are not currently-registered names --
-        # a foreign source and an empty string -- are treated as malformed and
-        # dropped to the bare path, so two such proposals sharing a deleted path
-        # collapse to one bare entry rather than leaking their source strings.
+    def test_dangling_reference_rejects_foreign_and_empty_provenance(self) -> None:
+        # ADVERSARIAL: provenance naming sources that are not currently registered
+        # -- a foreign source and an empty string -- cannot be attributed and are
+        # rejected (never emitted, never collapsed into an ambiguous bare entry).
         from recallweave.steward_sweep import _aggregate_proposals
 
         dirs = self._dirs()
         reg = self._registry()
         self._write_dangling_proposal(
-            "foreign0000", source="not-registered",
+            "foreign0000", source="vault", provenance_source="not-registered",
             deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
         )
         self._write_dangling_proposal(
-            "emptysrc000", source="",
+            "emptysrc000", source="vault", provenance_source="",
             deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
         )
+        rejected: dict = {}
         total, _by_action, dangling = _aggregate_proposals(
             dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+            rejected=rejected,
         )
         self.assertEqual(total, 2)
-        self.assertEqual(dangling, ["Gone.md"])
+        self.assertEqual(dangling, [])
+        self.assertEqual(rejected.get("dangling_references"), 2)
 
-    def test_markdown_projection_never_leaks_hostile_dangling_source(self) -> None:
-        # ADVERSARIAL end-to-end: a pending proposal with a hostile absolute-path
-        # source, run through the real sweep + Markdown projection, must not put
-        # that path into either the JSON report or the rendered Markdown.
+    def test_markdown_projection_ignores_hostile_dangling_source_field(self) -> None:
+        # ADVERSARIAL end-to-end: a proposal with VALID provenance ('vault') but a
+        # hostile free-form `source` field must qualify from the provenance and
+        # never let the hostile string reach the JSON report or the Markdown.
         dirs = self._dirs()
         reg = self._registry()
         self._write_dangling_proposal(
-            "mdhostile00", source="/etc/secret/path",
+            "mdhostile00", source="/nonexistent/leak", provenance_source="vault",
             deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
         )
         report = self._sweep(report_format="markdown")
         dangling = report["integrity"]["dangling_references"]
-        self.assertIn("Gone.md", dangling)
-        self.assertNotIn("/etc/secret/path", json.dumps(report))
+        self.assertIn("vault: Gone.md", dangling)
+        self.assertNotIn("/nonexistent/leak", json.dumps(report))
         markdown = list(dirs["reports"].glob("*-sweep.md"))[0].read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("/etc/secret/path", markdown)
+        self.assertNotIn("/nonexistent/leak", markdown)
 
     # deleted_path is untrusted on-disk content, like source. A tampered proposal
     # carrying the active registry digest must never route an absolute/drive/UNC/
@@ -1300,12 +1638,12 @@ class SourceQualifiedIntegrityTest(StewardSweepTest):
     # to emit an absolute path). Each case must leave the proposal counted as
     # pending but contribute no dangling string.
     _HOSTILE_DELETED_PATHS = {
-        "posix_abs": "/Users/alice/PrivateVault/Secret.md",
-        "win_drive": "C:\\Users\\alice\\PrivateVault\\Secret.md",
-        "win_drive_fwd": "C:/Users/alice/Secret.md",
-        "unc": "\\\\host\\share\\Secret.md",
-        "traversal": "../PrivateVault/Secret.md",
-        "traversal_win": "..\\PrivateVault\\Secret.md",
+        "posix_abs": "/nonexistent/leak.md",
+        "win_drive": "C:\\nonexistent\\vaultx\\leak.md",
+        "win_drive_fwd": "C:/nonexistent/leak.md",
+        "unc": "\\\\host\\share\\leak.md",
+        "traversal": "../vaultx/leak.md",
+        "traversal_win": "..\\vaultx\\leak.md",
     }
 
     def test_dangling_reference_drops_unsafe_deleted_paths(self) -> None:
@@ -1330,7 +1668,7 @@ class SourceQualifiedIntegrityTest(StewardSweepTest):
         # ADVERSARIAL end-to-end through the real sweep + Markdown projection.
         dirs = self._dirs()
         reg = self._registry()
-        secret = "/Users/alice/PrivateVault/Secret.md"
+        secret = "/nonexistent/leak.md"
         self._write_dangling_proposal(
             "mdabsdel000", source="vault", deleted_path=secret,
             registry_sha256=reg.registry_sha256,
@@ -1342,7 +1680,7 @@ class SourceQualifiedIntegrityTest(StewardSweepTest):
             encoding="utf-8"
         )
         self.assertNotIn(secret, markdown)
-        self.assertNotIn("PrivateVault", markdown)
+        self.assertNotIn("vaultx", markdown)
 
     def test_dangling_reference_survives_non_object_evidence(self) -> None:
         # ADVERSARIAL: a truthy non-object evidence value must not crash
@@ -1379,6 +1717,332 @@ class SourceQualifiedIntegrityTest(StewardSweepTest):
         )
         self.assertEqual(total, 1)
         self.assertEqual(dangling, [])
+
+    def test_dangling_qualifier_derived_from_provenance_not_source_field(self) -> None:
+        # The qualifier is DERIVED from the proposal's assessment provenance, not
+        # trusted from its free-form `source` field. Here the source field LIES
+        # (claims 'beta') but the referenced assessment_file encodes 'alpha', and
+        # both are registered -- the report must attribute to the provenance.
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        registry = self._two_source_registry()
+        dirs = self._dirs()
+        self._write_dangling_proposal(
+            "subst00000", source="beta", provenance_source="alpha",
+            deleted_path="Gone.md", registry_sha256=registry.registry_sha256,
+        )
+        _total, _by_action, dangling = _aggregate_proposals(
+            dirs, registry.registry_sha256,
+            valid_source_names=frozenset({"alpha", "beta"}),
+        )
+        self.assertEqual(dangling, ["alpha: Gone.md"])
+
+    def test_dangling_qualifier_rejected_when_provenance_unregistered(self) -> None:
+        # Provenance naming a source that is not currently registered yields no
+        # verifiable attribution, so the entry is rejected (not emitted bare).
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        self._write_dangling_proposal(
+            "provghost00", source="vault", provenance_source="ghost",
+            deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
+        )
+        rejected: dict = {}
+        _total, _by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+            rejected=rejected,
+        )
+        self.assertEqual(dangling, [])
+        self.assertEqual(rejected.get("dangling_references"), 1)
+
+    def test_dangling_qualifier_rejected_on_reference_mismatch(self) -> None:
+        # ADVERSARIAL: a proposal whose only assessment reference is for a
+        # DIFFERENT path (or a non-DELETED relation) does not bind to this
+        # deletion -- attribution is unverifiable, so the entry is rejected.
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        self._write_dangling_proposal(
+            "refmismat0", source="vault", provenance_source="vault",
+            provenance_path="OtherNote.md",  # ref points at a different path
+            deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
+        )
+        rejected: dict = {}
+        _total, _by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+            rejected=rejected,
+        )
+        self.assertEqual(dangling, [])
+        self.assertEqual(rejected.get("dangling_references"), 1)
+
+    def test_dangling_qualifier_ignores_decoy_first_reference(self) -> None:
+        # ADVERSARIAL: a tampered proposal PREPENDS a decoy reference for another
+        # registered source ('beta') that does not match the deletion; the real
+        # matching 'alpha' reference must win. A decoy that resolved would be an
+        # ambiguity, but a non-matching decoy is simply ignored.
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        registry = self._two_source_registry()
+        dirs = self._dirs()
+        self._write_dangling_proposal(
+            "decoy00000", source="beta",
+            assessment_refs=[
+                {"assessment_file": "20260101T000000Z-beta.json",
+                 "relation": "DELETED", "relative_path": "Unrelated.md"},
+                {"assessment_file": "20260101T000000Z-alpha.json",
+                 "relation": "DELETED", "relative_path": "Gone.md"},
+            ],
+            deleted_path="Gone.md", registry_sha256=registry.registry_sha256,
+        )
+        _total, _by_action, dangling = _aggregate_proposals(
+            dirs, registry.registry_sha256,
+            valid_source_names=frozenset({"alpha", "beta"}),
+        )
+        self.assertEqual(dangling, ["alpha: Gone.md"])
+
+    def test_dangling_qualifier_rejected_on_ambiguous_references(self) -> None:
+        # ADVERSARIAL: two matching DELETED references resolving to DIFFERENT
+        # registered sources is ambiguous -- reject rather than guess.
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        registry = self._two_source_registry()
+        dirs = self._dirs()
+        self._write_dangling_proposal(
+            "ambig00000", source="alpha",
+            assessment_refs=[
+                {"assessment_file": "20260101T000000Z-alpha.json",
+                 "relation": "DELETED", "relative_path": "Gone.md"},
+                {"assessment_file": "20260101T000000Z-beta.json",
+                 "relation": "DELETED", "relative_path": "Gone.md"},
+            ],
+            deleted_path="Gone.md", registry_sha256=registry.registry_sha256,
+        )
+        rejected: dict = {}
+        _total, _by_action, dangling = _aggregate_proposals(
+            dirs, registry.registry_sha256,
+            valid_source_names=frozenset({"alpha", "beta"}), rejected=rejected,
+        )
+        self.assertEqual(dangling, [])
+        self.assertEqual(rejected.get("dangling_references"), 1)
+
+    def test_dangling_unsafe_deleted_path_increments_rejected(self) -> None:
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        self._write_dangling_proposal(
+            "drej000000", source="vault", provenance_source="vault",
+            deleted_path="/nonexistent/leak.md",
+            registry_sha256=reg.registry_sha256,
+        )
+        rejected: dict = {}
+        total, _by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+            rejected=rejected,
+        )
+        self.assertEqual(total, 1)
+        self.assertEqual(dangling, [])
+        self.assertEqual(rejected.get("dangling_references"), 1)
+
+    def test_report_surfaces_evidence_rejected_end_to_end(self) -> None:
+        # A hostile dangling deleted_path, run through the real sweep, must be
+        # dropped AND surfaced (never silently) in integrity.evidence_rejected,
+        # in both the JSON report and the Markdown projection, without leaking.
+        dirs = self._dirs()
+        reg = self._registry()
+        secret = "/nonexistent/leak.md"
+        self._write_dangling_proposal(
+            "e2erej0000", source="vault", provenance_source="vault",
+            deleted_path=secret, registry_sha256=reg.registry_sha256,
+        )
+        report = self._sweep(report_format="markdown")
+        self.assertEqual(report["integrity"]["dangling_references"], [])
+        self.assertEqual(
+            report["integrity"]["evidence_rejected"], {"dangling_references": 1}
+        )
+        self.assertNotIn(secret, json.dumps(report))
+        markdown = list(dirs["reports"].glob("*-sweep.md"))[0].read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Evidence rejected", markdown)
+        self.assertNotIn(secret, markdown)
+
+    def test_clean_report_has_empty_evidence_rejected(self) -> None:
+        # The field is always present and empty on a clean run (additive, stable).
+        self._baseline()
+        report = self._sweep()
+        self.assertEqual(report["integrity"]["evidence_rejected"], {})
+
+    def _write_proposal(self, stem: str, proposal: dict) -> None:
+        (self._dirs()["proposals"] / f"20260101T000000Z-x-prp-{stem}.json").write_text(
+            json.dumps(proposal), encoding="utf-8"
+        )
+
+    def test_unknown_proposal_action_bucketed_not_leaked(self) -> None:
+        # A modified proposal whose `action` carries Markdown structure and an
+        # absolute path must not become a by_action key or reach the Markdown;
+        # it is bucketed under a fixed safe key and still counts as pending.
+        reg = self._registry()
+        hostile = "ok\n\n## Forged\n\n- /nonexistent/leak.md"
+        self._write_proposal(
+            "hostileact",
+            {
+                "schema_version": STEWARD_SCHEMA_VERSION,
+                "kind": "proposal",
+                "proposal_id": "prp-hostileact",
+                "action": hostile,
+                "registry_sha256": reg.registry_sha256,
+                "edits": [],
+                "evidence": {},
+            },
+        )
+        report = self._sweep(report_format="markdown")
+        by_action = report["proposals"]["by_action"]
+        self.assertNotIn(hostile, by_action)
+        self.assertEqual(by_action.get("unrecognized_action"), 1)
+        self.assertGreaterEqual(report["proposals"]["pending_total"], 1)
+        self.assertNotIn("/nonexistent/leak.md", json.dumps(report))
+        markdown = list(self._dirs()["reports"].glob("*-sweep.md"))[0].read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("## Forged", markdown)
+        self.assertNotIn("/nonexistent/leak.md", markdown)
+
+    def test_report_emits_no_absolute_path_anywhere(self) -> None:
+        # Whole-report boundary assertion: a sweep fed hostile proposals must not
+        # emit a POSIX-absolute, Windows-drive, UNC, or traversal path in ANY
+        # JSON key or value -- not just the three integrity arrays.
+        reg = self._registry()
+        hostile_secrets = [
+            "/nonexistent/leak.md",
+            "C:\\nonexistent\\leak.md",
+            "\\\\host\\share\\leak.md",
+        ]
+        # A hostile dangling deleted_path, a hostile action, and a hostile source.
+        self._write_dangling_proposal(
+            "abs0000000", source=hostile_secrets[0], provenance_source="vault",
+            deleted_path=hostile_secrets[0], registry_sha256=reg.registry_sha256,
+        )
+        self._write_proposal(
+            "actabs0000",
+            {
+                "schema_version": STEWARD_SCHEMA_VERSION, "kind": "proposal",
+                "proposal_id": "prp-actabs0000", "action": hostile_secrets[1],
+                "registry_sha256": reg.registry_sha256, "edits": [],
+                "evidence": {}},
+        )
+        report = self._sweep(report_format="markdown")
+
+        def _strings(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield key
+                    yield from _strings(value)
+            elif isinstance(node, list):
+                for item in node:
+                    yield from _strings(item)
+            elif isinstance(node, str):
+                yield node
+
+        for text in _strings(report):
+            for secret in hostile_secrets:
+                self.assertNotIn(secret, text)
+        markdown = list(self._dirs()["reports"].glob("*-sweep.md"))[0].read_text(
+            encoding="utf-8"
+        )
+        for secret in hostile_secrets:
+            self.assertNotIn(secret, markdown)
+
+    def test_scrub_leaves_a_clean_report_unchanged(self) -> None:
+        # CRITICAL: the report-wide scrub must be a no-op on legitimate content
+        # (ids, timestamps, results, source-qualified evidence, relative paths).
+        from recallweave.steward_sweep import _scrub_report
+
+        clean = {
+            "schema_version": "recallweave.steward.v1",
+            "kind": "stewardship_report",
+            "generated_at": "2026-08-31T06:00:00.000000Z",
+            "result": "approval_required",
+            "registry_sha256": "a" * 64,
+            "integrity": {
+                "broken_citations": ["vault: Note.md:1-2"],
+                "dangling_references": ["vault: Gone.md"],
+                "duplicates": ["vault: a/b.md"],
+                "evidence_rejected": {"duplicates": 1},
+                "evidence_truncated": {},
+            },
+            "changes": {"vault": {"added": 1, "modified": 0, "removed": 0}},
+            "assessments": {"index_current": 3, "DUPLICATES_EXACT_BYTES": 1},
+            "proposals": {"by_action": {"review_duplicates": 2}, "pending_total": 2},
+            "observe": {"skipped_total": {"symlink": 1}},
+            "apply": {"applied": [{"proposal": "prp-abc123", "journal_ref":
+                                   "20260101T000000Z-vault.journal.json"}]},
+        }
+        self.assertEqual(_scrub_report(clean), clean)
+
+    def test_scrub_redacts_absolute_paths_in_every_section(self) -> None:
+        # The scrub closes disclosure through ANY field, including the apply
+        # section's proposal id and a hostile nested key.
+        from recallweave.steward_sweep import _scrub_report, _REDACTED_FIELD
+
+        secret = "/nonexistent/leak.md"
+        hostile = {
+            "result": "approval_required",
+            "apply": {
+                "failures": [{"proposal": secret, "error": "InvalidId"}],
+                "applied": [{"proposal": "C:\\nonexistent\\x.md"}],
+            },
+            "nested": {secret: "value", "ok": ["fine", secret]},
+        }
+        scrubbed = _scrub_report(hostile)
+        self.assertNotIn(secret, json.dumps(scrubbed))
+        self.assertNotIn("C:\\nonexistent\\x.md", json.dumps(scrubbed))
+        self.assertEqual(scrubbed["apply"]["failures"][0]["proposal"], _REDACTED_FIELD)
+        self.assertEqual(scrubbed["apply"]["applied"][0]["proposal"], _REDACTED_FIELD)
+        self.assertIn(_REDACTED_FIELD, scrubbed["nested"])  # hostile key redacted
+        self.assertEqual(scrubbed["nested"]["ok"], ["fine", _REDACTED_FIELD])
+
+    def test_scrub_redacts_whole_value_paths_and_urls(self) -> None:
+        # A value that IS an absolute path or a URL is redacted from any field.
+        from recallweave.steward_sweep import _scrub_report, _REDACTED_FIELD
+
+        for hostile_value in (
+            "/nonexistent/leak.md",
+            "C:\\nonexistent\\leak.md",
+            "\\\\host\\share\\leak.md",
+            "https://host/nonexistent/leak.md",
+        ):
+            scrubbed = _scrub_report({"apply": {"failures": [{"proposal": hostile_value}]}})
+            self.assertNotIn(hostile_value, json.dumps(scrubbed), hostile_value)
+            self.assertEqual(
+                scrubbed["apply"]["failures"][0]["proposal"], _REDACTED_FIELD
+            )
+
+    def test_scrub_preserves_legitimate_values_with_slashes(self) -> None:
+        # The whole-value check must NOT destroy a legitimate value that merely
+        # contains a slash or punctuation (a substring heuristic would).
+        from recallweave.steward_sweep import _scrub_report
+
+        clean = {
+            "a": "safe / folder/note.md",
+            "b": "vault: sub/dir/Note.md:1-2",
+            "c": "and/or maybe",
+            "d": "prp-abc123",
+        }
+        self.assertEqual(_scrub_report(clean), clean)
+
+    def test_scrub_preserves_one_letter_source_qualifier(self) -> None:
+        # A one-letter registered source yields a qualifier like "a: note.md";
+        # PureWindowsPath reads "a:" as a drive, but this is already-validated
+        # evidence and must NOT be redacted (bare drive is not a disclosure).
+        from recallweave.steward_sweep import _scrub_report
+
+        clean = {"integrity": {"dangling_references": ["a: Gone.md"],
+                               "duplicates": ["a: note.md"],
+                               "broken_citations": ["a: note.md:1-2"]}}
+        self.assertEqual(_scrub_report(clean), clean)
 
 
 class EvidenceBoundingTest(StewardSweepTest):

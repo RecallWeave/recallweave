@@ -57,6 +57,7 @@ exist and how many files they hold.
 
 import json
 import os
+import re
 import stat
 import tempfile
 from datetime import datetime, timezone
@@ -67,7 +68,7 @@ from .index import connect
 from .safe_write import is_link_like
 from .steward_assess import DETERMINISTIC_RELATIONS, assess_latest
 from .steward_observe import observe_registry
-from .steward_propose import propose_latest
+from .steward_propose import ACTIONS as PROPOSAL_ACTIONS, propose_latest
 from .steward_sources import SourceRegistry, StewardSource
 from .steward_state import (
     STEWARD_SCHEMA_VERSION,
@@ -82,6 +83,55 @@ from .steward_state import (
 
 REPORT_KIND = "stewardship_report"
 STATUS_KIND = "steward_status"
+
+# Data-hygiene whitelists for the keys a report projects from artifact content.
+# The report is shareable, so a key must be a known, safe identifier -- never an
+# arbitrary string copied from a modified artifact (which could carry an absolute
+# path or Markdown structure). Non-relation assessment-summary keys are limited
+# to this fixed bookkeeping set; any other key (relations are recomputed and
+# handled separately) is ignored.
+_BOOKKEEPING_SUMMARY_KEYS = frozenset(
+    {
+        "index_current",
+        "never_indexed",
+        "skipped_changed_during_observe",
+        "redacted_out_of_policy",
+    }
+)
+# A proposal action that is not one of the known ``PROPOSAL_ACTIONS`` is bucketed
+# under this fixed, safe key in ``proposals.by_action`` -- so an unknown/foreign
+# action still counts as pending work without copying its raw string into the
+# report (JSON key) or the Markdown projection.
+_UNRECOGNIZED_ACTION = "unrecognized_action"
+
+# The change-batch ``skipped`` reasons steward_observe can record. As with
+# proposal actions, an unknown reason (from a modified batch) is bucketed under a
+# fixed key so it never becomes a report key / Markdown line.
+_SKIP_REASONS = frozenset(
+    {
+        "duplicate_resolved_path",
+        "hardlink",
+        "outside_vault",
+        "symlink",
+        "traversal_error",
+        "unparseable_frontmatter",
+        "unreadable_path",
+        "unsupported_encoding",
+    }
+)
+_UNRECOGNIZED_SKIP = "unrecognized"
+
+
+def _safe_count(value: Any) -> int:
+    """A non-negative integer counter, or 0 for any non-conforming value.
+
+    Report counters are copied from artifact fields; a non-int, a bool, or a
+    negative value must not reach the report or raise (a bare ``int(value)``
+    would raise on a string/list). Booleans are excluded because ``True``/`False``
+    are ints in Python but never legitimate counts."""
+    if isinstance(value, bool):
+        return 0
+    return value if isinstance(value, int) and value >= 0 else 0
 
 # Per-list ceiling on the evidence arrays copied into a stewardship report.
 # Bounds report size deterministically; a truncated list is flagged with its
@@ -155,18 +205,97 @@ def _load_json(path: Path) -> Any:
         raise ValueError(f"{path} is not valid JSON: {error}") from error
 
 
+# Characters that must never appear in an emitted evidence string: C0 controls
+# (incl. TAB/LF/CR/NUL), DEL, C1 controls, the Unicode line/paragraph
+# separators, and the bidi/directional-format characters. Any of these could
+# split a value across Markdown lines, forge structure, or spoof its direction.
+_UNSAFE_CONTROL_RE = re.compile(
+    "[\x00-\x1f\x7f-\x9f\u061c\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069\u206a-\u206f]"
+)
+
+# Visible placeholder for a value redacted by the report-wide scrub, so a
+# redaction is never silent (the operator sees it) and carries no Markdown
+# structure of its own.
+_REDACTED_FIELD = "[redacted-unsafe]"
+
+
+def _is_unsafe_report_string(value: str) -> bool:
+    """True if a string must never be emitted anywhere in a (shareable) report.
+
+    Flags a value that IS a disclosure -- a value that is itself an
+    absolute/drive/UNC/rooted path, a URL (``://``), or carries a control/
+    separator/bidi character -- without requiring it be a relative path (report
+    strings include ids, timestamps, results, and source-qualified evidence,
+    none of which trip these, so all pass untouched).
+
+    It deliberately checks the value as a WHOLE, not path-shaped substrings
+    inside it: substring scanning cannot distinguish a leaked path from a
+    legitimate value that merely contains a slash (e.g. ``safe / folder/note.md``)
+    and would destroy real data. That is sound here because the report has no
+    free-form prose fields -- every field is a structured identifier, timestamp,
+    count, or a path that was already validated as vault-relative -- so a path
+    only ever appears AS a value, which this catches. An absolute path spliced
+    into an otherwise-textual field would require a modified artifact, which is
+    outside steward's trust model (the state tree is trusted).
+
+    Absoluteness is tested with ``is_absolute()``/``root`` only, NOT a bare
+    ``drive``: a single-letter registered source produces a qualifier like
+    ``a: note.md`` that ``PureWindowsPath`` parses as drive ``a:`` though it is
+    already-validated safe evidence -- treating a bare drive as a disclosure
+    would redact it. A real absolute path still trips ``is_absolute`` (``C:\\x``,
+    ``\\\\host\\s``) or ``root`` (a leading-separator path)."""
+    if _UNSAFE_CONTROL_RE.search(value) or "://" in value:
+        return True
+    for flavour in (PurePosixPath, PureWindowsPath):
+        candidate = flavour(value)
+        if candidate.is_absolute() or candidate.root:
+            return True
+    return False
+
+
+def _scrub_report(node: Any) -> Any:
+    """Recursively replace any unsafe string -- in a key OR a value, anywhere in
+    the assembled report -- with ``_REDACTED_FIELD``.
+
+    A single report-wide choke point (the reviewer's "one safe projection"): no
+    matter which section or field a value came from (integrity, proposals,
+    observe, apply, index), an absolute path or control character can never reach
+    the JSON report or the Markdown projection. It is belt-and-suspenders over
+    the per-field validation above, and a no-op on a clean report."""
+    if isinstance(node, dict):
+        scrubbed: dict[Any, Any] = {}
+        for key, value in node.items():
+            safe_key = (
+                _REDACTED_FIELD
+                if isinstance(key, str) and _is_unsafe_report_string(key)
+                else key
+            )
+            scrubbed[safe_key] = _scrub_report(value)
+        return scrubbed
+    if isinstance(node, list):
+        return [_scrub_report(item) for item in node]
+    if isinstance(node, str) and _is_unsafe_report_string(node):
+        return _REDACTED_FIELD
+    return node
+
+
 def _is_safe_relative_path(value: str) -> bool:
     """True only for a non-empty, vault-relative path with no traversal.
 
-    Report evidence is copied from on-disk artifacts, which are untrusted
-    content (a file can be tampered after the creating stage validated it). This
-    module promises never to emit an absolute path, so a path is admitted only
-    when it is relative under BOTH POSIX and Windows conventions -- rejecting a
-    POSIX-absolute path (``/x``), a Windows drive or rooted path (``C:\\x``,
-    ``\\x``), a UNC path (``\\\\host\\share``), and any ``..`` traversal
-    component -- so a report generated on one platform can never emit a path
-    that is absolute on the other."""
-    if not value:
+    Data-hygiene gate for report evidence: a sweep report is a document an
+    operator may share or archive, so it must never carry an absolute local path,
+    whatever the source (a bug, an odd-but-legitimate path, or a modified
+    artifact). A path is admitted only when it is relative under BOTH POSIX and
+    Windows conventions -- rejecting a POSIX-absolute path (``/x``), a Windows
+    drive or rooted path (``C:\\x``, ``\\x``), a UNC path (``\\\\host\\share``),
+    and any ``..`` traversal component -- so a report generated on one platform
+    can never emit a path that is absolute on the other. It also rejects any
+    control character, line/paragraph separator, or bidi/directional-format
+    character: a value like ``safe.md\\n/nonexistent/leak.md`` is not
+    "absolute" to ``pathlib`` yet would carry an absolute path onto a second
+    Markdown line -- so a value with an embedded separator is refused outright,
+    never split-and-partially-emitted."""
+    if not value or _UNSAFE_CONTROL_RE.search(value):
         return False
     for flavour in (PurePosixPath, PureWindowsPath):
         candidate = flavour(value)
@@ -175,6 +304,40 @@ def _is_safe_relative_path(value: str) -> bool:
     # PureWindowsPath splits on both separators, so this catches ".." written
     # with either a forward or a back slash.
     return ".." not in PureWindowsPath(value).parts
+
+
+# A broken citation is emitted as ``<relative_path>:<start>-<end>`` (see
+# steward_assess); the line range carries no hyphen before the first digit run.
+# Bound the digit count: a physical line number never needs nine digits, and an
+# unbounded run would make ``int()`` raise on Python's integer-string limit
+# (~4300 digits) -- a malformed citation must be dropped, never crash the sweep.
+_CITATION_RANGE_RE = re.compile(r"^(\d{1,9})-(\d{1,9})$")
+
+
+def _citation_path_is_safe(citation: str) -> bool:
+    """True only when a ``<path>:<start>-<end>`` citation is well-formed and safe.
+
+    Citations are copied from assessment artifacts, so the path portion gets the
+    same data-hygiene treatment as any emitted path: split off the trailing
+    ``:<start>-<end>`` line range and validate the remainder with
+    ``_is_safe_relative_path``. The range must also be a physically possible
+    one-based span (``1 <= start <= end``): shape alone is not enough, so an
+    impossible range (``0-0``, ``9-2``) is refused like an absolute path. A
+    citation whose range is missing/malformed/impossible, or whose path is
+    absolute/drive/UNC/traversal, is refused (and dropped from the report).
+    Splitting on the LAST colon keeps a legitimate colon inside a filename
+    intact (e.g. ``a:b.md:1-2`` -> path ``a:b.md``), while a real drive prefix
+    (``C:...``) is still caught by ``_is_safe_relative_path``."""
+    path_part, sep, range_part = citation.rpartition(":")
+    if not sep:
+        return False
+    match = _CITATION_RANGE_RE.match(range_part)
+    if not match:
+        return False
+    start, end = int(match.group(1)), int(match.group(2))
+    if start < 1 or end < start:
+        return False
+    return _is_safe_relative_path(path_part)
 
 
 def _source_name_from_artifact(name: str) -> str | None:
@@ -189,6 +352,42 @@ def _source_name_from_artifact(name: str) -> str | None:
     stem = name[: -len(".json")]
     _, sep, source = stem.partition("-")
     return source if sep else None
+
+
+def _provenance_source(proposal: dict[str, Any], deleted_path: str) -> str | None:
+    """Source read from a dangling proposal's RELEVANT recorded provenance.
+
+    Data-hygiene measure, not tamper resistance (steward trusts the state tree;
+    see the module docstring and ``_open_state_root_fd``). The qualifier is taken
+    from the assessment reference that records THIS deletion -- the one whose
+    relation is ``DELETED`` and whose ``relative_path`` equals ``deleted_path``
+    -- reading the source encoded in its referenced ``<ts>-<source>.json``
+    filename, in preference to the proposal's independent free-form ``source``
+    field. A reference for an unrelated path/relation, or ambiguity across refs
+    that resolve to different sources, yields ``None`` and the caller rejects the
+    entry rather than guessing -- so the emitted qualifier is always one clean,
+    unambiguous source name. It deliberately does NOT resolve or read the named
+    artifact: pending proposals outlive their (age-pruned) change batches and
+    assessments, so requiring the artifact to exist would drop legitimate old
+    references; verifying provenance against a state-tree writer would need
+    signed artifacts (out of scope)."""
+    refs = proposal.get("assessment_refs")
+    if not isinstance(refs, list):
+        return None
+    sources: set[str] = set()
+    for ref in refs:
+        if (
+            isinstance(ref, dict)
+            and ref.get("relation") == "DELETED"
+            and ref.get("relative_path") == deleted_path
+        ):
+            name = ref.get("assessment_file")
+            if isinstance(name, str):
+                source = _source_name_from_artifact(name)
+                if source:
+                    sources.add(source)
+    # Require an unambiguous binding: exactly one source across matching refs.
+    return next(iter(sources)) if len(sources) == 1 else None
 
 
 def _source_files(directory: Path, source_name: str) -> list[Path]:
@@ -233,16 +432,33 @@ def _aggregate_from_batches(
             changes[source.name] = {"added": 0, "modified": 0, "removed": 0}
             continue
         batch = _load_json(latest)
-        summary = batch.get("change_summary") or {}
+        if not isinstance(batch, dict):
+            # A batch that decodes to a non-object is malformed; skip it rather
+            # than calling .get() on a non-dict.
+            changes[source.name] = {"added": 0, "modified": 0, "removed": 0}
+            continue
+        # Every artifact-derived container is type-checked before .get()/.items()
+        # and every counter goes through _safe_count, so a modified batch (a
+        # non-object change_summary/skipped, or a non-int/negative counter)
+        # cannot crash aggregation or emit a bogus value.
+        summary = batch.get("change_summary")
+        summary = summary if isinstance(summary, dict) else {}
         changes[source.name] = {
-            "added": int(summary.get("added", 0)),
-            "modified": int(summary.get("modified", 0)),
-            "removed": int(summary.get("removed", 0)),
+            "added": _safe_count(summary.get("added", 0)),
+            "modified": _safe_count(summary.get("modified", 0)),
+            "removed": _safe_count(summary.get("removed", 0)),
         }
-        for reason, count in (batch.get("skipped") or {}).items():
-            skipped_total[reason] = skipped_total.get(reason, 0) + int(count)
-        changed_during_observe_total += len(batch.get("changed_during_observe") or [])
-        rename_candidates_pending += len(batch.get("rename_candidates") or [])
+        skipped = batch.get("skipped")
+        if isinstance(skipped, dict):
+            for reason, count in skipped.items():
+                # Whitelist the reason key so a modified batch cannot inject a
+                # report key / Markdown line; bucket anything else.
+                key = reason if reason in _SKIP_REASONS else _UNRECOGNIZED_SKIP
+                skipped_total[key] = skipped_total.get(key, 0) + _safe_count(count)
+        changed = batch.get("changed_during_observe")
+        changed_during_observe_total += len(changed) if isinstance(changed, list) else 0
+        renames = batch.get("rename_candidates")
+        rename_candidates_pending += len(renames) if isinstance(renames, list) else 0
         if batch.get("checkpoint_invalid"):
             checkpoint_invalid.append(source.name)
 
@@ -259,7 +475,13 @@ def _aggregate_assessments(
     dirs: dict[str, Path],
     registry: SourceRegistry,
     exclude_sources: set[str] | None = None,
+    *,
+    rejected: dict[str, int] | None = None,
 ) -> tuple[dict[str, int], list[str], list[str]]:
+    # ``rejected`` (optional, mutated in place) records how many evidence entries
+    # were dropped at the report boundary because their untrusted assessment
+    # path/citation was absolute/drive/UNC/traversal or malformed -- surfaced in
+    # the report as integrity.evidence_rejected so a drop is never silent.
     summary: dict[str, int] = {
         "index_current": 0,
         "never_indexed": 0,
@@ -299,15 +521,25 @@ def _aggregate_assessments(
                 assessment.get("registry_sha256") != registry.registry_sha256
             ):
                 continue
-            for key, value in (assessment.get("summary") or {}).items():
+            raw_summary = assessment.get("summary")
+            for key, value in (
+                raw_summary.items() if isinstance(raw_summary, dict) else ()
+            ):
                 # Relation counts are recomputed from the durable state below;
-                # only the informational bookkeeping stats are carried here.
+                # only the informational bookkeeping stats are carried here, and
+                # only for known keys -- an injected key from a modified artifact
+                # must not become a report key / Markdown line (data hygiene).
                 if key in DETERMINISTIC_RELATIONS:
                     continue
-                if isinstance(value, int) and not isinstance(value, bool):
-                    summary[key] = summary.get(key, 0) + value
+                if key not in _BOOKKEEPING_SUMMARY_KEYS:
+                    continue
+                # Coerce like every other artifact counter: a non-int, bool, or
+                # negative bookkeeping value contributes 0 rather than emitting a
+                # bogus (e.g. negative) count.
+                summary[key] = summary.get(key, 0) + _safe_count(value)
             by_path: dict[str, list[dict[str, Any]]] = {}
-            for item in assessment.get("assessments") or []:
+            raw_assessments = assessment.get("assessments")
+            for item in raw_assessments if isinstance(raw_assessments, list) else ():
                 if not isinstance(item, dict):
                     continue
                 path = item.get("relative_path")
@@ -318,8 +550,11 @@ def _aggregate_assessments(
             # A covered path with no relations sets an empty item list, which
             # CLEARS any prior finding for it (a resolved citation/deletion is
             # no longer reported once its note is reassessed to nothing).
+            # ``assessments``/``covered_paths`` are type-checked before iteration
+            # so a truthy non-list (e.g. an int) cannot raise a TypeError.
             covered = set(by_path)
-            for path in assessment.get("covered_paths") or []:
+            raw_covered = assessment.get("covered_paths")
+            for path in raw_covered if isinstance(raw_covered, list) else ():
                 if isinstance(path, str):
                     covered.add(path)
             for path in covered:
@@ -330,10 +565,18 @@ def _aggregate_assessments(
     def _duplicate_still_current(source_name: str, idx: int, item: dict) -> bool:
         # Valid only if no partner was reassessed AFTER this finding (which would
         # mean the participant changed and the pairing may no longer hold).
-        inputs = item.get("inputs") or {}
-        partners = list(inputs.get("duplicate_of") or []) + list(
-            inputs.get("duplicate_in_batch") or []
-        )
+        # ``inputs`` and the partner lists are untrusted on-disk content: a
+        # truthy non-object inputs, or a non-list partner field, must not crash
+        # here (currency simply can't be refined, so the finding is kept for the
+        # path-safety check that follows).
+        inputs = item.get("inputs")
+        if not isinstance(inputs, dict):
+            return True
+        partners: list[Any] = []
+        for key in ("duplicate_of", "duplicate_in_batch"):
+            value = inputs.get(key)
+            if isinstance(value, list):
+                partners.extend(value)
         for partner in partners:
             if not isinstance(partner, str):
                 continue
@@ -351,6 +594,16 @@ def _aggregate_assessments(
             if relation == "DUPLICATES_EXACT_BYTES":
                 if not _duplicate_still_current(source_name, idx, item):
                     continue
+                # Data hygiene: re-validate the assessment relative_path at the
+                # report boundary (it is validated at production by
+                # steward_assess _require_clean_relative_path, but the report is
+                # shareable and must never carry an absolute path whatever its
+                # cause). An absolute/drive/UNC/traversal path drops the whole
+                # finding (count AND string stay consistent) and is recorded.
+                if not _is_safe_relative_path(path):
+                    if rejected is not None:
+                        rejected["duplicates"] = rejected.get("duplicates", 0) + 1
+                    continue
                 relation_counts["DUPLICATES_EXACT_BYTES"].add((source_name, path))
                 # Qualify every duplicate with its source before dedup, mirroring
                 # the broken-citation fix (#24): the relation count keys on
@@ -361,15 +614,45 @@ def _aggregate_assessments(
                 duplicates.append(f"{source_name}: {path}")
             elif relation == "CITATION_BROKEN":
                 relation_counts["CITATION_BROKEN"].add((source_name, path))
-                for citation in (item.get("inputs") or {}).get("broken_citations") or []:
-                    text = citation.get("citation") if isinstance(citation, dict) else None
-                    if isinstance(text, str):
-                        # Qualify every citation with its source before dedup: two
-                        # registered sources sharing a relative path + line range
-                        # would otherwise collapse to one ambiguous entry (e.g.
-                        # `Note.md:1-2`) while the relation count reports two, so the
-                        # operator could not tell which source is broken (#24).
-                        broken_citations.append(f"{source_name}: {text}")
+                # ``inputs``/``broken_citations`` are untrusted: a non-object
+                # inputs or a non-list broken_citations must not crash (regression:
+                # `"str".get(...)` / iterating a string per-character). A present-
+                # but-malformed field is counted ONCE (not per char/key).
+                inputs = item.get("inputs")
+                citations = (
+                    inputs.get("broken_citations") if isinstance(inputs, dict) else None
+                )
+                if isinstance(citations, list):
+                    for citation in citations:
+                        text = (
+                            citation.get("citation")
+                            if isinstance(citation, dict)
+                            else None
+                        )
+                        # The citation carries an untrusted assessment path;
+                        # re-validate its path portion at the report boundary
+                        # (same reason as the duplicate path above) and drop an
+                        # unsafe/malformed one.
+                        if isinstance(text, str) and _citation_path_is_safe(text):
+                            # Qualify every citation with its source before dedup:
+                            # two registered sources sharing a relative path + line
+                            # range would otherwise collapse to one ambiguous entry
+                            # (e.g. `Note.md:1-2`) while the relation count reports
+                            # two, so the operator could not tell which is broken (#24).
+                            broken_citations.append(f"{source_name}: {text}")
+                        elif rejected is not None:
+                            rejected["broken_citations"] = (
+                                rejected.get("broken_citations", 0) + 1
+                            )
+                elif (
+                    inputs is not None and not isinstance(inputs, dict)
+                ) or citations is not None:
+                    # inputs is a non-object, OR broken_citations is present but
+                    # not a list: the evidence field is malformed -- count once.
+                    if rejected is not None:
+                        rejected["broken_citations"] = (
+                            rejected.get("broken_citations", 0) + 1
+                        )
             elif relation in relation_counts:
                 relation_counts[relation].add((source_name, path))
 
@@ -384,6 +667,7 @@ def _aggregate_proposals(
     registry_sha256: str | None = None,
     *,
     valid_source_names: frozenset[str] | None = None,
+    rejected: dict[str, int] | None = None,
 ) -> tuple[int, dict[str, int], list[str]]:
     """Scan proposals/ for PENDING proposals (applied ones no longer pend).
 
@@ -391,18 +675,26 @@ def _aggregate_proposals(
     this registry's pending work: it is excluded so a stale artifact cannot hold
     the sweep result at ``approval_required`` (auto-apply already skips it).
 
-    ``valid_source_names`` is the active registry's source-name set. Unlike the
-    assessment-side duplicate qualification -- which reads its source name from
-    the trusted ``registry.sources`` iteration -- the dangling qualifier's
-    source comes from the on-disk proposal, which is untrusted content. A
-    tampered or malformed proposal (even one carrying the active registry
-    digest, which covers registry content, not this field) could otherwise
-    inject an arbitrary string -- including an absolute path -- straight into
-    ``integrity.dangling_references``, violating this module's promise never to
-    emit an absolute path. So a source qualifier is added ONLY when the proposal
-    names a currently-registered source; any other value -- and the ``None``
-    default, i.e. no validation set supplied -- falls back to the bare,
-    vault-relative ``deleted_path`` (the pre-qualification behavior)."""
+    ``valid_source_names`` is the active registry's source-name set. This
+    boundary enforces DATA HYGIENE on what the (shareable) report emits -- not
+    tamper resistance (steward trusts the state tree; see the module docstring).
+    Both the ``deleted_path`` and the qualifier are constrained:
+
+    - the ``deleted_path`` must be a safe vault-relative path
+      (``_is_safe_relative_path``), else the proposal contributes no dangling
+      string (it stays counted as pending) -- so no absolute path can ever reach
+      ``integrity.dangling_references``;
+    - the qualifier is read from the proposal's relevant recorded provenance
+      (``_provenance_source``) in preference to its free-form ``source`` field,
+      and emitted only when it names a currently-registered source. When
+      attribution is ambiguous or unregistered the entry is REJECTED rather than
+      emitted bare -- so every emitted entry is a clean, registered
+      ``"<source>: <relative-path>"`` string.
+
+    ``rejected`` (optional, mutated in place) counts dangling proposals dropped
+    because their deleted_path was missing/non-string/unsafe OR their attribution
+    was ambiguous/unregistered, surfaced in the report as
+    integrity.evidence_rejected so a drop is never silent."""
     by_action: dict[str, int] = {}
     dangling: set[str] = set()
     total = 0
@@ -423,7 +715,11 @@ def _aggregate_proposals(
         total += 1
         action = proposal.get("action")
         if isinstance(action, str):
-            by_action[action] = by_action.get(action, 0) + 1
+            # Bucket an unknown action under a fixed safe key so its raw string
+            # (which could carry an absolute path or Markdown structure) never
+            # becomes a report key / Markdown line; it still counts as pending.
+            bucket = action if action in PROPOSAL_ACTIONS else _UNRECOGNIZED_ACTION
+            by_action[bucket] = by_action.get(bucket, 0) + 1
             if action == "review_dangling_references":
                 evidence = proposal.get("evidence")
                 # ``evidence`` is untrusted on-disk content: a truthy non-object
@@ -435,25 +731,32 @@ def _aggregate_proposals(
                 deleted_path = (
                     evidence.get("deleted_path") if isinstance(evidence, dict) else None
                 )
-                if isinstance(deleted_path, str) and _is_safe_relative_path(deleted_path):
-                    # Qualify with the proposal's source before dedup, mirroring
-                    # the broken-citation fix (#24): review_dangling_references
+                derived = (
+                    _provenance_source(proposal, deleted_path)
+                    if isinstance(deleted_path, str)
+                    else None
+                )
+                if (
+                    isinstance(deleted_path, str)
+                    and _is_safe_relative_path(deleted_path)
+                    and valid_source_names is not None
+                    and derived is not None
+                    and derived in valid_source_names
+                ):
+                    # Qualify with the source before dedup, mirroring the
+                    # broken-citation fix (#24): review_dangling_references
                     # counts every pending proposal, so two sources sharing a
                     # deleted relative path would otherwise collapse to one
-                    # entry while the count reports two. Qualify ONLY when the
-                    # (untrusted) proposal source is a currently-registered
-                    # source name; otherwise emit the bare, vault-relative path
-                    # so a tampered/foreign source string is never copied into
-                    # the report (see the docstring).
-                    source_name = proposal.get("source")
-                    if (
-                        valid_source_names is not None
-                        and isinstance(source_name, str)
-                        and source_name in valid_source_names
-                    ):
-                        dangling.add(f"{source_name}: {deleted_path}")
-                    else:
-                        dangling.add(deleted_path)
+                    # entry while the count reports two. The qualifier is DERIVED
+                    # from the proposal's relevant assessment provenance (not its
+                    # free-form source field); an unsafe deleted_path or an
+                    # unverifiable attribution is rejected below rather than
+                    # emitted (see the docstring).
+                    dangling.add(f"{derived}: {deleted_path}")
+                elif rejected is not None:
+                    rejected["dangling_references"] = (
+                        rejected.get("dangling_references", 0) + 1
+                    )
     return total, dict(sorted(by_action.items())), sorted(dangling)
 
 
@@ -506,13 +809,19 @@ def _assemble_report(
     }
     sources_errored |= assess_errored_sources or set()
     batch_agg = _aggregate_from_batches(dirs, registry, sources_errored)
+    # Evidence entries dropped at this boundary because an untrusted artifact
+    # carried an absolute/malformed path/citation (never silently): surfaced as
+    # integrity.evidence_rejected, a per-array count that leaks none of the
+    # offending content. Shared across both aggregators.
+    evidence_rejected: dict[str, int] = {}
     relation_summary, broken_citations, duplicates = _aggregate_assessments(
-        dirs, registry, sources_errored
+        dirs, registry, sources_errored, rejected=evidence_rejected
     )
     proposals_pending_total, proposals_by_action, dangling_references = _aggregate_proposals(
         dirs,
         registry.registry_sha256,
         valid_source_names=frozenset(source.name for source in registry.sources),
+        rejected=evidence_rejected,
     )
 
     # Bound every unbounded evidence array so report size has a defined ceiling
@@ -627,7 +936,7 @@ def _assemble_report(
             for item in _bound("changes", change_items)
         }
 
-    return {
+    report = {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": REPORT_KIND,
         "operation": "steward_sweep",
@@ -642,6 +951,7 @@ def _assemble_report(
             "sources_missing": sources_missing,
             "checkpoint_invalid": checkpoint_invalid,
             "evidence_truncated": evidence_truncation,
+            "evidence_rejected": dict(sorted(evidence_rejected.items())),
         },
         "changes": changes_projection,
         "assessments": relation_summary,
@@ -672,6 +982,9 @@ def _assemble_report(
             else 0
         ),
     }
+    # Final report-wide data-hygiene choke point: redact any absolute path or
+    # control character that reached ANY field of ANY section (see _scrub_report).
+    return _scrub_report(report)
 
 
 # --- Markdown projection: leads with the integrity section. Every string
@@ -733,6 +1046,13 @@ def render_sweep_markdown(report: dict[str, Any]) -> str:
                 f"- {name}: showing {info.get('reported')} of "
                 f"{info.get('total')}"
             )
+        lines.append("")
+    rejected = integrity.get("evidence_rejected") or {}
+    if rejected:
+        lines.append("### Evidence rejected (malformed/unsafe artifacts)")
+        lines.append("")
+        for name in sorted(rejected):
+            lines.append(f"- {name}: {rejected[name]} dropped")
         lines.append("")
     lines.append(
         f"Rename candidates pending: {integrity.get('rename_candidates_pending', 0)}"
@@ -804,7 +1124,9 @@ def render_sweep_markdown(report: dict[str, Any]) -> str:
         lines.append(f"- proposals applied: {len(applied)}")
         for item in applied:
             lines.append("Applied proposal:")
-            lines.append(_fenced(str(item.get("proposal_id"))))
+            # sweep_auto_apply records the id under "proposal" (like failures);
+            # reading "proposal_id" here lost the applied proposal's identity.
+            lines.append(_fenced(str(item.get("proposal"))))
             lines.append(f"- mutations: {item.get('mutations', 0)}")
             lines.append("- journal:")
             lines.append(_fenced(str(item.get("journal_ref"))))
