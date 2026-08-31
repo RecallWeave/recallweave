@@ -15,6 +15,7 @@ from recallweave.steward_state import (
     atomic_write_json,
     ensure_state_layout,
     ensure_state_root_outside_sources,
+    lock_state,
     steward_state_root,
 )
 
@@ -200,6 +201,51 @@ class StateLockTest(unittest.TestCase):
             (stashed / "steward.lock").exists(),
             "release did not unlink the original lock through the pinned fd",
         )
+
+
+class LockedRootContinuityTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_locked_write_succeeds_without_a_swap(self) -> None:
+        # Sanity: descriptor-continuity verification must not disturb the normal
+        # locked write path.
+        state_root = self.root / "state"
+        dirs = ensure_state_layout(state_root)
+        with lock_state(state_root):
+            target = dirs["journal"] / "j.json"
+            atomic_write_json(target, {"value": 1}, within=dirs["journal"])
+        self.assertEqual(
+            json.loads(target.read_text(encoding="utf-8")), {"value": 1}
+        )
+
+    def test_write_refuses_after_locked_state_root_swap(self) -> None:
+        # While a StateLock is held, an anchored state write must verify the
+        # reopened state root is still the inode the lock pinned. If the state
+        # root is renamed-and-recreated (a fresh inode at the same pathname)
+        # after acquisition, the write must fail closed rather than land in the
+        # rebound tree (#31).
+        import recallweave.steward_state as _st
+
+        if not _st._DIR_FD_STATE_WRITES:
+            self.skipTest("descriptor-relative state writes unavailable")
+        state_root = self.root / "state"
+        ensure_state_layout(state_root)
+        with lock_state(state_root):
+            stashed = self.root / "stashed"
+            os.rename(state_root, stashed)  # the pinned inode moves aside
+            dirs = ensure_state_layout(state_root)  # a NEW root inode, same path
+            target = dirs["journal"] / "j.json"
+            with self.assertRaisesRegex(
+                ValueError, "no longer the directory the steward lock pinned"
+            ):
+                atomic_write_json(target, {"value": 1}, within=dirs["journal"])
+            # Nothing was written into the rebound tree.
+            self.assertFalse(target.exists())
 
 
 class AtomicWriteJsonTest(unittest.TestCase):

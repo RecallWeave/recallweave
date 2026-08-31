@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -166,6 +167,41 @@ def ensure_state_layout(root: Path) -> dict[str, Path]:
 _LOCK_NAME = "steward.lock"
 
 
+# The (st_dev, st_ino) of the state root the currently-held StateLock pinned,
+# set by lock_state for the duration of a locked operation. State writes consult
+# it to verify descriptor continuity before mutating (see
+# _verify_locked_root_identity). A ContextVar keeps it bound to the running
+# operation's call stack, so a direct, unlocked write (e.g. a unit test) sees
+# None and skips the check.
+_LOCKED_ROOT_IDENTITY: contextvars.ContextVar[tuple[int, int] | None] = (
+    contextvars.ContextVar("steward_locked_root_identity", default=None)
+)
+
+
+def _verify_locked_root_identity(root_fd: int, anchor: Path) -> None:
+    """Fail closed if the anchored state root is not the inode the held
+    StateLock pinned.
+
+    The anchored write descent reopens the state root by pathname (O_NOFOLLOW on
+    the final component only). While a StateLock is held, ``lock_state`` records
+    the locked root's ``(st_dev, st_ino)``; if a concurrent rename+replace
+    swapped the state root (or an ancestor) for another real directory between
+    lock acquisition and this write, the freshly opened root is a DIFFERENT
+    inode. Refuse the write rather than mutate a rebound tree -- descriptor
+    continuity against the pinned root (#31). No lock held (contextvar unset)
+    means a direct, unlocked call: there is nothing to verify against."""
+
+    pinned = _LOCKED_ROOT_IDENTITY.get()
+    if pinned is None:
+        return
+    info = os.fstat(root_fd)
+    if (info.st_dev, info.st_ino) != pinned:
+        raise ValueError(
+            f"Refusing to write: the state root {anchor} is no longer the "
+            "directory the steward lock pinned (it was renamed or replaced)."
+        )
+
+
 class StateLock:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -178,6 +214,18 @@ class StateLock:
         # replacement process's lock, nor let this process acquire in a
         # replacement tree while the original lock is still held.
         self._dir_fd: int | None = None
+
+    @property
+    def root_identity(self) -> tuple[int, int] | None:
+        """``(st_dev, st_ino)`` of the pinned state-root descriptor, or None on
+        the pathname fallback (no dir_fd) where there is nothing to pin."""
+        if self._dir_fd is None:
+            return None
+        try:
+            info = os.fstat(self._dir_fd)
+        except OSError:
+            return None
+        return (info.st_dev, info.st_ino)
 
     def acquire(self) -> None:
         root = self.root
@@ -336,9 +384,19 @@ class StateLock:
 def lock_state(root: Path) -> Iterator[StateLock]:
     lock = StateLock(root)
     lock.acquire()
+    # Publish the pinned root identity so every anchored state write performed
+    # while this lock is held can verify descriptor continuity before mutating
+    # (see _verify_locked_root_identity). Reset on release so a later unlocked
+    # write in the same context is not checked against a stale identity (#31).
+    identity = lock.root_identity
+    token = (
+        _LOCKED_ROOT_IDENTITY.set(identity) if identity is not None else None
+    )
     try:
         yield lock
     finally:
+        if token is not None:
+            _LOCKED_ROOT_IDENTITY.reset(token)
         lock.release()
 
 
@@ -424,6 +482,19 @@ def atomic_write_bytes(path: Path, data: bytes, *, within: Path | None = None) -
                         f"Refusing to write through a symlinked or missing state "
                         f"root: {anchor} ({type(error).__name__})"
                     ) from error
+                try:
+                    # Descriptor continuity: the anchor is the state root; while a
+                    # StateLock is held it must still be the inode the lock pinned
+                    # (#31). Verified before the descent, so a rebound state tree
+                    # is refused before any directory is created or file written.
+                    _verify_locked_root_identity(fds[0], anchor)
+                except ValueError:
+                    for open_fd in fds:
+                        try:
+                            os.close(open_fd)
+                        except OSError:
+                            pass
+                    raise
                 try:
                     for part in descend:
                         try:
