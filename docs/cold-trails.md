@@ -256,6 +256,17 @@ single opt-in **Open in Obsidian** action, bound by these rules:
 - **Hostile input fails closed.** A configured vault name that is empty, a path,
   drive- or URL-fragment shaped, or otherwise invalid is rejected and not
   stored.
+- **Copy path copies the import-sanitized path.** The value Copy path places on
+  the clipboard is the viewer's stored `node.path`, which the importer sanitizes
+  (`safeIdentifier`) — it can differ from the exported note identity when the
+  original path carried characters that sanitization strips (for example a
+  zero-width character). Copy path stays available for every note regardless.
+  When the stored path did not survive import byte-for-byte (`path_exact` is
+  `false`), Atlas flags this: the note drawer shows an inline caveat next to the
+  path, and the copy confirmation reads "Path copied (adjusted on import — may
+  not match your note exactly)." Exact paths keep the plain "Path copied."
+  confirmation. The raw unsanitized path is never reintroduced into the viewer
+  model; the caveat surfaces the divergence rather than papering over it.
 
 ## Accessibility
 

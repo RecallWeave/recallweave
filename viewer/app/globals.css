@@ -583,6 +583,15 @@ button {
   white-space: nowrap;
 }
 
+.node-path-sanitized {
+  display: block;
+  margin-top: -6px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .node-actions {
   display: flex;
   flex-wrap: wrap;
