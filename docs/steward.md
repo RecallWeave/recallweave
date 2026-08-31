@@ -170,7 +170,7 @@ arose from a bug, an odd-but-legitimate path, or a modified artifact:
   citation's line range must be a physically possible one-based span
   (`1 <= start <= end`). A value carrying any control character, line/paragraph
   separator, or bidi/directional-format character is refused outright — so a
-  string like `safe.md\n/Users/alice/Secret.md` cannot slip an absolute path
+  string like `safe.md\n/nonexistent/leak.md` cannot slip an absolute path
   onto a second Markdown line.
 - **Every projected key is a known-safe identifier.** Wherever the report
   projects a key from artifact content it is whitelisted: an assessment-summary

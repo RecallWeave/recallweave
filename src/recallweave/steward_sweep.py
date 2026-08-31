@@ -210,7 +210,7 @@ def _load_json(path: Path) -> Any:
 # separators, and the bidi/directional-format characters. Any of these could
 # split a value across Markdown lines, forge structure, or spoof its direction.
 _UNSAFE_CONTROL_RE = re.compile(
-    "[\x00-\x1f\x7f-\x9f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]"
+    "[\x00-\x1f\x7f-\x9f\u061c\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069\u206a-\u206f]"
 )
 
 # Visible placeholder for a value redacted by the report-wide scrub, so a
@@ -236,12 +236,19 @@ def _is_unsafe_report_string(value: str) -> bool:
     count, or a path that was already validated as vault-relative -- so a path
     only ever appears AS a value, which this catches. An absolute path spliced
     into an otherwise-textual field would require a modified artifact, which is
-    outside steward's trust model (the state tree is trusted)."""
+    outside steward's trust model (the state tree is trusted).
+
+    Absoluteness is tested with ``is_absolute()``/``root`` only, NOT a bare
+    ``drive``: a single-letter registered source produces a qualifier like
+    ``a: note.md`` that ``PureWindowsPath`` parses as drive ``a:`` though it is
+    already-validated safe evidence -- treating a bare drive as a disclosure
+    would redact it. A real absolute path still trips ``is_absolute`` (``C:\\x``,
+    ``\\\\host\\s``) or ``root`` (a leading-separator path)."""
     if _UNSAFE_CONTROL_RE.search(value) or "://" in value:
         return True
     for flavour in (PurePosixPath, PureWindowsPath):
         candidate = flavour(value)
-        if candidate.is_absolute() or candidate.drive or candidate.root:
+        if candidate.is_absolute() or candidate.root:
             return True
     return False
 
@@ -284,7 +291,7 @@ def _is_safe_relative_path(value: str) -> bool:
     and any ``..`` traversal component -- so a report generated on one platform
     can never emit a path that is absolute on the other. It also rejects any
     control character, line/paragraph separator, or bidi/directional-format
-    character: a value like ``safe.md\\n/Users/alice/Secret.md`` is not
+    character: a value like ``safe.md\\n/nonexistent/leak.md`` is not
     "absolute" to ``pathlib`` yet would carry an absolute path onto a second
     Markdown line -- so a value with an embedded separator is refused outright,
     never split-and-partially-emitted."""
@@ -301,7 +308,10 @@ def _is_safe_relative_path(value: str) -> bool:
 
 # A broken citation is emitted as ``<relative_path>:<start>-<end>`` (see
 # steward_assess); the line range carries no hyphen before the first digit run.
-_CITATION_RANGE_RE = re.compile(r"^(\d+)-(\d+)$")
+# Bound the digit count: a physical line number never needs nine digits, and an
+# unbounded run would make ``int()`` raise on Python's integer-string limit
+# (~4300 digits) -- a malformed citation must be dropped, never crash the sweep.
+_CITATION_RANGE_RE = re.compile(r"^(\d{1,9})-(\d{1,9})$")
 
 
 def _citation_path_is_safe(citation: str) -> bool:
