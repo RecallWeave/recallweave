@@ -340,7 +340,7 @@ index**, not as live filesystem facts, unless the consumer recomputes them.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `vault_name` | no | Optional vault label claim for provenance chrome. Never a filesystem path. Absent when the operator did not supply one. Direct Obsidian open navigation from this field is deferred pending a separate redesign. |
+| `vault_name` | no | Optional vault label claim for provenance chrome ONLY. Never a filesystem path. Absent when the operator did not supply one. It is never used for navigation: Atlas's optional, opt-in "Open in Obsidian" deep link is built entirely from local viewer configuration plus the note's relative path — never from this field — and no actionable URI is ever emitted into the export. Atlas vault-navigation configuration is local presentation state and does not affect export bytes, schema, hashes, or provenance. |
 | `policy_config_sha256` | no | SHA-256 of the exact policy-file bytes applied at index time when `policy_mode` was `config`. MUST NOT include the policy path or policy contents. Absent for `--no-policy` indexes. |
 | `export_history` | yes | Object describing this export relative to prior exports of the same graph destination. |
 
