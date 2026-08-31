@@ -195,6 +195,35 @@ function edgeForTrail(graph: GraphDocument, trail: ColdTrail): GraphEdge | undef
   return graph.edges.find((edge) => edge.id === trail.edgeId);
 }
 
+/**
+ * Resolve a cold trail's source path and whether that path is import-exact. When
+ * the path comes from a node whose stored path did not survive import
+ * byte-for-byte (path_exact === false), callers must flag the copy — otherwise
+ * the tour's "Open source" would silently copy the import-adjusted path, the
+ * exact case the note drawer flags. A citation-derived path is not a node path,
+ * so it keeps the exact default (matching how evidence-citation copies behave in
+ * the note drawer).
+ */
+export function resolveTrailSourcePath(
+  graph: GraphDocument,
+  trail: ColdTrail,
+): { path: string; pathExact: boolean } {
+  if (trail.nodeId) {
+    const node = graph.nodes.find((item) => item.id === trail.nodeId);
+    return { path: node?.path || "", pathExact: node?.path_exact !== false };
+  }
+  const edge = edgeForTrail(graph, trail);
+  const citation =
+    edge?.evidence?.source_evidence?.citation ||
+    edge?.evidence?.target_evidence?.citation ||
+    edge?.evidence?.citation ||
+    "";
+  const fromCitation = citationPath(citation);
+  if (fromCitation) return { path: fromCitation, pathExact: true };
+  const node = graph.nodes.find((item) => item.id === trail.sourceId);
+  return { path: node?.path || "", pathExact: node?.path_exact !== false };
+}
+
 function trailCitations(graph: GraphDocument, trail: ColdTrail): string[] {
   const edge = edgeForTrail(graph, trail);
   if (!edge) return [];

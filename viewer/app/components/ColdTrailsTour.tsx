@@ -10,6 +10,7 @@ import {
 import {
   buildColdTrails,
   exportSavedTrailsMarkdown,
+  resolveTrailSourcePath,
   trailPairKey,
   trailTrustLabel,
   trailTypeLabel,
@@ -36,9 +37,17 @@ type ColdTrailsTourProps = {
   open: boolean;
   onClose: () => void;
   onShowOnMap: (nodeIds: string[]) => void;
-  onCopyPath: (path: string) => void;
+  onCopyPath: (path: string, pathExact?: boolean) => void;
   onCopyCitation: (citation: string) => void;
   onStatus: (message: string) => void;
+  /**
+   * Latest copy/action confirmation from the host. The host's own status line is
+   * rendered inside the note drawer, which is hidden behind this modal (and
+   * absent when no note is selected), so the tour surfaces it here — otherwise
+   * the "Path copied (adjusted on import…)" warning that Open source produces
+   * would never be visible in the tour, the scenario it exists to protect.
+   */
+  statusMessage?: string;
 };
 
 function initialFeedback(dismissedPairs: Iterable<string> = []): ColdTrailsFeedback {
@@ -66,19 +75,6 @@ function edgeForTrail(graph: GraphDocument, trail: ColdTrail): GraphEdge | undef
   return graph.edges.find((edge) => edge.id === trail.edgeId);
 }
 
-function openSourcePath(graph: GraphDocument, trail: ColdTrail): string {
-  if (trail.nodeId) {
-    return graph.nodes.find((node) => node.id === trail.nodeId)?.path || "";
-  }
-  const edge = edgeForTrail(graph, trail);
-  const citation =
-    edge?.evidence?.source_evidence?.citation ||
-    edge?.evidence?.target_evidence?.citation ||
-    edge?.evidence?.citation ||
-    "";
-  return citationPath(citation) || graph.nodes.find((node) => node.id === trail.sourceId)?.path || "";
-}
-
 export function ColdTrailsTour({
   graph,
   open,
@@ -87,6 +83,7 @@ export function ColdTrailsTour({
   onCopyPath,
   onCopyCitation,
   onStatus,
+  statusMessage = "",
 }: ColdTrailsTourProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -271,12 +268,14 @@ export function ColdTrailsTour({
   }
 
   function openSource() {
-    const path = current ? openSourcePath(graph, current) : "";
+    const { path, pathExact } = current
+      ? resolveTrailSourcePath(graph, current)
+      : { path: "", pathExact: true };
     if (!path) {
       onStatus("No safe source path is available for this trail.");
       return;
     }
-    onCopyPath(path);
+    onCopyPath(path, pathExact);
   }
 
   function showOnMap() {
@@ -521,6 +520,11 @@ export function ColdTrailsTour({
         </div>
         {saved.length > 0 && (
           <p className="cold-trails-saved-count" role="status">{saved.length} trail{saved.length === 1 ? "" : "s"} saved this session.</p>
+        )}
+        {statusMessage && (
+          <p className="cold-trails-status" role="status" aria-live="polite">
+            {statusMessage}
+          </p>
         )}
       </div>
     </div>

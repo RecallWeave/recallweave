@@ -7,6 +7,7 @@ import {
   classifyCandidateEdgeTypes,
   exportSavedTrailsMarkdown,
   refusalMessage,
+  resolveTrailSourcePath,
   trailTrustLabel,
 } from "../app/cold-trails.ts";
 
@@ -2190,4 +2191,58 @@ test("selects Parallel invention when the same pair is also the reserved Reinfor
       (trail) => trail.type === "parallel_invention" && trail.edgeId === "parallel",
     ),
   );
+});
+
+test("resolveTrailSourcePath propagates node path exactness to Open source copies", () => {
+  const hash = "a".repeat(64);
+  const graphDoc = normalizeGraph({
+    schema_version: VIEWER_SCHEMA_V2,
+    nodes: [
+      { id: "clean", title: "Clean", path: "notes/clean.md", content_hash: hash },
+      // Zero-width char is stripped by import sanitization: path_exact === false,
+      // stored path sanitizes to notes/plan.md.
+      { id: "zwsp", title: "Zero", path: "notes/plan" + String.fromCharCode(0x200b) + ".md", content_hash: hash },
+      { id: "other", title: "Other", path: "notes/other.md", content_hash: hash },
+    ],
+    edges: [
+      {
+        id: "cited",
+        source: "clean",
+        target: "other",
+        verified: false,
+        evidence: { source_evidence: { citation: "notes/clean.md:10-12" } },
+      },
+      {
+        id: "uncited",
+        source: "zwsp",
+        target: "other",
+        verified: false,
+        evidence: {},
+      },
+    ],
+    privacy: { export_profile: "graph_metadata" },
+    import_diagnostics: { duplicate_nodes_dropped: 0, duplicate_edges_dropped: 0, dangling_edges_dropped: 0 },
+  });
+
+  // A node-sourced trail on a sanitized node must report the sanitized path AND
+  // pathExact false, so the tour flags the copy like the note drawer does.
+  const sanitized = resolveTrailSourcePath(graphDoc, { nodeId: "zwsp", sourceId: "zwsp", targetId: "other" });
+  assert.equal(sanitized.path, "notes/plan.md");
+  assert.equal(sanitized.pathExact, false);
+
+  // A node-sourced trail on an exact node keeps pathExact true.
+  const exact = resolveTrailSourcePath(graphDoc, { nodeId: "clean", sourceId: "clean", targetId: "other" });
+  assert.equal(exact.path, "notes/clean.md");
+  assert.equal(exact.pathExact, true);
+
+  // A citation-derived path is not a node path, so it stays exact.
+  const cited = resolveTrailSourcePath(graphDoc, { sourceId: "clean", targetId: "other", edgeId: "cited" });
+  assert.equal(cited.path, "notes/clean.md");
+  assert.equal(cited.pathExact, true);
+
+  // With no usable citation, the edge trail falls back to the source node — and
+  // that node's sanitized exactness must carry through (here, false).
+  const fallback = resolveTrailSourcePath(graphDoc, { sourceId: "zwsp", targetId: "other", edgeId: "uncited" });
+  assert.equal(fallback.path, "notes/plan.md");
+  assert.equal(fallback.pathExact, false);
 });

@@ -302,12 +302,21 @@ export function GraphExplorer({
     return copyToClipboard(path, "Path copied.");
   }
 
-  function copyPlainPath(path: string) {
+  function copyPlainPath(path: string, pathExact = true) {
     if (!path) {
       setCopyStatus("No path available to copy.");
       return;
     }
-    return copyToClipboard(path, "Path copied.");
+    // The copied path is the import-sanitized `node.path`. When import altered
+    // it (path_exact === false), flag that the copied value may not match the
+    // note on disk byte-for-byte, so the operator does not paste a path that
+    // silently resolves to a different (or missing) note.
+    return copyToClipboard(
+      path,
+      pathExact
+        ? "Path copied."
+        : "Path copied (adjusted on import — may not match your note exactly).",
+    );
   }
 
   useEffect(() => {
@@ -414,7 +423,13 @@ export function GraphExplorer({
             <button
               ref={coldTrailsTriggerRef}
               className="ghost-button"
-              onClick={() => setColdTrailsOpen(true)}
+              onClick={() => {
+                // Start the tour with no stale confirmation; the tour surfaces
+                // copyStatus in its own dialog, so a leftover drawer message
+                // must not appear there on open.
+                setCopyStatus("");
+                setColdTrailsOpen(true);
+              }}
             >
               Cold Trails
             </button>
@@ -566,11 +581,18 @@ export function GraphExplorer({
                   </div>
                   <h3 ref={detailHeadingRef} tabIndex={-1}>{selected.title}</h3>
                   <div className="node-path" title={selected.path}>{selected.path}</div>
+                  {selected.path_exact === false && (
+                    <span className="node-path-sanitized">
+                      Path adjusted on import — may not match your note exactly.
+                    </span>
+                  )}
                   <div className="node-actions">
                     <button
                       type="button"
                       className="node-action"
-                      onClick={() => copyPlainPath(selected.path)}
+                      onClick={() =>
+                        copyPlainPath(selected.path, selected.path_exact !== false)
+                      }
                     >
                       Copy path
                     </button>
@@ -788,6 +810,7 @@ export function GraphExplorer({
           onCopyPath={copyPlainPath}
           onCopyCitation={copyCitation}
           onStatus={setCopyStatus}
+          statusMessage={copyStatus}
         />
       )}
     </div>

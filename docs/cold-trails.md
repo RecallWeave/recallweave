@@ -256,6 +256,23 @@ single opt-in **Open in Obsidian** action, bound by these rules:
 - **Hostile input fails closed.** A configured vault name that is empty, a path,
   drive- or URL-fragment shaped, or otherwise invalid is rejected and not
   stored.
+- **Copy path copies the import-sanitized path.** The value Copy path places on
+  the clipboard is the viewer's stored `node.path`, which the importer sanitizes
+  (`safeIdentifier`) — it can differ from the exported note identity when the
+  original path carried characters that sanitization strips (for example a
+  zero-width character). Copy path stays available for every note regardless.
+  When the stored path did not survive import byte-for-byte (`path_exact` is
+  `false`), Atlas flags this: the note drawer shows an inline caveat next to the
+  path, and the copy confirmation reads "Path copied (adjusted on import — may
+  not match your note exactly)." Exact paths keep the plain "Path copied."
+  confirmation. The Cold Trails tour's **Open source** action carries the same
+  exactness through (`resolveTrailSourcePath`), so copying a sanitized node's
+  path from the tour is flagged identically rather than silently reporting an
+  exact copy; citation-derived paths keep the plain confirmation. The tour
+  renders that confirmation inside its own modal dialog, so the warning is
+  visible even when no note is selected and the note drawer is hidden behind the
+  backdrop. The raw unsanitized path is never reintroduced into the viewer
+  model; the caveat surfaces the divergence rather than papering over it.
 
 ## Accessibility
 

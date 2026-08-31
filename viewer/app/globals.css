@@ -583,6 +583,15 @@ button {
   white-space: nowrap;
 }
 
+.node-path-sanitized {
+  display: block;
+  margin-top: -6px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .node-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1350,6 +1359,17 @@ button {
 .cold-trails-saved-count {
   margin-top: 12px;
   color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cold-trails-status {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(217, 255, 114, 0.06);
+  color: var(--paper);
   font-size: 13px;
   line-height: 1.45;
 }

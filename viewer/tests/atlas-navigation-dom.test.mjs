@@ -59,6 +59,19 @@ function installDom(localStorage) {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   globalThis.localStorage = localStorage;
   window.HTMLCanvasElement.prototype.getContext = () => null;
+  // happy-dom exposes navigator.clipboard as a getter-only stub without
+  // writeText, so copyToClipboard falls back to execCommand — make that path
+  // deterministic AND capture the exact text it would place on the clipboard
+  // (the transient <textarea> the fallback selects), so tests can assert the
+  // copied value, not just the status line.
+  window.__copiedText = [];
+  window.document.execCommand = (command) => {
+    if (command === "copy") {
+      const textarea = window.document.querySelector("textarea");
+      window.__copiedText.push(textarea ? textarea.value : null);
+    }
+    return true;
+  };
   return window;
 }
 
@@ -122,6 +135,179 @@ async function renderAndSelect(window, localStorageState, node) {
   });
   return capturedHtml;
 }
+
+// Render, select the node, and hand back the live drawer container plus a
+// clicker so a test can inspect the sanitized-path caveat and the copy status
+// that a Copy path click produces. The caller runs entirely inside the Vite
+// server lifetime and unmounts before returning.
+async function withSelectedDrawer(window, node, run) {
+  const container = window.document.createElement("div");
+  window.document.body.appendChild(container);
+  await withGraphExplorer(async (GraphExplorer) => {
+    const initialGraph = graphWith([node]);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(GraphExplorer, { initialGraph }));
+    });
+    await flush();
+    await selectNodeByTitle(window, container, node.title);
+    const clickCopyPath = async () => {
+      const button = [...container.querySelectorAll(".node-actions button")].find(
+        (candidate) => candidate.textContent === "Copy path",
+      );
+      assert.ok(button, "Copy path button must exist");
+      await act(async () => {
+        button.dispatchEvent(new window.Event("click", { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      await flush();
+    };
+    await run({ container, clickCopyPath });
+    await act(async () => {
+      root.unmount();
+    });
+  });
+}
+
+test("import-sanitized note shows the caveat and keeps Copy path", async () => {
+  // A zero-width character in the raw path is stripped by import sanitization,
+  // so node.path no longer equals the exported path (path_exact === false).
+  // Copy path must remain (founder floor) and an inline caveat must appear.
+  const window = installDom(memoryStorage());
+  await withSelectedDrawer(
+    window,
+    {
+      id: "zwsp",
+      title: "ZeroWidthNote",
+      path: "notes/plan" + String.fromCharCode(0x200b) + ".md",
+      content_hash: "c".repeat(64),
+    },
+    async ({ container, clickCopyPath }) => {
+      const caveat = container.querySelector(".node-path-sanitized");
+      assert.ok(caveat, "sanitized-path caveat must be present for a non-exact path");
+      assert.match(caveat.textContent, /adjusted on import/i);
+      const copyButton = [...container.querySelectorAll(".node-actions button")].find(
+        (candidate) => candidate.textContent === "Copy path",
+      );
+      assert.ok(copyButton, "Copy path must stay available for a non-exact note");
+      await clickCopyPath();
+      const status = container.querySelector(".detail-panel .copy-status");
+      assert.ok(status, "a copy status must render after clicking Copy path");
+      assert.match(status.textContent, /adjusted on import/i);
+      // The copied value must be the sanitized stored path (zero-width stripped),
+      // and it must match what the drawer displays — not the raw input, title,
+      // or id. This is the mutation guard: passing the wrong value here fails.
+      const copied = window.__copiedText.at(-1);
+      assert.equal(copied, "notes/plan.md", "Copy path must copy the sanitized path");
+      assert.ok(
+        !copied.includes(String.fromCharCode(0x200b)),
+        "the raw zero-width path must never be copied",
+      );
+      assert.equal(
+        copied,
+        container.querySelector(".node-path").textContent,
+        "the copied value must equal the displayed sanitized path",
+      );
+    },
+  );
+  window.close();
+});
+
+test("exact note shows no caveat and the plain copy confirmation", async () => {
+  const window = installDom(memoryStorage());
+  await withSelectedDrawer(
+    window,
+    {
+      id: "alpha",
+      title: "AlphaNote",
+      path: "notes/alpha.md",
+      content_hash: "a".repeat(64),
+    },
+    async ({ container, clickCopyPath }) => {
+      assert.equal(
+        container.querySelector(".node-path-sanitized"),
+        null,
+        "an exact path must not show the sanitized caveat",
+      );
+      await clickCopyPath();
+      const status = container.querySelector(".detail-panel .copy-status");
+      assert.ok(status, "a copy status must render after clicking Copy path");
+      assert.equal(status.textContent, "Path copied.");
+      // Mutation guard for the exact path: the copied value is the path itself.
+      assert.equal(window.__copiedText.at(-1), "notes/alpha.md");
+    },
+  );
+  window.close();
+});
+
+test("Copy path copies the sanitized value via the Clipboard API too", async () => {
+  // Exercise the primary navigator.clipboard.writeText branch (the execCommand
+  // fallback is covered above): the value handed to the clipboard must be the
+  // sanitized path, and the adjusted status must still render.
+  const window = installDom(memoryStorage());
+  const written = [];
+  // The component reads the bare global `navigator`, so inject there (not on
+  // window.navigator) and restore afterward so the fallback-path tests still see
+  // no Clipboard API.
+  const hadClipboard = Object.prototype.hasOwnProperty.call(globalThis.navigator, "clipboard");
+  const priorClipboard = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
+  Object.defineProperty(globalThis.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: (text) => { written.push(text); return Promise.resolve(); } },
+  });
+  try {
+    await withSelectedDrawer(
+      window,
+      {
+        id: "zwsp",
+        title: "ZeroWidthNote",
+        path: "notes/plan" + String.fromCharCode(0x200b) + ".md",
+        content_hash: "c".repeat(64),
+      },
+      async ({ container, clickCopyPath }) => {
+        await clickCopyPath();
+        assert.deepEqual(written, ["notes/plan.md"], "Clipboard API must receive the sanitized path");
+        const status = container.querySelector(".detail-panel .copy-status");
+        assert.match(status.textContent, /adjusted on import/i);
+      },
+    );
+  } finally {
+    if (hadClipboard && priorClipboard) {
+      Object.defineProperty(globalThis.navigator, "clipboard", priorClipboard);
+    } else {
+      delete globalThis.navigator.clipboard;
+    }
+  }
+  window.close();
+});
+
+test("a control-character path is also flagged and copied sanitized", async () => {
+  // path_exact can become false for reasons other than zero-width characters;
+  // a C0 control character is stripped by import sanitization too. The caveat
+  // and the sanitized copied value must hold for that cause as well.
+  const window = installDom(memoryStorage());
+  await withSelectedDrawer(
+    window,
+    {
+      id: "ctrl",
+      title: "ControlCharNote",
+      path: "notes/pl" + String.fromCharCode(0x07) + "an.md",
+      content_hash: "d".repeat(64),
+    },
+    async ({ container, clickCopyPath }) => {
+      assert.ok(
+        container.querySelector(".node-path-sanitized"),
+        "a control-character path must show the sanitized caveat",
+      );
+      await clickCopyPath();
+      const copied = window.__copiedText.at(-1);
+      assert.equal(copied, "notes/plan.md", "the control character must be stripped from the copied path");
+      const status = container.querySelector(".detail-panel .copy-status");
+      assert.match(status.textContent, /adjusted on import/i);
+    },
+  );
+  window.close();
+});
 
 test("vault-config feedback renders in the footer form with no note selected", async () => {
   // Regression for the bug where config feedback was written only to the
