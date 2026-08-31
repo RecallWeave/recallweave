@@ -60,7 +60,7 @@ import os
 import stat
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .index import connect
@@ -153,6 +153,28 @@ def _load_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         raise ValueError(f"{path} is not valid JSON: {error}") from error
+
+
+def _is_safe_relative_path(value: str) -> bool:
+    """True only for a non-empty, vault-relative path with no traversal.
+
+    Report evidence is copied from on-disk artifacts, which are untrusted
+    content (a file can be tampered after the creating stage validated it). This
+    module promises never to emit an absolute path, so a path is admitted only
+    when it is relative under BOTH POSIX and Windows conventions -- rejecting a
+    POSIX-absolute path (``/x``), a Windows drive or rooted path (``C:\\x``,
+    ``\\x``), a UNC path (``\\\\host\\share``), and any ``..`` traversal
+    component -- so a report generated on one platform can never emit a path
+    that is absolute on the other."""
+    if not value:
+        return False
+    for flavour in (PurePosixPath, PureWindowsPath):
+        candidate = flavour(value)
+        if candidate.is_absolute() or candidate.drive or candidate.root:
+            return False
+    # PureWindowsPath splits on both separators, so this catches ".." written
+    # with either a forward or a back slash.
+    return ".." not in PureWindowsPath(value).parts
 
 
 def _source_name_from_artifact(name: str) -> str | None:
@@ -330,7 +352,13 @@ def _aggregate_assessments(
                 if not _duplicate_still_current(source_name, idx, item):
                     continue
                 relation_counts["DUPLICATES_EXACT_BYTES"].add((source_name, path))
-                duplicates.append(path)
+                # Qualify every duplicate with its source before dedup, mirroring
+                # the broken-citation fix (#24): the relation count keys on
+                # (source_name, path), so two registered sources each internally
+                # duplicating the same relative path (e.g. `note.md`) would
+                # otherwise collapse to one ambiguous entry while the count
+                # reports two, leaving the operator unable to tell which source.
+                duplicates.append(f"{source_name}: {path}")
             elif relation == "CITATION_BROKEN":
                 relation_counts["CITATION_BROKEN"].add((source_name, path))
                 for citation in (item.get("inputs") or {}).get("broken_citations") or []:
@@ -352,13 +380,29 @@ def _aggregate_assessments(
 
 
 def _aggregate_proposals(
-    dirs: dict[str, Path], registry_sha256: str | None = None
+    dirs: dict[str, Path],
+    registry_sha256: str | None = None,
+    *,
+    valid_source_names: frozenset[str] | None = None,
 ) -> tuple[int, dict[str, int], list[str]]:
     """Scan proposals/ for PENDING proposals (applied ones no longer pend).
 
     A proposal from a prior registry revision (foreign registry_sha256) is not
     this registry's pending work: it is excluded so a stale artifact cannot hold
-    the sweep result at ``approval_required`` (auto-apply already skips it)."""
+    the sweep result at ``approval_required`` (auto-apply already skips it).
+
+    ``valid_source_names`` is the active registry's source-name set. Unlike the
+    assessment-side duplicate qualification -- which reads its source name from
+    the trusted ``registry.sources`` iteration -- the dangling qualifier's
+    source comes from the on-disk proposal, which is untrusted content. A
+    tampered or malformed proposal (even one carrying the active registry
+    digest, which covers registry content, not this field) could otherwise
+    inject an arbitrary string -- including an absolute path -- straight into
+    ``integrity.dangling_references``, violating this module's promise never to
+    emit an absolute path. So a source qualifier is added ONLY when the proposal
+    names a currently-registered source; any other value -- and the ``None``
+    default, i.e. no validation set supplied -- falls back to the bare,
+    vault-relative ``deleted_path`` (the pre-qualification behavior)."""
     by_action: dict[str, int] = {}
     dangling: set[str] = set()
     total = 0
@@ -381,9 +425,35 @@ def _aggregate_proposals(
         if isinstance(action, str):
             by_action[action] = by_action.get(action, 0) + 1
             if action == "review_dangling_references":
-                deleted_path = (proposal.get("evidence") or {}).get("deleted_path")
-                if isinstance(deleted_path, str):
-                    dangling.add(deleted_path)
+                evidence = proposal.get("evidence")
+                # ``evidence`` is untrusted on-disk content: a truthy non-object
+                # (string/list/int/bool) must not crash aggregation with an
+                # AttributeError, and a non-string or non-relative deleted_path
+                # must never reach the report. A malformed value leaves the
+                # proposal counted as pending (total was already incremented)
+                # but contributes no dangling-reference string.
+                deleted_path = (
+                    evidence.get("deleted_path") if isinstance(evidence, dict) else None
+                )
+                if isinstance(deleted_path, str) and _is_safe_relative_path(deleted_path):
+                    # Qualify with the proposal's source before dedup, mirroring
+                    # the broken-citation fix (#24): review_dangling_references
+                    # counts every pending proposal, so two sources sharing a
+                    # deleted relative path would otherwise collapse to one
+                    # entry while the count reports two. Qualify ONLY when the
+                    # (untrusted) proposal source is a currently-registered
+                    # source name; otherwise emit the bare, vault-relative path
+                    # so a tampered/foreign source string is never copied into
+                    # the report (see the docstring).
+                    source_name = proposal.get("source")
+                    if (
+                        valid_source_names is not None
+                        and isinstance(source_name, str)
+                        and source_name in valid_source_names
+                    ):
+                        dangling.add(f"{source_name}: {deleted_path}")
+                    else:
+                        dangling.add(deleted_path)
     return total, dict(sorted(by_action.items())), sorted(dangling)
 
 
@@ -440,7 +510,9 @@ def _assemble_report(
         dirs, registry, sources_errored
     )
     proposals_pending_total, proposals_by_action, dangling_references = _aggregate_proposals(
-        dirs, registry.registry_sha256
+        dirs,
+        registry.registry_sha256,
+        valid_source_names=frozenset(source.name for source in registry.sources),
     )
 
     # Bound every unbounded evidence array so report size has a defined ceiling
