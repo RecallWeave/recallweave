@@ -629,6 +629,9 @@ class ProposeLatestTest(StewardProposeTest):
         batch_path.write_text(json.dumps(batch), encoding="utf-8")
         assessment = self._assess(batch)
         assessment["change_batch_ref"] = batch_path.name
+        assessment["change_batch_sha256"] = hashlib.sha256(
+            batch_path.read_bytes()
+        ).hexdigest()
         assessment_path = self.dirs["assessments"] / batch_path.name
         assessment_path.write_text(json.dumps(assessment), encoding="utf-8")
 
@@ -679,6 +682,9 @@ class ProposeLatestTest(StewardProposeTest):
         batch_path.write_text(json.dumps(batch), encoding="utf-8")
         assessment = self._assess(batch)
         assessment["change_batch_ref"] = batch_path.name
+        assessment["change_batch_sha256"] = hashlib.sha256(
+            batch_path.read_bytes()
+        ).hexdigest()
         (self.dirs["assessments"] / batch_path.name).write_text(
             json.dumps(assessment), encoding="utf-8"
         )
@@ -870,6 +876,9 @@ class ProposeLatestTest(StewardProposeTest):
         early_batch_path.write_text(json.dumps(early_batch), encoding="utf-8")
         early = self._assess(early_batch)
         early["change_batch_ref"] = early_batch_path.name
+        early["change_batch_sha256"] = hashlib.sha256(
+            early_batch_path.read_bytes()
+        ).hexdigest()
         (self.dirs["assessments"] / early_batch_path.name).write_text(
             json.dumps(early), encoding="utf-8"
         )
@@ -879,6 +888,9 @@ class ProposeLatestTest(StewardProposeTest):
         later_batch_path.write_text(json.dumps(later_batch), encoding="utf-8")
         later = self._assess(later_batch)
         later["change_batch_ref"] = later_batch_path.name
+        later["change_batch_sha256"] = hashlib.sha256(
+            later_batch_path.read_bytes()
+        ).hexdigest()
         (self.dirs["assessments"] / later_batch_path.name).write_text(
             json.dumps(later), encoding="utf-8"
         )
@@ -997,6 +1009,9 @@ class StewardProposeCliTest(StewardProposeTest):
         batch_path.write_text(json.dumps(batch), encoding="utf-8")
         assessment = self._assess(batch)
         assessment["change_batch_ref"] = batch_path.name
+        assessment["change_batch_sha256"] = hashlib.sha256(
+            batch_path.read_bytes()
+        ).hexdigest()
         # The CLI loads the registry from disk, so the digest binding is
         # strict: the assessment must carry the real registry digest.
         assessment["registry_sha256"] = hashlib.sha256(

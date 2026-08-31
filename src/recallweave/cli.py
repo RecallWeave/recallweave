@@ -269,7 +269,8 @@ def _parser() -> argparse.ArgumentParser:
         "steward-sweep",
         help=(
             "One-shot local sweep: observe, assess, and propose in sequence, "
-            "then write a stewardship report (no vault or index writes)."
+            "then write a stewardship report. A plain sweep makes no vault or "
+            "index writes; --apply may write."
         ),
     )
     steward_sweep_parser.add_argument("sources", type=_path)
