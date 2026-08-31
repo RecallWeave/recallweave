@@ -125,7 +125,12 @@ class ValidationGateTest(unittest.TestCase):
             receipt["validation"]["index_deltas"]["notes_indexed"], 0
         )
 
-    def test_l0_denied_frontmatter_creation_rolls_back(self) -> None:
+    def test_denied_frontmatter_creation_refused_before_mutation(self) -> None:
+        # A creation carrying denied frontmatter must never cross the mutation
+        # boundary. Preflight now validates the PROJECTED content against the
+        # source policy and refuses before any intent journal or write (#27), so
+        # no rollback is needed at all; post-apply L0 remains the backstop for
+        # anything preflight cannot project.
         content = "---\nsensitivity: sealed\n---\n# Smuggled\n"
         proposal = self._proposal(
             [
@@ -137,21 +142,17 @@ class ValidationGateTest(unittest.TestCase):
                 }
             ]
         )
-        with self.assertRaisesRegex(ApplyError, "L0.*inadmissible"):
+        with self.assertRaisesRegex(ApplyError, "frontmatter-denied"):
             self._apply(
                 proposal,
                 _policy({"class_levels": {"create_new_file": "auto_apply"}}),
             )
         self.assertFalse(
             (self.vault.root / "inbox/new.md").exists(),
-            "the inadmissible creation survived rollback",
+            "the inadmissible creation was written despite refusal",
         )
-        journal = json.loads(
-            sorted(self.dirs["journal"].glob("*.json"))[-1].read_text(
-                encoding="utf-8"
-            )
-        )
-        self.assertEqual(journal["status"], "rolled_back")
+        # Refused before the mutation boundary: no intent journal was written.
+        self.assertEqual(list(self.dirs["journal"].glob("*.json")), [])
 
     def test_l1_unresolved_link_growth_rolls_back(self) -> None:
         base = self.vault.write("grow.md", "# Grow\n\nBody.\n")

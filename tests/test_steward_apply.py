@@ -149,11 +149,14 @@ class ApplyPipelineTest(unittest.TestCase):
         self.assertEqual(len(journals), 1)
         journal = json.loads(journals[0].read_text(encoding="utf-8"))
         self.assertEqual(journal["status"], "applied")
-        backups = list(dirs["backups"].rglob("*Alpha*"))
+        # Backup filenames are bounded digests (#30); the original path is
+        # retained in the journal operation, not in the filename.
+        backups = list(dirs["backups"].rglob("*.bak"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(
             _sha(backups[0].read_bytes()), edit["precondition_content_hash"]
         )
+        self.assertEqual(journal["operations"][0]["relative_path"], "Alpha.md")
         self.assertEqual(len(list(dirs["receipts"].glob("*.json"))), 1)
 
     def test_double_apply_is_refused(self) -> None:
@@ -545,7 +548,7 @@ class ApplyUnitTest(unittest.TestCase):
         receipt = self._apply(proposal, policy)
         self.assertTrue(receipt["applied"])
         self.assertFalse(target.exists())
-        trashed = list(self.dirs["trash"].rglob("*gone*"))
+        trashed = list(self.dirs["trash"].rglob("*.bak"))
         self.assertEqual(len(trashed), 1)
         self.assertEqual(trashed[0].read_bytes(), data)
 

@@ -565,11 +565,16 @@ def _assemble_report(
             "schema_version": _index_info(database)["schema_version"],
         },
         "network_calls": 0,
-        # A read-only sweep performs no writes; an --apply sweep reports the
-        # mutations its auto-apply leg actually made, so the standard receipt
-        # field never claims a false no-mutation result after applying.
+        # A read-only sweep performs no writes; an --apply sweep reports every
+        # vault write its auto-apply leg performed -- INCLUDING writes that were
+        # rolled back after a failed validation gate -- so the field never claims
+        # a false no-mutation result after notes were written and restored (#28).
         "vault_writes": (
-            apply_summary.get("mutations", 0) if apply_summary is not None else 0
+            apply_summary.get(
+                "vault_writes", apply_summary.get("mutations", 0)
+            )
+            if apply_summary is not None
+            else 0
         ),
     }
 

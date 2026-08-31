@@ -601,6 +601,16 @@ def _validate_edit(edit: Any) -> None:
     if not isinstance(path, str):
         raise ApplyError(f"Edit has no relative_path: {edit!r}")
     _require_clean_relative_path(path)
+    # Steward only ever mutates Markdown notes. An appliable source whose
+    # include_paths names a non-.md file would have path_allowed admit it, and
+    # a forged move_to_trash could then delete it -- the trash class skips L0
+    # and the manifest/index ignore non-.md files, so the L1/L3 zero-deltas
+    # would pass and the journal be marked applied. Refuse any non-Markdown
+    # target here, before admission, whatever the proposal claims.
+    if not path.casefold().endswith(".md"):
+        raise ApplyError(
+            f"Refusing an edit whose target is not a Markdown note: {path!r}."
+        )
 
 
 def _resolve_target(source_root: Path, relative_path: str, database: Path) -> Path:
@@ -756,6 +766,54 @@ def _read_edit_target(target: Path, max_bytes: int | None) -> bytes:
         os.close(fd)
 
 
+def _quarantine_leaf(
+    target: Path, expected_hash: str, label: str
+) -> tuple[bytes, tuple[int, int], int]:
+    """Open the exact leaf about to be mutated, verify + hash it, pin identity.
+
+    Returns ``(bytes, (st_dev, st_ino), mode)``. The target is opened
+    ``O_NOFOLLOW`` so a symlink swapped in for it is refused; fstat verifies a
+    non-hardlinked regular file; the bytes are read and hashed THROUGH the
+    pinned descriptor and checked against ``expected_hash`` (the proposal's
+    precondition). The caller re-verifies the returned inode identity
+    immediately before the mutation syscall and takes the backup from these
+    quarantined bytes, so a concurrent local writer in the preflight->write
+    window is detected instead of having its save silently overwritten with a
+    stale backup (#22)."""
+
+    flags = (
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    )
+    fd = os.open(target, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ApplyError(
+                f"Target {label} is no longer a regular file; aborting the "
+                "proposal."
+            )
+        if int(info.st_nlink) > 1:
+            raise ApplyError(
+                f"Target {label} became hardlinked (st_nlink > 1); aborting "
+                "the proposal."
+            )
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if _sha256_bytes(data) != expected_hash:
+        raise ApplyError(
+            f"Target {label} changed between preflight and write; aborting "
+            "the proposal."
+        )
+    return data, (info.st_dev, info.st_ino), stat.S_IMODE(info.st_mode)
+
+
 def _preflight_edit(
     edit: dict[str, Any],
     source: Any,
@@ -857,6 +915,41 @@ def _preflight_edit(
                 "match the proposal's predicted hash; refusing to write bytes "
                 "the operator did not approve."
             )
+
+    # Validate the PROJECTED post-state against the source policy before we
+    # cross the mutation boundary. The admission check above ran against the
+    # PRE-state: create_new_file has current=None (size 0, frontmatter skipped)
+    # and append is admitted only at its pre-append size. Without this, a
+    # creation carrying denied frontmatter, or an edit whose result exceeds
+    # max_file_bytes, passes preflight, writes the vault, and is caught only by
+    # post-apply L0 -- crossing the boundary for a refusal rollback can undo.
+    if post is not None:
+        allowed, reason = source.policy.path_allowed(
+            edit["relative_path"], len(post)
+        )
+        if not allowed:
+            raise ApplyError(
+                f"Projected result for {edit['relative_path']} is not admitted "
+                f"by the source policy ({reason}); refusing to write bytes the "
+                "policy would exclude."
+            )
+        if source.policy.deny_frontmatter:
+            try:
+                post_frontmatter, post_valid = _frontmatter_from_bytes(post)
+            except (UnicodeError, RecursionError):
+                raise ApplyError(
+                    f"Cannot verify projected frontmatter for "
+                    f"{edit['relative_path']}; refusing the edit."
+                ) from None
+            allowed, reason = source.policy.frontmatter_allowed(
+                post_frontmatter, valid=post_valid
+            )
+            if not allowed:
+                raise ApplyError(
+                    f"Projected result for {edit['relative_path']} is "
+                    f"frontmatter-denied by the source policy ({reason}); "
+                    "refusing to write bytes the policy would exclude."
+                )
 
     parent = target.parent if target.parent.exists() else source_root
     if not os.access(parent, os.W_OK):
@@ -1413,10 +1506,16 @@ def _rollback(
     journal["rollback_failures"] = failures
     atomic_write_json(journal_path, journal, within=journal_dir)
     if failures:
-        raise RollbackError(
+        error = RollbackError(
             "Rollback could not fully restore the source; retained backups: "
             + "; ".join(failures)
         )
+        # Forward writes landed; rollback could NOT fully restore them. Carry the
+        # forward count (and zero confirmed restores) so a sweep report reflects
+        # a partially-restored source rather than claiming zero writes (#28).
+        error.forward_writes = len(completed)
+        error.rolled_back_writes = 0
+        raise error
 
 
 def apply_proposal(
@@ -1578,7 +1677,18 @@ def apply_proposal(
                 "content_hash_after": (
                     _sha256_bytes(plan["post"]) if plan["post"] is not None else None
                 ),
-                "backup_name": f"{index}-{_flatten(plan['edit']['relative_path'])}",
+                # Bound the backup filename to one filesystem component. A
+                # valid deeply nested relative path flattened whole can exceed
+                # the common 255-byte per-component limit, so _write_backup
+                # would fail with ENAMETOOLONG after the intent journal is
+                # written -- stranding otherwise-valid proposals. The original
+                # path is retained above as "relative_path"; the digest only has
+                # to be unique per operation and stable for recovery.
+                "backup_name": (
+                    f"{index}-"
+                    f"{hashlib.sha256(plan['edit']['relative_path'].encode('utf-8')).hexdigest()}"
+                    ".bak"
+                ),
             }
         )
 
@@ -1649,34 +1759,33 @@ def apply_proposal(
             target: Path = plan["target"]
             op = journal["operations"][index]
 
-            # Re-verify the precondition immediately before the write: the
-            # preflight-to-write window must not admit a drifted file.
-            if plan["current"] is not None:
-                live = target.read_bytes()
-                if _sha256_bytes(live) != op["content_hash_before"]:
-                    raise ApplyError(
-                        f"Target {edit['relative_path']} changed between "
-                        "preflight and write; aborting the proposal."
-                    )
-
             had_file = plan["current"] is not None
             backup_path: Path | None = None
             original_mode: int | None = None
+            leaf_identity: tuple[int, int] | None = None
+            live_bytes: bytes | None = None
             if had_file:
-                # Capture the live permission bits before any mutation so a
-                # deletion (move_to_trash) can be restored with its original
-                # mode -- the restored target is absent, so its mode cannot be
-                # recovered from the filesystem later.
+                # Quarantine the exact leaf being mutated: open it O_NOFOLLOW,
+                # verify it is the regular file preflight admitted, read+hash ITS
+                # current bytes (not the stale preflight copy) against the
+                # precondition, and pin its inode identity + live permission
+                # bits. The backup is taken from these quarantined bytes and the
+                # mutation below re-checks the pinned inode, so a concurrent local
+                # writer in the preflight->write window is detected rather than
+                # silently overwritten with a backup that no longer matches (#22).
                 try:
-                    original_mode = stat.S_IMODE(
-                        os.stat(target, follow_symlinks=False).st_mode
+                    live_bytes, leaf_identity, original_mode = _quarantine_leaf(
+                        target, op["content_hash_before"], edit["relative_path"]
                     )
-                except OSError:
-                    original_mode = None
+                except OSError as error:
+                    raise ApplyError(
+                        f"Target {edit['relative_path']} could not be opened for "
+                        f"mutation ({type(error).__name__}); aborting the proposal."
+                    ) from error
                 backup_path = _write_backup(
                     backup_dir,
                     op["backup_name"],
-                    plan["current"],
+                    live_bytes,
                     within=backups_root,
                 )
 
@@ -1699,10 +1808,30 @@ def apply_proposal(
             op["state"] = "in_progress"
             atomic_write_json(journal_path, journal, within=journal_dir)
 
+            if leaf_identity is not None:
+                # Re-verify the pinned inode immediately before the mutation
+                # syscall: if a concurrent writer replaced the target (new inode)
+                # after the quarantine read, abort rather than overwrite or delete
+                # their file with a backup that captured the old inode's bytes.
+                # This narrows the residual race to the syscall gap that POSIX
+                # rename-by-name leaves open (#22).
+                try:
+                    check = os.stat(target, follow_symlinks=False)
+                except OSError as error:
+                    raise ApplyError(
+                        f"Target {edit['relative_path']} vanished before the "
+                        f"mutation ({type(error).__name__}); aborting the proposal."
+                    ) from error
+                if (check.st_dev, check.st_ino) != leaf_identity:
+                    raise ApplyError(
+                        f"Target {edit['relative_path']} was replaced by another "
+                        "writer between preflight and write; aborting the proposal."
+                    )
+
             if edit["mutation_class"] == "move_to_trash":
                 trash_dir = trash_root / f"{stamp}-{proposal_id}"
                 trash_path = _write_backup(
-                    trash_dir, op["backup_name"], plan["current"], within=trash_root
+                    trash_dir, op["backup_name"], live_bytes, within=trash_root
                 )
                 _guarded_unlink(target, source.root, root_identity)
                 op["trash_path"] = str(trash_path.relative_to(trash_root))
@@ -1752,25 +1881,39 @@ def apply_proposal(
         validate_l3(manifest_before, manifest_after, plans)
         receipt_after = rebuild_receipt(source, state_root_dir)
         index_deltas = validate_l1(receipt_before, receipt_after, plans)
-    except ApplyError:
+    except ApplyError as error:
+        forward = len(completed)
         _rollback(completed, journal_path, journal, journal_dir,
                   boundary=source.root, root_identity=root_identity,
                   created_dirs=created_dirs)
+        # The rollback above restored every mutated target; record the forward
+        # and rollback write counts on the exception so a sweep does not report
+        # vault_writes: 0 for an apply that wrote and then restored notes (#28).
+        error.forward_writes = forward
+        error.rolled_back_writes = forward
         raise
     except ValidationError as error:
+        forward = len(completed)
         _rollback(completed, journal_path, journal, journal_dir,
                   boundary=source.root, root_identity=root_identity,
                   created_dirs=created_dirs)
-        raise ApplyError(
+        raised = ApplyError(
             f"Validation failed and the apply was rolled back: {error}"
-        ) from error
+        )
+        raised.forward_writes = forward
+        raised.rolled_back_writes = forward
+        raise raised from error
     except Exception as error:
+        forward = len(completed)
         _rollback(completed, journal_path, journal, journal_dir,
                   boundary=source.root, root_identity=root_identity,
                   created_dirs=created_dirs)
-        raise ApplyError(
+        raised = ApplyError(
             f"Apply failed and was rolled back: {type(error).__name__}: {error}"
-        ) from error
+        )
+        raised.forward_writes = forward
+        raised.rolled_back_writes = forward
+        raise raised from error
 
     # Re-verify the source root identity through the terminal transition. If
     # another process renamed and recreated the registered root after the last
@@ -1989,6 +2132,12 @@ def sweep_auto_apply(
         except (OSError, ValueError):
             skipped.append({"proposal": path.name, "reason": "unreadable"})
             continue
+        if not isinstance(document, dict):
+            # Valid JSON that is not an object (e.g. `[]` or `null`) passes
+            # json.loads but would crash the whole sweep on .get(); treat it
+            # like the malformed/unreadable case and leave it pending.
+            skipped.append({"proposal": path.name, "reason": "unreadable"})
+            continue
         if document.get("status") == "applied":
             continue
         # Skip a proposal compiled under a different source registry BEFORE
@@ -2070,6 +2219,8 @@ def sweep_auto_apply(
                     "error": type(error).__name__,
                     "rolled_back": False,
                     "aborted_sweep": True,
+                    "forward_writes": getattr(error, "forward_writes", 0),
+                    "rolled_back_writes": getattr(error, "rolled_back_writes", 0),
                 }
             )
             break
@@ -2084,6 +2235,8 @@ def sweep_auto_apply(
                     "error": type(error).__name__,
                     "rolled_back": False,
                     "preflight_refused": True,
+                    "forward_writes": 0,
+                    "rolled_back_writes": 0,
                 }
             )
             continue
@@ -2095,6 +2248,8 @@ def sweep_auto_apply(
                     "proposal": document.get("proposal_id"),
                     "error": type(error).__name__,
                     "rolled_back": True,
+                    "forward_writes": getattr(error, "forward_writes", 0),
+                    "rolled_back_writes": getattr(error, "rolled_back_writes", 0),
                 }
             )
             continue
@@ -2143,11 +2298,20 @@ def sweep_auto_apply(
                 "git_commit": (receipt.get("git") or {}).get("commit"),
             }
         )
+    successful_mutations = sum(item["mutations"] for item in applied)
+    # Writes that landed then rolled back (or failed to roll back) are real vault
+    # writes even though they left no net change; count them so the sweep report
+    # never claims vault_writes: 0 for an apply that wrote and restored notes (#28).
+    rolled_back_writes = sum(
+        int(item.get("forward_writes", 0)) for item in failures
+    )
     return {
         "applied": applied,
         "skipped": skipped,
         "failures": failures,
-        "mutations": sum(item["mutations"] for item in applied),
+        "mutations": successful_mutations,
+        "rolled_back_writes": rolled_back_writes,
+        "vault_writes": successful_mutations + rolled_back_writes,
     }
 
 
@@ -2273,6 +2437,14 @@ def recover_journal(
     completed = []
     creates_to_remove: list[Path] = []
     creates_removed = 0
+    # A create installs the target with os.link(temp, target) and then unlinks
+    # the temp; a crash in that window leaves BOTH the target and its
+    # `.name.steward-apply.tmp` sibling as hardlinks to the planned bytes.
+    # Removing only the journaled target would mark the journal rolled_back while
+    # a duplicate of the never-committed note (and its directory) persists (#34).
+    # Collect each create's temp sibling so recovery can clean it too.
+    create_temps: list[tuple[Path, str | None]] = []
+    temps_removed = 0
     drifted: list[str] = []
     for item in candidates:
         state = item.pop("state")
@@ -2283,6 +2455,14 @@ def recover_journal(
         content_hash_after = item.get("content_hash_after")
         backup_exists = Path(item["backup_path"]).exists()
         target = Path(item["target"])
+        if item["content_hash_before"] is None:
+            # A create (no pre-apply bytes): note its predictable temp sibling.
+            create_temps.append(
+                (
+                    target.parent / f".{target.name}.steward-apply.tmp",
+                    content_hash_after,
+                )
+            )
         live: str | None = None
         if target.is_file():
             live = _sha256_bytes(target.read_bytes())
@@ -2399,6 +2579,22 @@ def recover_journal(
     for target in creates_to_remove:
         _guarded_unlink(target, source.root, _recover_identity)
         creates_removed += 1
+    # Clean any leftover create temp hardlinks. Best-effort and hash-pinned: only
+    # a regular (non-symlink) file holding the exact planned bytes is removed, so
+    # an unrelated file that happens to sit at the temp path is never destroyed,
+    # and a temp cleanup fault never blocks the rollback the operator needs (#34).
+    for temp_path, planned_hash in create_temps:
+        try:
+            if not temp_path.is_file() or is_link_like(temp_path):
+                continue
+            if planned_hash is not None and (
+                _sha256_bytes(temp_path.read_bytes()) != planned_hash
+            ):
+                continue
+            _guarded_unlink(temp_path, source.root, _recover_identity)
+            temps_removed += 1
+        except (OSError, ApplyError):
+            continue
     # Remove directories the interrupted apply created as part of the rollback,
     # BEFORE the terminal status is persisted, so recovery never records a
     # completed rollback while empty directories still sit in the vault. rmdir
@@ -2414,8 +2610,9 @@ def recover_journal(
         "journal_ref": journal_name,
         "operations_rolled_back": len(completed),
         "creates_removed": creates_removed,
+        "temps_removed": temps_removed,
         "network_calls": 0,
-        "vault_writes": len(completed) + creates_removed,
+        "vault_writes": len(completed) + creates_removed + temps_removed,
     }
 
 
@@ -2626,6 +2823,18 @@ def apply_latest(
                     f"Unknown mutation class {approve_class!r}."
                 )
             for path, document in candidates:
+                # Exclude proposals compiled under a different source registry.
+                # After an in-place registry change, stale foreign artifacts
+                # remain on disk; selecting one here would abort on its
+                # registry_sha256 mismatch inside apply_proposal -- possibly
+                # AFTER earlier current proposals in this class already mutated
+                # the vault -- making bulk class approval fail until the foreign
+                # file is removed by hand. Naming a foreign proposal by id still
+                # reaches apply_proposal and is refused explicitly (#26).
+                if registry.registry_sha256 is not None and (
+                    document.get("registry_sha256") != registry.registry_sha256
+                ):
+                    continue
                 edits = document.get("edits") or []
                 if edits and all(
                     edit.get("mutation_class") == approve_class for edit in edits

@@ -2210,5 +2210,316 @@ class RenamePreconditionTest(unittest.TestCase):
             _verify_rename_preconditions(proposal, self.source)
 
 
+class ApplyHardeningFollowupTest(unittest.TestCase):
+    """Regressions for the deferred G3 hardening follow-ups: leaf-quarantine
+    TOCTOU (#22), foreign class selection (#26), rolled-back write counting
+    (#28), temp-hardlink recovery (#34), and Markdown-only targets (#41)."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        self.root = self.base / "vault"
+        self.root.mkdir()
+        (self.root / "note.md").write_text("# Note\n\nBody.\n", encoding="utf-8")
+        self.database = self.base / "index.sqlite"
+        build_index(self.root, self.database, policy=IndexPolicy())
+        self.state_root = self.base / "state"
+        self.dirs = ensure_state_layout(self.state_root)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _registry(self, include_paths, **policy_extra):
+        registry_path = self.base / "sources.json"
+        policy = {"include_paths": include_paths}
+        policy.update(policy_extra)
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {
+                            "name": "src",
+                            "type": "folder",
+                            "root": str(self.root),
+                            "mode": "appliable",
+                            "policy": policy,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return load_registry(registry_path)
+
+    def _policy(self, class_levels):
+        from recallweave.steward_policy import WritePolicy
+
+        return WritePolicy.from_bytes(
+            json.dumps(
+                {
+                    "spec_version": "recallweave.steward.policy.v1",
+                    "class_levels": class_levels,
+                }
+            ).encode()
+        )
+
+    def _proposal(self, pid, edits, registry):
+        return {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "proposal",
+            "proposal_id": pid,
+            "source": "src",
+            "action": "test",
+            "policy_level": "propose_only",
+            "edits": edits,
+            "conflicts_with": [],
+            "registry_sha256": registry.registry_sha256,
+        }
+
+    def test_non_markdown_trash_target_is_refused(self) -> None:
+        # An appliable source whose include_paths names a non-.md file must not
+        # let a forged move_to_trash delete it: the trash class skips L0 and the
+        # manifest/index ignore non-.md files, so nothing else would catch it
+        # (#41). The edit is refused before the mutation boundary.
+        from recallweave.steward_apply import apply_proposal
+
+        secret = self.root / "keep.txt"
+        secret.write_bytes(b"secret bytes")
+        registry = self._registry(["note.md", "keep.txt"])
+        proposal = self._proposal(
+            "prp-nonmdtrashxxxx",
+            [
+                {
+                    "mutation_class": "move_to_trash",
+                    "relative_path": "keep.txt",
+                    "precondition_content_hash": _sha(b"secret bytes"),
+                }
+            ],
+            registry,
+        )
+        with self.assertRaisesRegex(ApplyError, "not a Markdown note"):
+            apply_proposal(
+                proposal,
+                registry=registry,
+                state_dirs=self.dirs,
+                database=self.database,
+                policy=self._policy({"move_to_trash": "require_approval"}),
+                mode="per_item",
+                execute=True,
+            )
+        self.assertTrue(secret.exists(), "a non-Markdown file was trashed")
+
+    def test_concurrent_target_replacement_is_detected(self) -> None:
+        # A concurrent local writer that REPLACES the target (new inode) in the
+        # preflight->write window must be detected, not silently overwritten with
+        # a stale backup (#22). Inject the swap right after the backup is taken
+        # (which is after the quarantine read that pins the inode) and before the
+        # mutation syscall's inode re-check.
+        import recallweave.steward_apply as _ap
+        from recallweave.steward_apply import apply_proposal
+
+        registry = self._registry(["note.md"])
+        original = (self.root / "note.md").read_bytes()
+        appended = "\nAppended.\n"
+        proposal = self._proposal(
+            "prp-concurrentswap",
+            [
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "note.md",
+                    "precondition_content_hash": _sha(original),
+                    "replacement_text": appended,
+                    "predicted_post_hash": _sha(original + appended.encode()),
+                }
+            ],
+            registry,
+        )
+        real_backup = _ap._write_backup
+        rival = b"# Rival save\n\nA concurrent local edit.\n"
+
+        def swap_then_backup(*args, **kwargs):
+            result = real_backup(*args, **kwargs)
+            rival_tmp = self.root / "note.md.rival"
+            rival_tmp.write_bytes(rival)
+            os.replace(rival_tmp, self.root / "note.md")  # new inode
+            return result
+
+        with patch.object(_ap, "_write_backup", side_effect=swap_then_backup):
+            with self.assertRaises(ApplyError):
+                apply_proposal(
+                    proposal,
+                    registry=registry,
+                    state_dirs=self.dirs,
+                    database=self.database,
+                    policy=self._policy({"append_at_eof": "auto_apply"}),
+                    mode="per_item",
+                    execute=True,
+                )
+        # The concurrent writer's save was NOT overwritten by the stale apply.
+        self.assertEqual((self.root / "note.md").read_bytes(), rival)
+
+    def test_sweep_counts_writes_of_a_rolled_back_auto_apply(self) -> None:
+        # An auto-applied proposal that writes its target then fails a validation
+        # gate is rolled back and recorded only in failures; the sweep must still
+        # report the write it performed and restored, not vault_writes: 0 (#28).
+        import recallweave.steward_apply as _ap
+        from recallweave.steward_apply import sweep_auto_apply
+        from recallweave.steward_validate import ValidationError
+
+        registry = self._registry(["note.md"])
+        original = (self.root / "note.md").read_bytes()
+        appended = "\nAppended.\n"
+        proposal = self._proposal(
+            "prp-rolledbackcount",
+            [
+                {
+                    "mutation_class": "append_at_eof",
+                    "relative_path": "note.md",
+                    "precondition_content_hash": _sha(original),
+                    "replacement_text": appended,
+                    "predicted_post_hash": _sha(original + appended.encode()),
+                }
+            ],
+            registry,
+        )
+        atomic_write_json(
+            self.dirs["proposals"] / "20260101T000000000000Z-src-prp-rolledbackcount.json",
+            proposal,
+            within=self.dirs["proposals"],
+        )
+
+        def failing_l3(*args, **kwargs):
+            raise ValidationError("injected post-apply gate failure")
+
+        with patch.object(_ap, "validate_l3", side_effect=failing_l3):
+            summary = sweep_auto_apply(
+                registry,
+                self.dirs,
+                self.database,
+                write_policy=self._policy({"append_at_eof": "auto_apply"}),
+            )
+        self.assertEqual(summary["applied"], [])
+        self.assertEqual(len(summary["failures"]), 1)
+        self.assertGreaterEqual(summary["failures"][0]["forward_writes"], 1)
+        self.assertGreaterEqual(summary["vault_writes"], 1)
+        # The write was rolled back: the note holds its original bytes again.
+        self.assertEqual((self.root / "note.md").read_bytes(), original)
+
+    def test_approve_class_skips_foreign_proposal(self) -> None:
+        # --approve-class must exclude proposals compiled under a different source
+        # registry, so a stale foreign artifact cannot abort a bulk class approval
+        # (possibly after earlier current proposals already applied) (#26).
+        from recallweave.steward_apply import apply_latest
+
+        registry = self._registry(["note.md", "made.md"])
+        current = self._proposal(
+            "prp-currentcreate0",
+            [
+                {
+                    "mutation_class": "create_new_file",
+                    "relative_path": "made.md",
+                    "replacement_text": "# Made\n",
+                    "predicted_post_hash": _sha(b"# Made\n"),
+                }
+            ],
+            registry,
+        )
+        foreign = self._proposal(
+            "prp-foreigncreate0",
+            [
+                {
+                    "mutation_class": "create_new_file",
+                    "relative_path": "other.md",
+                    "replacement_text": "# Other\n",
+                    "predicted_post_hash": _sha(b"# Other\n"),
+                }
+            ],
+            registry,
+        )
+        foreign["registry_sha256"] = "0" * 64  # a different registry
+        atomic_write_json(
+            self.dirs["proposals"] / "20260101T000000000000Z-src-prp-currentcreate0.json",
+            current,
+            within=self.dirs["proposals"],
+        )
+        foreign_path = (
+            self.dirs["proposals"]
+            / "20260101T000000000000Z-src-prp-foreigncreate0.json"
+        )
+        atomic_write_json(foreign_path, foreign, within=self.dirs["proposals"])
+
+        receipt = apply_latest(
+            registry,
+            self.state_root,
+            self.database,
+            write_policy=self._policy({"create_new_file": "auto_apply"}),
+            approve_class="create_new_file",
+            execute=True,
+        )
+        # The current proposal applied; the foreign one was neither applied nor
+        # allowed to abort the run, and its artifact stays pending on disk.
+        self.assertTrue((self.root / "made.md").exists())
+        self.assertFalse((self.root / "other.md").exists())
+        applied_ids = [
+            item.get("proposal_id")
+            for item in receipt["proposals"]
+            if item.get("applied")
+        ]
+        self.assertEqual(applied_ids, ["prp-currentcreate0"])
+        foreign_doc = json.loads(foreign_path.read_text(encoding="utf-8"))
+        self.assertNotEqual(foreign_doc.get("status"), "applied")
+
+    def test_recovery_cleans_leftover_create_temp_hardlink(self) -> None:
+        # A create that crashes after os.link installs the target but before the
+        # temp unlink leaves BOTH the target and its .name.steward-apply.tmp
+        # sibling as hardlinks. Recovery must remove the temp too, not just the
+        # journaled target (#34).
+        from recallweave.steward_apply import recover_journal
+
+        registry = self._registry(["made.md"])
+        content = b"# Made\n\nCreated then interrupted.\n"
+        target = self.root / "made.md"
+        target.write_bytes(content)
+        temp = self.root / ".made.md.steward-apply.tmp"
+        os.link(target, temp)  # the leftover hardlink an interrupted create leaves
+        self.assertTrue(temp.exists())
+
+        stamp = "20260101T000000000000Z"
+        proposal_id = "prp-interruptcreate"
+        journal = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "steward_apply_journal",
+            "proposal_id": proposal_id,
+            "source": "src",
+            "generated_at": "2026-01-01T00:00:00Z",
+            "status": "intent",
+            "backup_dir": f"{stamp}-{proposal_id}",
+            "registry_sha256": registry.registry_sha256,
+            "operations": [
+                {
+                    "relative_path": "made.md",
+                    "mutation_class": "create_new_file",
+                    "content_hash_before": None,
+                    "content_hash_after": _sha(content),
+                    "backup_name": "0-" + _sha(b"made.md") + ".bak",
+                    "state": "done",
+                }
+            ],
+            "rollback_failures": [],
+        }
+        journal_name = f"{stamp}-{proposal_id}.json"
+        atomic_write_json(
+            self.dirs["journal"] / journal_name, journal, within=self.dirs["journal"]
+        )
+        result = recover_journal(
+            journal_name, registry=registry, state_dirs=self.dirs
+        )
+        self.assertEqual(result["creates_removed"], 1)
+        self.assertEqual(result["temps_removed"], 1)
+        self.assertFalse(target.exists(), "the created target was not removed")
+        self.assertFalse(temp.exists(), "the leftover temp hardlink was not removed")
+
+
 if __name__ == "__main__":
     unittest.main()
