@@ -104,23 +104,28 @@ const FORMAT_OR_IGNORABLE =
  */
 export function normalizeObsidianVaultLabel(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const collapsed = value.replace(/\s+/gu, " ").trim();
-  // Validate the COMPLETE collapsed value FIRST, before any length truncation:
-  // otherwise a forbidden character that begins after the 120th code point (e.g.
-  // a path separator in "A"*120 + "/Other") would be sliced away and the prefix
-  // wrongly accepted — potentially naming a different real vault.
-  if (!collapsed) return null;
-  if (collapsed.startsWith(".")) return null;
+  // Trim only the ends. Internal spaces are preserved EXACTLY — consecutive
+  // U+0020 are valid in real vault/directory names ("Research  Notes"), so
+  // collapsing them would silently target a different or nonexistent vault.
+  const trimmed = value.trim();
+  // Validate the COMPLETE value FIRST, before any length truncation: otherwise a
+  // forbidden character beginning after the 120th code point (e.g. a separator
+  // in "A"*120 + "/Other") would be sliced away and the prefix wrongly accepted.
+  if (!trimmed) return null;
+  // Reject any whitespace that is not a plain space (tab, newline, NBSP, other
+  // Unicode spaces) rather than silently collapsing it — fail closed.
+  if (/\s/u.test(trimmed.replace(/ /gu, ""))) return null;
+  if (trimmed.startsWith(".")) return null;
   // Reject path separators and the scheme/host separator so the label cannot be
   // shaped into a path or a URI fragment.
-  if (/[/\\:]/u.test(collapsed)) return null;
-  if (hasControlChars(collapsed)) return null;
-  if (hasLoneSurrogate(collapsed)) return null;
-  if (FORMAT_OR_IGNORABLE.test(collapsed)) return null;
+  if (/[/\\:]/u.test(trimmed)) return null;
+  if (hasControlChars(trimmed)) return null;
+  if (hasLoneSurrogate(trimmed)) return null;
+  if (FORMAT_OR_IGNORABLE.test(trimmed)) return null;
   // Only now bound the length, truncating by Unicode code points (not UTF-16
   // units) so a supplementary character at the boundary is never split into a
   // lone surrogate that would make encodeURIComponent throw at click time.
-  return Array.from(collapsed).slice(0, MAX_VAULT_LABEL_LENGTH).join("");
+  return Array.from(trimmed).slice(0, MAX_VAULT_LABEL_LENGTH).join("");
 }
 
 /**

@@ -55,11 +55,14 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
       `should reject: ${JSON.stringify(value)}`,
     );
   }
-  // Valid labels normalize: whitespace collapsed, trimmed, length-capped.
+  // Valid labels: ends trimmed, internal spaces preserved EXACTLY (consecutive
+  // spaces are valid in real vault names), length-capped. Non-space whitespace
+  // (tab, newline) is rejected, not collapsed.
   assert.equal(normalizeObsidianVaultLabel("My Vault"), "My Vault");
-  assert.equal(normalizeObsidianVaultLabel("  Spaced   Out  "), "Spaced Out");
-  assert.equal(normalizeObsidianVaultLabel("with\nnewline"), "with newline");
-  assert.equal(normalizeObsidianVaultLabel("a\tb"), "a b");
+  assert.equal(normalizeObsidianVaultLabel("  Research  Notes  "), "Research  Notes");
+  assert.equal(normalizeObsidianVaultLabel("with\nnewline"), null);
+  assert.equal(normalizeObsidianVaultLabel("a\tb"), null);
+  assert.equal(normalizeObsidianVaultLabel("nbsp here"), null);
   assert.equal(normalizeObsidianVaultLabel("x".repeat(200)).length, 120);
   // Truncation is by code point, so a supplementary character at the boundary is
   // never split into a lone surrogate that would make encodeURIComponent throw.
