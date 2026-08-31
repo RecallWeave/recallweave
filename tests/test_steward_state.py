@@ -247,6 +247,52 @@ class LockedRootContinuityTest(unittest.TestCase):
             # Nothing was written into the rebound tree.
             self.assertFalse(target.exists())
 
+    def test_direct_statelock_publishes_pinned_identity(self) -> None:
+        # Observation acquires the lock via a direct `with StateLock(...)`, not
+        # lock_state(). The pinned identity must be published for THAT path too,
+        # or #31's continuity check is inactive on observation's principal path.
+        import recallweave.steward_state as _st
+
+        if not _st._DIR_FD_STATE_WRITES:
+            self.skipTest("descriptor-relative state writes unavailable")
+        state_root = self.root / "state"
+        ensure_state_layout(state_root)
+        with StateLock(state_root):
+            stashed = self.root / "stashed"
+            os.rename(state_root, stashed)
+            dirs = ensure_state_layout(state_root)  # a NEW root inode, same path
+            target = dirs["changes"] / "batch.json"
+            with self.assertRaisesRegex(
+                ValueError, "no longer the directory the steward lock pinned"
+            ):
+                atomic_write_json(target, {"v": 1}, within=dirs["changes"])
+            self.assertFalse(target.exists())
+
+    def test_retract_change_batch_refuses_after_locked_root_swap(self) -> None:
+        # Retraction runs under observation's StateLock and reopens the state
+        # root by pathname; after a root swap it must decline rather than unlink
+        # a same-named file in the rebound tree (#31).
+        import recallweave.steward_observe as _obs
+        import recallweave.steward_state as _st
+
+        if not (_st._DIR_FD_STATE_WRITES and _obs._DIR_FD_RETRACT):
+            self.skipTest("descriptor-relative primitives unavailable")
+        state_root = self.root / "state"
+        dirs = ensure_state_layout(state_root)
+        (dirs["changes"] / "batch.json").write_text("{}", encoding="utf-8")
+        with StateLock(state_root):
+            stashed = self.root / "stashed"
+            os.rename(state_root, stashed)  # original (pinned) inode moves aside
+            new_dirs = ensure_state_layout(state_root)  # a NEW root inode
+            replacement = new_dirs["changes"] / "batch.json"
+            replacement.write_text("REPLACEMENT", encoding="utf-8")
+            declined = _obs._retract_change_batch(new_dirs["changes"], "batch.json")
+            self.assertFalse(declined, "retraction acted on the rebound tree")
+            self.assertTrue(
+                replacement.exists(),
+                "retraction deleted a same-named file in the replacement tree",
+            )
+
 
 class AtomicWriteJsonTest(unittest.TestCase):
     def setUp(self) -> None:

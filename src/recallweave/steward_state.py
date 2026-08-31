@@ -214,6 +214,11 @@ class StateLock:
         # replacement process's lock, nor let this process acquire in a
         # replacement tree while the original lock is still held.
         self._dir_fd: int | None = None
+        # ContextVar token for the published pinned-root identity, so descriptor
+        # continuity is enforced for EVERY acquisition path -- both `lock_state`
+        # and a direct `with StateLock(...)` (as observation uses) -- not only
+        # via lock_state (#31).
+        self._identity_token: contextvars.Token | None = None
 
     @property
     def root_identity(self) -> tuple[int, int] | None:
@@ -286,6 +291,7 @@ class StateLock:
                 raise
             self._dir_fd = dir_fd
             self._held = True
+            self._publish_identity()
             return
 
         # Pathname fallback (e.g. Windows without dir_fd): a state-root swap
@@ -352,9 +358,29 @@ class StateLock:
             return None
         return self._detail_from_text(text)
 
+    def _publish_identity(self) -> None:
+        """Publish the pinned root identity so anchored state writes made while
+        this lock is held verify descriptor continuity (see
+        _verify_locked_root_identity). No dir_fd (pathname fallback) means no
+        identity to pin, so the check stays inactive there."""
+        identity = self.root_identity
+        if identity is not None:
+            self._identity_token = _LOCKED_ROOT_IDENTITY.set(identity)
+
+    def _retract_identity(self) -> None:
+        if self._identity_token is not None:
+            try:
+                _LOCKED_ROOT_IDENTITY.reset(self._identity_token)
+            except (ValueError, LookupError):
+                pass
+            self._identity_token = None
+
     def release(self) -> None:
         if not self._held:
             return
+        # Retract the published identity before dropping the lock, so a later
+        # unlocked write in the same context is not checked against a stale root.
+        self._retract_identity()
         if self._dir_fd is not None:
             try:
                 os.unlink(_LOCK_NAME, dir_fd=self._dir_fd)
@@ -382,21 +408,14 @@ class StateLock:
 
 @contextmanager
 def lock_state(root: Path) -> Iterator[StateLock]:
+    # StateLock.acquire/release publish and retract the pinned root identity, so
+    # descriptor continuity (#31) holds for this path and for a direct
+    # `with StateLock(...)` alike -- nothing extra to do here.
     lock = StateLock(root)
     lock.acquire()
-    # Publish the pinned root identity so every anchored state write performed
-    # while this lock is held can verify descriptor continuity before mutating
-    # (see _verify_locked_root_identity). Reset on release so a later unlocked
-    # write in the same context is not checked against a stale identity (#31).
-    identity = lock.root_identity
-    token = (
-        _LOCKED_ROOT_IDENTITY.set(identity) if identity is not None else None
-    )
     try:
         yield lock
     finally:
-        if token is not None:
-            _LOCKED_ROOT_IDENTITY.reset(token)
         lock.release()
 
 
