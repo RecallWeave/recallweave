@@ -98,18 +98,21 @@ function hasLoneSurrogate(value: string): boolean {
 export function normalizeObsidianVaultLabel(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const collapsed = value.replace(/\s+/gu, " ").trim();
-  // Truncate by Unicode code points, not UTF-16 code units, so a supplementary
-  // character (e.g. an emoji) at the boundary is never split into a lone
-  // surrogate that would later make encodeURIComponent throw at click time.
-  const label = Array.from(collapsed).slice(0, MAX_VAULT_LABEL_LENGTH).join("");
-  if (!label) return null;
-  if (label.startsWith(".")) return null;
+  // Validate the COMPLETE collapsed value FIRST, before any length truncation:
+  // otherwise a forbidden character that begins after the 120th code point (e.g.
+  // a path separator in "A"*120 + "/Other") would be sliced away and the prefix
+  // wrongly accepted — potentially naming a different real vault.
+  if (!collapsed) return null;
+  if (collapsed.startsWith(".")) return null;
   // Reject path separators and the scheme/host separator so the label cannot be
   // shaped into a path or a URI fragment.
-  if (/[/\\:]/u.test(label)) return null;
-  if (hasControlChars(label)) return null;
-  if (hasLoneSurrogate(label)) return null;
-  return label;
+  if (/[/\\:]/u.test(collapsed)) return null;
+  if (hasControlChars(collapsed)) return null;
+  if (hasLoneSurrogate(collapsed)) return null;
+  // Only now bound the length, truncating by Unicode code points (not UTF-16
+  // units) so a supplementary character at the boundary is never split into a
+  // lone surrogate that would make encodeURIComponent throw at click time.
+  return Array.from(collapsed).slice(0, MAX_VAULT_LABEL_LENGTH).join("");
 }
 
 /**

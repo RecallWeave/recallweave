@@ -160,6 +160,61 @@ test("vault-config feedback renders in the footer form with no note selected", a
   window.close();
 });
 
+test("a cross-tab storage change clears stale footer config feedback", async () => {
+  const window = installDom(memoryStorage());
+  const container = window.document.createElement("div");
+  window.document.body.appendChild(container);
+  await withGraphExplorer(async (GraphExplorer) => {
+    const initialGraph = graphWith([
+      { id: "alpha", title: "AlphaNote", path: "notes/alpha.md", content_hash: "a".repeat(64) },
+    ]);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(GraphExplorer, { initialGraph }));
+    });
+    await flush();
+    // Produce a footer status message (empty Save reliably sets one).
+    const save = [...container.querySelectorAll(".obsidian-config-row button")].find(
+      (button) => button.textContent === "Save",
+    );
+    await act(async () => {
+      save.dispatchEvent(new window.Event("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+    assert.ok(
+      container.querySelector(".obsidian-config .obsidian-config-status"),
+      "a footer status should be present before the cross-tab event",
+    );
+    // Another same-origin tab changes the shared setting.
+    await act(async () => {
+      let event;
+      try {
+        event = new window.StorageEvent("storage", {
+          key: ATLAS_OBSIDIAN_VAULT_STORAGE_KEY,
+        });
+      } catch {
+        event = new window.Event("storage");
+        Object.defineProperty(event, "key", {
+          value: ATLAS_OBSIDIAN_VAULT_STORAGE_KEY,
+        });
+      }
+      window.dispatchEvent(event);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flush();
+    assert.equal(
+      container.querySelector(".obsidian-config .obsidian-config-status"),
+      null,
+      "stale footer feedback must be cleared on a cross-tab storage change",
+    );
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  window.close();
+});
+
 test("unconfigured viewer exposes Copy path but no Open in Obsidian", async () => {
   const window = installDom(memoryStorage());
   const html = await renderAndSelect(window, null, {

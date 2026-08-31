@@ -310,6 +310,16 @@ export function GraphExplorer({
     return copyToClipboard(path, "Path copied.");
   }
 
+  useEffect(() => {
+    // Clear transient vault-config feedback whenever the stored vault changes,
+    // including cross-tab updates via the `storage` event. A tab that saved
+    // Vault A must not keep showing "set to A" after another tab switches to B
+    // or clears it (the truthful current-config line is derived from the synced
+    // obsidianVault snapshot). This tab's own save re-sets its message AFTER the
+    // notify fires, so the success acknowledgment survives here.
+    return subscribeObsidianVault(() => setVaultStatus(""));
+  }, []);
+
   function saveVaultConfig() {
     // saveObsidianVault normalizes + fails closed; on success it notifies the
     // external store, which re-renders obsidianVault. Never fabricate a value.

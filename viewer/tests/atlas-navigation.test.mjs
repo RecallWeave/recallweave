@@ -76,6 +76,13 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
   assert.equal(normalizeObsidianVaultLabel("vault" + String.fromCharCode(0xdc00)), null);
   assert.equal(isNavigableRelativePath(String.fromCharCode(0xd800) + "note.md"), false);
   assert.equal(buildObsidianOpenUri("V", String.fromCharCode(0xd83d) + "note.md"), null);
+  // The FULL collapsed value is validated before truncation: a forbidden
+  // character beginning past the length cap must reject the whole input, not be
+  // sliced away leaving an accepted prefix (which could name a different vault).
+  assert.equal(normalizeObsidianVaultLabel("A".repeat(120) + "/Other"), null);
+  assert.equal(normalizeObsidianVaultLabel("A".repeat(130) + ":smuggled"), null);
+  // A long but wholly-valid label is still accepted and truncated to the cap.
+  assert.equal(normalizeObsidianVaultLabel("A".repeat(200)).length, 120);
 });
 
 // Founder proof: no absolute source path may enter a URI.
