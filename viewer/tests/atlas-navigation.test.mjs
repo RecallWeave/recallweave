@@ -74,6 +74,8 @@ test("isNavigableRelativePath rejects absolute, drive, UNC, and traversal paths"
     "\\unc\\note.md",
     "C:\\vault\\note.md",
     "c:/vault/note.md",
+    "C:secret.md",
+    "c:note.md",
     "../escape.md",
     "sub/../../escape.md",
     "sub/..",
@@ -104,9 +106,10 @@ test("buildObsidianOpenUri emits only the encoded obsidian://open shape", () => 
     buildObsidianOpenUri("V", "a&b#c.md"),
     "obsidian://open?vault=V&file=a%26b%23c.md",
   );
-  // Absolute / drive / traversal paths yield no URI.
+  // Absolute / drive / drive-relative / traversal paths yield no URI.
   assert.equal(buildObsidianOpenUri("V", "/etc/passwd"), null);
   assert.equal(buildObsidianOpenUri("V", "C:\\secret.md"), null);
+  assert.equal(buildObsidianOpenUri("V", "C:secret.md"), null);
   assert.equal(buildObsidianOpenUri("V", "../escape.md"), null);
   // Invalid vault labels yield no URI.
   assert.equal(buildObsidianOpenUri("bad/vault", "note.md"), null);

@@ -79,8 +79,9 @@ export function isNavigableRelativePath(path: unknown): path is string {
   if (hasControlChars(value)) return false;
   // Absolute POSIX or leading-backslash / UNC.
   if (value.startsWith("/") || value.startsWith("\\")) return false;
-  // Windows drive-qualified (C:\ or C:/).
-  if (/^[A-Za-z]:[\\/]/u.test(value)) return false;
+  // Any Windows drive prefix (C:\, C:/, or the drive-RELATIVE C:secret.md,
+  // which Windows resolves against the current dir on drive C:).
+  if (/^[A-Za-z]:/u.test(value)) return false;
   // Any `..` traversal segment, under either separator.
   if (value.split(/[/\\]/u).some((segment) => segment === "..")) return false;
   return true;
