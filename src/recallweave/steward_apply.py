@@ -1825,20 +1825,28 @@ def apply_proposal(
             atomic_write_json(journal_path, journal, within=journal_dir)
 
             if leaf_identity is not None:
-                # Re-verify the pinned inode immediately before the mutation
-                # syscall: if a concurrent writer replaced the target (new inode)
-                # after the quarantine read, abort rather than overwrite or delete
-                # their file with a backup that captured the old inode's bytes.
-                # This narrows the residual race to the syscall gap that POSIX
-                # rename-by-name leaves open (#22).
+                # Re-verify BOTH the pinned inode AND the content hash immediately
+                # before the mutation syscall. An identity-only check would miss a
+                # concurrent writer that edits the SAME inode in place (its save
+                # keeps st_dev/st_ino), silently overwriting it with the approved
+                # post-state while the backup holds the stale quarantined bytes.
+                # Re-read+hash through an O_NOFOLLOW descriptor and refuse on any
+                # change -- content or identity -- keeping the check as tightly
+                # coupled to the mutation as POSIX rename-by-name permits (#22).
                 try:
-                    check = os.stat(target, follow_symlinks=False)
+                    _recheck_bytes, recheck_identity, _recheck_mode = (
+                        _quarantine_leaf(
+                            target,
+                            op["content_hash_before"],
+                            edit["relative_path"],
+                        )
+                    )
                 except OSError as error:
                     raise ApplyError(
                         f"Target {edit['relative_path']} vanished before the "
                         f"mutation ({type(error).__name__}); aborting the proposal."
                     ) from error
-                if (check.st_dev, check.st_ino) != leaf_identity:
+                if recheck_identity != leaf_identity:
                     raise ApplyError(
                         f"Target {edit['relative_path']} was replaced by another "
                         "writer between preflight and write; aborting the proposal."

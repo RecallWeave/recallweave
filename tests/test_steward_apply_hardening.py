@@ -2359,6 +2359,67 @@ class ApplyHardeningFollowupTest(unittest.TestCase):
         # The concurrent writer's save was NOT overwritten by the stale apply.
         self.assertEqual((self.root / "note.md").read_bytes(), rival)
 
+    def _apply_with_concurrent_inplace_edit(self, mutation_class, policy_level):
+        # Drive apply_proposal for `mutation_class` while a concurrent writer
+        # edits the target IN PLACE (same inode, new content) right after the
+        # backup is taken. Returns the rival bytes so the caller can assert the
+        # save survived. The pre-mutation re-hash must detect the change even
+        # though st_dev/st_ino are unchanged (#22).
+        import recallweave.steward_apply as _ap
+        from recallweave.steward_apply import apply_proposal
+
+        registry = self._registry(["note.md"])
+        original = (self.root / "note.md").read_bytes()
+        appended = "\nAppended.\n"
+        edit = {
+            "mutation_class": mutation_class,
+            "relative_path": "note.md",
+            "precondition_content_hash": _sha(original),
+        }
+        if mutation_class != "move_to_trash":
+            edit["replacement_text"] = appended
+            edit["predicted_post_hash"] = _sha(original + appended.encode())
+        proposal = self._proposal("prp-inplaceedit00", [edit], registry)
+        real_backup = _ap._write_backup
+        rival = b"# Rival in-place save\n\nSame inode, new bytes.\n"
+
+        def edit_then_backup(*args, **kwargs):
+            result = real_backup(*args, **kwargs)
+            # open(..., "wb") truncates and rewrites the EXISTING inode.
+            with open(self.root / "note.md", "wb") as handle:
+                handle.write(rival)
+            return result
+
+        with patch.object(_ap, "_write_backup", side_effect=edit_then_backup):
+            with self.assertRaises(ApplyError):
+                apply_proposal(
+                    proposal,
+                    registry=registry,
+                    state_dirs=self.dirs,
+                    database=self.database,
+                    policy=self._policy({mutation_class: policy_level}),
+                    mode="per_item",
+                    execute=True,
+                )
+        return rival
+
+    def test_concurrent_in_place_append_edit_is_detected(self) -> None:
+        rival = self._apply_with_concurrent_inplace_edit(
+            "append_at_eof", "auto_apply"
+        )
+        self.assertEqual((self.root / "note.md").read_bytes(), rival)
+
+    def test_concurrent_in_place_edit_before_trash_is_detected(self) -> None:
+        # move_to_trash must not delete a same-inode concurrent edit either.
+        rival = self._apply_with_concurrent_inplace_edit(
+            "move_to_trash", "require_approval"
+        )
+        self.assertTrue(
+            (self.root / "note.md").exists(),
+            "a concurrent in-place edit was trashed",
+        )
+        self.assertEqual((self.root / "note.md").read_bytes(), rival)
+
     def test_sweep_counts_writes_of_a_rolled_back_auto_apply(self) -> None:
         # An auto-applied proposal that writes its target then fails a validation
         # gate is rolled back and recorded only in failures; the sweep must still
