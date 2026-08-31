@@ -33,6 +33,9 @@ from recallweave.steward_sweep import (
     sweep_registry,
 )
 
+# Sentinel: "do not write a source key at all" (distinct from writing source=None).
+_OMIT = object()
+
 
 class PruneAnchorTest(unittest.TestCase):
     def test_prune_open_refuses_swapped_dir_even_if_precheck_bypassed(self) -> None:
@@ -547,7 +550,9 @@ class IntegritySectionTest(StewardSweepTest):
         (self.vault / "Beta.md").unlink()
         report = self._sweep()
         self.assertEqual(report["result"], "approval_required")
-        self.assertIn("Beta.md", report["integrity"]["dangling_references"])
+        # Dangling references are source-qualified before dedup, mirroring the
+        # citation fix (#24), so the operator can tell which source is affected.
+        self.assertIn("vault: Beta.md", report["integrity"]["dangling_references"])
         self.assertTrue(report["integrity"]["broken_citations"])
         for citation in report["integrity"]["broken_citations"]:
             # Citations are qualified with their source before dedup (#24).
@@ -599,7 +604,7 @@ class MarkdownProjectionFencingTest(StewardSweepTest):
         self.assertTrue(report["integrity"]["broken_citations"])
         for citation in report["integrity"]["broken_citations"]:
             self.assertIn(f"```text\n{citation}\n```", markdown)
-        self.assertIn("Beta.md", report["integrity"]["dangling_references"])
+        self.assertIn("vault: Beta.md", report["integrity"]["dangling_references"])
         for path in report["integrity"]["dangling_references"]:
             self.assertIn(f"```text\n{path}\n```", markdown)
 
@@ -798,7 +803,8 @@ class ReportBacklogAggregationTest(StewardSweepTest):
         )
         summary, _b, dupes = _aggregate_assessments(self._dirs(), self._registry())
         self.assertEqual(summary["DUPLICATES_EXACT_BYTES"], 2)
-        self.assertEqual(dupes, ["A.md", "B.md"])
+        # Duplicates are source-qualified before dedup, mirroring #24.
+        self.assertEqual(dupes, ["vault: A.md", "vault: B.md"])
 
     def test_duplicate_invalidated_when_a_participant_diverges(self) -> None:
         from recallweave.steward_sweep import _aggregate_assessments
@@ -1094,6 +1100,285 @@ class ForeignProposalPendingTest(StewardSweepTest):
         )
         # Without a digest filter it still counts (back-compat).
         self.assertEqual(_aggregate_proposals(dirs)[0], 1)
+
+
+class SourceQualifiedIntegrityTest(StewardSweepTest):
+    """Two sources sharing a relative path stay distinguishable in the integrity
+    arrays, mirroring the broken-citation source-qualification (#24). Without it
+    the bare path collapses to a single entry while the relation/proposal count
+    reports two, leaving the operator unable to tell which source is affected."""
+
+    def _two_source_registry(self) -> SourceRegistry:
+        alpha = self.root / "alpha"
+        beta = self.root / "beta"
+        alpha.mkdir()
+        beta.mkdir()
+        self.sources_path.write_text(
+            json.dumps(
+                {
+                    "spec_version": SOURCES_SPEC_VERSION,
+                    "sources": [
+                        {"name": "alpha", "type": "folder",
+                         "root": str(alpha), "mode": "read_only"},
+                        {"name": "beta", "type": "folder",
+                         "root": str(beta), "mode": "read_only"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return self._registry()
+
+    def test_duplicates_qualified_by_source_before_dedup(self) -> None:
+        from recallweave.steward_sweep import _aggregate_assessments
+
+        registry = self._two_source_registry()
+        dirs = self._dirs()
+        # Each source internally duplicates the SAME relative path (note.md).
+        for source_name in ("alpha", "beta"):
+            (dirs["assessments"] / f"20260101T000000Z-{source_name}.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": STEWARD_SCHEMA_VERSION,
+                        "kind": "assessment_batch",
+                        "source": source_name,
+                        "registry_sha256": registry.registry_sha256,
+                        "summary": {"DUPLICATES_EXACT_BYTES": 1},
+                        "assessments": [
+                            {"relation": "DUPLICATES_EXACT_BYTES",
+                             "relative_path": "note.md",
+                             "inputs": {"duplicate_of": ["other.md"],
+                                        "duplicate_in_batch": []}},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+        summary, _broken, dupes = _aggregate_assessments(dirs, registry)
+        self.assertEqual(summary["DUPLICATES_EXACT_BYTES"], 2)
+        # Two entries, each qualified -- not a single collapsed "note.md".
+        self.assertEqual(dupes, ["alpha: note.md", "beta: note.md"])
+
+    def _write_dangling_proposal(
+        self,
+        stem: str,
+        *,
+        source: Any = _OMIT,
+        deleted_path: Any = _OMIT,
+        evidence: Any = _OMIT,
+        registry_sha256: str,
+    ) -> None:
+        """Write one pending review_dangling_references proposal. ``source``,
+        ``deleted_path`` and ``evidence`` are written verbatim (may be
+        non-strings, absolute paths, non-objects, etc.) so tests can exercise
+        the untrusted-content path. Pass ``evidence`` to override the whole
+        evidence value; otherwise it is ``{"deleted_path": deleted_path}``."""
+        dirs = self._dirs()
+        proposal: dict[str, Any] = {
+            "schema_version": STEWARD_SCHEMA_VERSION,
+            "kind": "proposal",
+            "proposal_id": f"prp-{stem}",
+            "action": "review_dangling_references",
+            "registry_sha256": registry_sha256,
+            "edits": [],
+        }
+        if evidence is not _OMIT:
+            proposal["evidence"] = evidence
+        else:
+            proposal["evidence"] = {} if deleted_path is _OMIT else {
+                "deleted_path": deleted_path
+            }
+        if source is not _OMIT:
+            proposal["source"] = source
+        (dirs["proposals"] / f"20260101T000000Z-x-prp-{stem}.json").write_text(
+            json.dumps(proposal), encoding="utf-8"
+        )
+
+    def test_dangling_references_qualified_by_source_before_dedup(self) -> None:
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        # Two REGISTERED sources with a pending dangling-reference proposal over
+        # the SAME deleted relative path (Gone.md).
+        for source_name in ("alpha", "beta"):
+            self._write_dangling_proposal(
+                f"{source_name}0000", source=source_name,
+                deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
+            )
+        total, by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256,
+            valid_source_names=frozenset({"alpha", "beta"}),
+        )
+        self.assertEqual(total, 2)
+        self.assertEqual(by_action, {"review_dangling_references": 2})
+        self.assertEqual(dangling, ["alpha: Gone.md", "beta: Gone.md"])
+
+    def test_dangling_reference_falls_back_to_bare_path_without_source(self) -> None:
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        # A malformed proposal missing a source must not crash the sweep; the
+        # deleted path is recorded bare rather than qualified.
+        self._write_dangling_proposal(
+            "nosource00", source=_OMIT, deleted_path="Gone.md",
+            registry_sha256=reg.registry_sha256,
+        )
+        total, _by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+        )
+        self.assertEqual(total, 1)
+        self.assertEqual(dangling, ["Gone.md"])
+
+    def test_dangling_reference_never_leaks_absolute_path_source(self) -> None:
+        # ADVERSARIAL: a tampered proposal carrying the ACTIVE registry digest
+        # but an absolute-path `source` must NOT copy that path into the report
+        # (the module promises never to emit an absolute path). The source is
+        # not a registered name, so only the bare, vault-relative deleted_path
+        # survives.
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        self._write_dangling_proposal(
+            "abspath0000", source="/Users/alice/PrivateVault",
+            deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
+        )
+        total, _by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+        )
+        self.assertEqual(total, 1)
+        self.assertEqual(dangling, ["Gone.md"])
+        self.assertNotIn("/Users/alice/PrivateVault", " ".join(dangling))
+
+    def test_dangling_reference_drops_foreign_and_empty_source_names(self) -> None:
+        # ADVERSARIAL: source strings that are not currently-registered names --
+        # a foreign source and an empty string -- are treated as malformed and
+        # dropped to the bare path, so two such proposals sharing a deleted path
+        # collapse to one bare entry rather than leaking their source strings.
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        self._write_dangling_proposal(
+            "foreign0000", source="not-registered",
+            deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
+        )
+        self._write_dangling_proposal(
+            "emptysrc000", source="",
+            deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
+        )
+        total, _by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+        )
+        self.assertEqual(total, 2)
+        self.assertEqual(dangling, ["Gone.md"])
+
+    def test_markdown_projection_never_leaks_hostile_dangling_source(self) -> None:
+        # ADVERSARIAL end-to-end: a pending proposal with a hostile absolute-path
+        # source, run through the real sweep + Markdown projection, must not put
+        # that path into either the JSON report or the rendered Markdown.
+        dirs = self._dirs()
+        reg = self._registry()
+        self._write_dangling_proposal(
+            "mdhostile00", source="/etc/secret/path",
+            deleted_path="Gone.md", registry_sha256=reg.registry_sha256,
+        )
+        report = self._sweep(report_format="markdown")
+        dangling = report["integrity"]["dangling_references"]
+        self.assertIn("Gone.md", dangling)
+        self.assertNotIn("/etc/secret/path", json.dumps(report))
+        markdown = list(dirs["reports"].glob("*-sweep.md"))[0].read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("/etc/secret/path", markdown)
+
+    # deleted_path is untrusted on-disk content, like source. A tampered proposal
+    # carrying the active registry digest must never route an absolute/drive/UNC/
+    # traversal path into integrity.dangling_references (the module promises never
+    # to emit an absolute path). Each case must leave the proposal counted as
+    # pending but contribute no dangling string.
+    _HOSTILE_DELETED_PATHS = {
+        "posix_abs": "/Users/alice/PrivateVault/Secret.md",
+        "win_drive": "C:\\Users\\alice\\PrivateVault\\Secret.md",
+        "win_drive_fwd": "C:/Users/alice/Secret.md",
+        "unc": "\\\\host\\share\\Secret.md",
+        "traversal": "../PrivateVault/Secret.md",
+        "traversal_win": "..\\PrivateVault\\Secret.md",
+    }
+
+    def test_dangling_reference_drops_unsafe_deleted_paths(self) -> None:
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        for stem, hostile in self._HOSTILE_DELETED_PATHS.items():
+            self._write_dangling_proposal(
+                stem, source="vault", deleted_path=hostile,
+                registry_sha256=reg.registry_sha256,
+            )
+        total, _by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+        )
+        # Every proposal still counts as pending work...
+        self.assertEqual(total, len(self._HOSTILE_DELETED_PATHS))
+        # ...but not one hostile path reaches the report.
+        self.assertEqual(dangling, [])
+
+    def test_markdown_projection_never_leaks_unsafe_deleted_path(self) -> None:
+        # ADVERSARIAL end-to-end through the real sweep + Markdown projection.
+        dirs = self._dirs()
+        reg = self._registry()
+        secret = "/Users/alice/PrivateVault/Secret.md"
+        self._write_dangling_proposal(
+            "mdabsdel000", source="vault", deleted_path=secret,
+            registry_sha256=reg.registry_sha256,
+        )
+        report = self._sweep(report_format="markdown")
+        self.assertEqual(report["integrity"]["dangling_references"], [])
+        self.assertNotIn(secret, json.dumps(report))
+        markdown = list(dirs["reports"].glob("*-sweep.md"))[0].read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(secret, markdown)
+        self.assertNotIn("PrivateVault", markdown)
+
+    def test_dangling_reference_survives_non_object_evidence(self) -> None:
+        # ADVERSARIAL: a truthy non-object evidence value must not crash
+        # aggregation (regression: `"str".get(...)` -> AttributeError). Each is
+        # still counted as pending but yields no dangling string.
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        hostile_evidence = ["a string", ["a", "list"], 12345, True]
+        for idx, evidence in enumerate(hostile_evidence):
+            self._write_dangling_proposal(
+                f"evil{idx:04d}", source="vault", evidence=evidence,
+                registry_sha256=reg.registry_sha256,
+            )
+        total, by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+        )
+        self.assertEqual(total, len(hostile_evidence))
+        self.assertEqual(by_action, {"review_dangling_references": len(hostile_evidence)})
+        self.assertEqual(dangling, [])
+
+    def test_dangling_reference_ignores_non_string_deleted_path(self) -> None:
+        from recallweave.steward_sweep import _aggregate_proposals
+
+        dirs = self._dirs()
+        reg = self._registry()
+        self._write_dangling_proposal(
+            "intdel00000", source="vault", deleted_path=42,
+            registry_sha256=reg.registry_sha256,
+        )
+        total, _by_action, dangling = _aggregate_proposals(
+            dirs, reg.registry_sha256, valid_source_names=frozenset({"vault"}),
+        )
+        self.assertEqual(total, 1)
+        self.assertEqual(dangling, [])
 
 
 class EvidenceBoundingTest(StewardSweepTest):
