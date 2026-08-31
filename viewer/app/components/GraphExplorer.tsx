@@ -9,6 +9,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { validatedSharedTags } from "../cold-trails";
 import {
@@ -21,6 +22,14 @@ import {
   normalizeGraph,
 } from "../graph-data";
 import { loadGraphFromFile } from "../graph-load";
+import {
+  buildObsidianOpenUri,
+  clearObsidianVault,
+  isNavigableRelativePath,
+  loadObsidianVault,
+  saveObsidianVault,
+  subscribeObsidianVault,
+} from "../atlas-navigation";
 import { AtlasExportPrivacyChrome } from "./AtlasExportPrivacyChrome";
 import { ColdTrailsTour } from "./ColdTrailsTour";
 
@@ -126,6 +135,19 @@ export function GraphExplorer({
   const [domain, setDomain] = useState("All domains");
   const [loadError, setLoadError] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
+  // Local presentation state only: the one Obsidian vault name this viewer is
+  // configured to open into. Read from browser storage via an external store so
+  // the server snapshot is null (no hydration mismatch) and save/clear update
+  // it without an effect. Never read from or written to the export.
+  const obsidianVault = useSyncExternalStore(
+    subscribeObsidianVault,
+    () => loadObsidianVault(),
+    () => null,
+  );
+  const [vaultInput, setVaultInput] = useState("");
+  // Status for the footer vault-config form, shown regardless of graph
+  // selection (copyStatus renders only inside a selected note's drawer).
+  const [vaultStatus, setVaultStatus] = useState("");
   const [nodeNavigatorFocusId, setNodeNavigatorFocusId] = useState<string | null>(null);
   const [resetKey, setResetKey] = useState(0);
   const [coldTrailsOpen, setColdTrailsOpen] = useState(false);
@@ -286,6 +308,55 @@ export function GraphExplorer({
       return;
     }
     return copyToClipboard(path, "Path copied.");
+  }
+
+  useEffect(() => {
+    // Clear transient vault-config feedback whenever the stored vault changes,
+    // including cross-tab updates via the `storage` event. A tab that saved
+    // Vault A must not keep showing "set to A" after another tab switches to B
+    // or clears it (the truthful current-config line is derived from the synced
+    // obsidianVault snapshot). This tab's own save re-sets its message AFTER the
+    // notify fires, so the success acknowledgment survives here.
+    return subscribeObsidianVault(() => setVaultStatus(""));
+  }, []);
+
+  function saveVaultConfig() {
+    // saveObsidianVault normalizes + fails closed; on success it notifies the
+    // external store, which re-renders obsidianVault. Never fabricate a value.
+    const normalized = saveObsidianVault(vaultInput);
+    if (normalized === null) {
+      setVaultStatus(
+        vaultInput.trim()
+          ? "That vault name is not valid (no slashes, colons, or leading dot), or browser storage is unavailable. Nothing was saved."
+          : "Enter a vault name to save.",
+      );
+      return;
+    }
+    setVaultInput("");
+    setVaultStatus(`Obsidian vault set to “${normalized}”. Open in Obsidian is now available on notes.`);
+  }
+
+  function clearVaultConfig() {
+    const cleared = clearObsidianVault();
+    setVaultInput("");
+    setVaultStatus(
+      cleared
+        ? "Obsidian vault cleared. Copy path remains available."
+        : "Could not clear the vault from browser storage; it may still be configured.",
+    );
+  }
+
+  function openInObsidian(path: string) {
+    // Assemble the URI ONLY now, at click time, from the locally configured
+    // vault name and the note's already-validated relative path. Never stored,
+    // never pre-rendered, never emitted into the export.
+    const uri = buildObsidianOpenUri(obsidianVault, path);
+    if (!uri) {
+      setCopyStatus("Cannot open this note in Obsidian; use Copy path instead.");
+      return;
+    }
+    setCopyStatus("Opening in Obsidian…");
+    window.location.href = uri;
   }
 
   function showTrailOnMap(nodeIds: string[]) {
@@ -495,6 +566,26 @@ export function GraphExplorer({
                   </div>
                   <h3 ref={detailHeadingRef} tabIndex={-1}>{selected.title}</h3>
                   <div className="node-path" title={selected.path}>{selected.path}</div>
+                  <div className="node-actions">
+                    <button
+                      type="button"
+                      className="node-action"
+                      onClick={() => copyPlainPath(selected.path)}
+                    >
+                      Copy path
+                    </button>
+                    {obsidianVault &&
+                      selected.path_exact !== false &&
+                      isNavigableRelativePath(selected.path) && (
+                      <button
+                        type="button"
+                        className="node-action node-action-obsidian"
+                        onClick={() => openInObsidian(selected.path)}
+                      >
+                        Open in Obsidian
+                      </button>
+                    )}
+                  </div>
                   {graph.schema_version === VIEWER_SCHEMA_V2 && (
                     <div className="node-provenance-claims" role="note">
                       {selected.content_hash && (
@@ -639,6 +730,47 @@ export function GraphExplorer({
       </main>
 
       <footer className="footer">
+        <details className="obsidian-config">
+          <summary>Obsidian vault (local only)</summary>
+          <div className="obsidian-config-body">
+            <label htmlFor="obsidian-vault-input">
+              Name of the Obsidian vault to open notes in. Stored only in this
+              browser; never added to any export or shared with anyone.
+            </label>
+            <div className="obsidian-config-row">
+              <input
+                id="obsidian-vault-input"
+                type="text"
+                aria-label="Obsidian vault name"
+                value={vaultInput}
+                onChange={(event) => setVaultInput(event.target.value)}
+                placeholder="My Vault"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button type="button" onClick={saveVaultConfig}>
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={clearVaultConfig}
+                disabled={!obsidianVault}
+              >
+                Clear
+              </button>
+            </div>
+            <p className="obsidian-config-state">
+              {obsidianVault
+                ? `Configured: ${obsidianVault} — "Open in Obsidian" is available on notes.`
+                : "Not configured — notes show Copy path only."}
+            </p>
+            {vaultStatus && (
+              <p className="obsidian-config-status" role="status" aria-live="polite">
+                {vaultStatus}
+              </p>
+            )}
+          </div>
+        </details>
         <span>
           <strong>RecallWeave</strong> — evidence-cited discovery for Obsidian
         </span>

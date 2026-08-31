@@ -575,12 +575,107 @@ button {
 
 .node-path {
   overflow: hidden;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
   color: #737e79;
   font-family: var(--font-geist-mono), monospace;
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.node-action {
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #cdd5d1;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.node-action:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.node-action-obsidian {
+  border-color: color-mix(in srgb, var(--aqua) 45%, transparent);
+  color: var(--aqua);
+}
+
+.obsidian-config {
+  flex: 1 1 100%;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.obsidian-config > summary {
+  cursor: pointer;
+  color: #8d9792;
+}
+
+.obsidian-config-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 520px;
+}
+
+.obsidian-config-body label {
+  color: #8d9792;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.obsidian-config-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.obsidian-config-row input {
+  flex: 1 1 200px;
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #e6ebe8;
+  font-size: 12px;
+}
+
+.obsidian-config-row button {
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #cdd5d1;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.obsidian-config-row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.obsidian-config-state {
+  margin: 0;
+  color: #737e79;
+  font-size: 11px;
+}
+
+.obsidian-config-status {
+  margin: 0;
+  color: #b8c0bd;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .node-summary {

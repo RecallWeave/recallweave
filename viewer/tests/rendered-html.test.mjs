@@ -125,7 +125,10 @@ test("Cold Trails tour dialog meets accessibility and trust boundaries", async (
   );
   assert.match(explorer, /Cold Trails/);
   assert.match(explorer, /ColdTrailsTour/);
-  assert.doesNotMatch(explorer, /Open in Obsidian|obsidianOpenHref|obsidian:\/\//);
+  // The Obsidian affordance is opt-in and assembled at click time via the
+  // navigation module; the component itself must hardcode no actionable URI and
+  // pre-render no obsidian href.
+  assert.doesNotMatch(explorer, /obsidianOpenHref|obsidian:\/\//);
 });
 
 test("client import and keyboard focus guards remain wired", async () => {
@@ -163,7 +166,10 @@ test("client import and keyboard focus guards remain wired", async () => {
   assert.match(provenanceChrome, /Index claims:/);
   assert.match(provenanceChrome, /privacy-provenance-detail/);
   assert.match(provenanceChrome, /formatAtlasProvenanceClaims/);
-  assert.doesNotMatch(source, /obsidianOpenHref|Open in Obsidian|obsidian:\/\//);
+  // Opt-in Obsidian navigation is wired through the click-time builder; the
+  // component hardcodes no actionable URI and pre-renders no obsidian href.
+  assert.doesNotMatch(source, /obsidianOpenHref|obsidian:\/\//);
+  assert.match(source, /buildObsidianOpenUri\(/);
   assert.match(source, /resetExplorer\(true\)/);
   assert.match(source, /searchRef\.current\?\.focus\(\)/);
 });
@@ -175,16 +181,35 @@ test("metadata uses a configurable neutral origin", async () => {
   assert.doesNotMatch(source, /private-preview|chatgpt\.site/i);
 });
 
-test("runtime source and production bundles contain no direct vault navigation", async () => {
-  const sources = [
-    ...await readRuntimeSources(new URL("../app/", import.meta.url)),
-    ...await readRuntimeSources(new URL("../worker/", import.meta.url)),
-    ...await readRuntimeSources(new URL("../dist/client/", import.meta.url)),
-  ].join("\n");
-  assert.doesNotMatch(
-    sources,
-    /obsidian:\/\/|open in obsidian|obsidianOpenHref/iu,
+test("Obsidian navigation exists only as a click-time builder, never pre-rendered or hardcoded", async () => {
+  // Opt-in Obsidian navigation (founder ruling on recallweave-fkd) is permitted,
+  // but the obsidian scheme may live ONLY in the sanctioned click-time builder,
+  // and no actionable URI or DOM href may be pre-rendered or persisted anywhere.
+  const navText = await readFile(
+    new URL("../app/atlas-navigation.ts", import.meta.url),
+    "utf8",
   );
+  const runtimeOthers = [
+    ...(await readRuntimeSources(new URL("../app/", import.meta.url))),
+    ...(await readRuntimeSources(new URL("../worker/", import.meta.url))),
+  ].filter((text) => text !== navText);
+  // Only atlas-navigation.ts references the scheme.
+  assert.doesNotMatch(
+    runtimeOthers.join("\n"),
+    /obsidian:\/\//iu,
+    "only atlas-navigation.ts may reference the obsidian scheme",
+  );
+  // That module assembles the URI at call time from percent-encoded parts.
+  assert.match(navText, /obsidian:\/\/open\?vault=/);
+  assert.match(navText, /encodeURIComponent/);
+  // Nowhere — source or built bundle — is the scheme pre-rendered as a DOM href
+  // or otherwise persisted into markup as an actionable link.
+  const everything = [
+    navText,
+    ...runtimeOthers,
+    ...(await readRuntimeSources(new URL("../dist/client/", import.meta.url))),
+  ].join("\n");
+  assert.doesNotMatch(everything, /href\s*=\s*["'`{]?\s*obsidian:/iu);
 });
 
 test("production server delivers every rendered client asset", async (t) => {

@@ -837,5 +837,70 @@ class NullableTimestampTest(unittest.TestCase):
         )
 
 
+class ViewerNavigationExportInvariantsTest(unittest.TestCase):
+    """Founder rulings for recallweave-fkd: Atlas Obsidian navigation is LOCAL
+    presentation state. The export never carries an actionable navigation URI,
+    never gains a navigation field, and cannot be parameterized by any
+    viewer-side navigation configuration — so export bytes are identical
+    regardless of how a viewer is (or is not) configured to open notes.
+
+    A standalone TestCase (not a subclass of ViewerExportTest) so it does not
+    re-run and re-`setUp` every inherited export test."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(
+            dir=Path(tempfile.gettempdir()).resolve()
+        )
+        self.database = Path(self.temporary.name) / "index.sqlite"
+        build_index(
+            VAULT,
+            self.database,
+            policy=IndexPolicy(deny_frontmatter={"sensitivity": ["sealed"]}),
+            minimum_candidate_score=0.08,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_export_carries_no_obsidian_uri_or_navigation_field(self) -> None:
+        for kwargs in (
+            {},
+            {"vault_name": "Research Vault"},
+            {"include_excerpts": True, "vault_name": "Research Vault"},
+            {"include_candidates": False},
+        ):
+            document = build_viewer_document(self.database, **kwargs)
+            serialized = json.dumps(document, ensure_ascii=True, sort_keys=True)
+            # No actionable Obsidian deep-link URI, and no navigation field, is
+            # ever emitted. (A note's own text may legitimately contain a URL, so
+            # this checks the obsidian scheme specifically, not any "://".)
+            self.assertNotIn("obsidian://", serialized)
+            self.assertNotIn("obsidian_vault", document)
+            self.assertNotIn("navigation", document)
+
+    def test_vault_name_is_provenance_label_only(self) -> None:
+        document = build_viewer_document(self.database, vault_name="Research Vault")
+        self.assertEqual(document["vault_name"], "Research Vault")
+        self.assertNotIn("://", document["vault_name"])
+        self.assertNotIn("/", document["vault_name"])
+        self.assertNotIn("\\", document["vault_name"])
+
+    def test_export_builder_takes_no_navigation_parameter(self) -> None:
+        # No Atlas navigation/vault-open setting can be threaded into the export;
+        # navigation is purely a viewer-local concern, so nav configuration
+        # cannot change export bytes.
+        import inspect
+
+        params = set(inspect.signature(build_viewer_document).parameters)
+        for forbidden in (
+            "obsidian_vault",
+            "navigation",
+            "open_vault",
+            "vault_open",
+            "obsidian",
+        ):
+            self.assertNotIn(forbidden, params)
+
+
 if __name__ == "__main__":
     unittest.main()

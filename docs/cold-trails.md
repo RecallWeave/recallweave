@@ -211,8 +211,11 @@ candidate styling because the weaker trust class wins.
 - **Save** adds a citation-rich item to a local session list.
 - **Dismiss** affects future ranking only.
 - **Explain** reveals all signals and the exact score.
-- **Open source** copies the relative note path. Atlas does not emit direct
-  vault navigation links; a reviewed Obsidian-open design is deferred.
+- **Open source** copies the relative note path — always available, the
+  permanent safe floor, and the only navigation the export itself supports. When
+  (and only when) the viewer operator has locally configured an Obsidian vault
+  name, an additional opt-in **Open in Obsidian** affordance appears; see "Vault
+  navigation" below. Copy-path never depends on that configuration.
 - **Show me another** deterministically excludes already shown trails.
 - **Show on map** frames both endpoints on the canvas.
 - **End tour** offers a local Markdown export of saved trails.
@@ -221,6 +224,38 @@ Feedback never writes to the vault, index, or graph file. If persisted, it is
 stored locally under a graph fingerprint and records pair hashes rather than
 paths. It may change penalties only; it may not create, delete, promote, or
 verify an edge. Clearing history is one explicit action.
+
+## Vault navigation (opt-in, local presentation only)
+
+Copy-relative-path is the permanent, always-available way to reach a source and
+the only navigation the export itself supports. Atlas may additionally offer a
+single opt-in **Open in Obsidian** action, bound by these rules:
+
+- **Obsidian only.** The sole supported deep link is `obsidian://open`. Atlas
+  never runs commands, never offers arbitrary or configurable URI schemes, and
+  never invokes a generic external handler.
+- **Local presentation state only.** The Obsidian vault name is configured in
+  the viewer's own local state at view time (browser storage). It is NOT read
+  from the export, NOT written to the export, and NEVER affects export bytes,
+  the export schema, export hashes, provenance, the index, deterministic
+  findings, task contracts, or the Steward Truth plane. The export describes
+  evidence; the local viewer decides how to navigate to it.
+- **`vault_name` is not navigation.** The frozen `recallweave.viewer.v2`
+  `vault_name` field stays provenance-only and is never used to build a link.
+  The navigation vault name is a separate, independently validated local value.
+- **Assembled at click time.** No actionable Obsidian URI is ever stored in the
+  export or pre-rendered. When the user explicitly clicks Open in Obsidian,
+  Atlas builds `obsidian://open?vault=<configured>&file=<relative note path>`
+  from the locally configured vault name and the note's already-validated
+  relative path, URI-encoding both components. No absolute path may enter the
+  URI; a path that is absolute, drive-qualified, or contains a `..` segment
+  fails closed and no link is offered.
+- **Hidden when unconfigured.** With no valid local vault configured, the Open
+  in Obsidian affordance is absent — not shown disabled, and never backed by a
+  fabricated vault name. Copy-path remains.
+- **Hostile input fails closed.** A configured vault name that is empty, a path,
+  drive- or URL-fragment shaped, or otherwise invalid is rejected and not
+  stored.
 
 ## Accessibility
 
