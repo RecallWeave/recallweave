@@ -9,7 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs && node --experimental-strip-types --test tests/graph-data.test.mjs && node --experimental-strip-types --test tests/graph-explorer-load.test.mjs && node --experimental-strip-types --test tests/graph-explorer-interaction.test.mjs && node --experimental-strip-types --test tests/cold-trails-feedback-store.test.mjs && node --experimental-strip-types --test tests/cold-trails.test.mjs && node --experimental-strip-types --test tests/atlas-navigation.test.mjs && node --experimental-strip-types --test tests/atlas-navigation-dom.test.mjs",
+    "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs && node --experimental-strip-types --test tests/graph-data.test.mjs && node --experimental-strip-types --test tests/graph-explorer-load.test.mjs && node --experimental-strip-types --test tests/graph-explorer-interaction.test.mjs && node --experimental-strip-types --test tests/cold-trails-feedback-store.test.mjs && node --experimental-strip-types --test tests/cold-trails.test.mjs && node --experimental-strip-types --test tests/atlas-navigation.test.mjs && node --experimental-strip-types --test tests/atlas-navigation-dom.test.mjs && node --experimental-strip-types --test tests/cold-trails-open-source-dom.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --max-warnings 0",
     "typecheck": "tsc --noEmit --incremental false"
   },
