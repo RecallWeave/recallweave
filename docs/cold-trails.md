@@ -265,8 +265,12 @@ single opt-in **Open in Obsidian** action, bound by these rules:
   `false`), Atlas flags this: the note drawer shows an inline caveat next to the
   path, and the copy confirmation reads "Path copied (adjusted on import — may
   not match your note exactly)." Exact paths keep the plain "Path copied."
-  confirmation. The raw unsanitized path is never reintroduced into the viewer
-  model; the caveat surfaces the divergence rather than papering over it.
+  confirmation. The Cold Trails tour's **Open source** action carries the same
+  exactness through (`resolveTrailSourcePath`), so copying a sanitized node's
+  path from the tour is flagged identically rather than silently reporting an
+  exact copy; citation-derived paths keep the plain confirmation. The raw
+  unsanitized path is never reintroduced into the viewer model; the caveat
+  surfaces the divergence rather than papering over it.
 
 ## Accessibility
 

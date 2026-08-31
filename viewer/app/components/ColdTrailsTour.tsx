@@ -10,6 +10,7 @@ import {
 import {
   buildColdTrails,
   exportSavedTrailsMarkdown,
+  resolveTrailSourcePath,
   trailPairKey,
   trailTrustLabel,
   trailTypeLabel,
@@ -36,7 +37,7 @@ type ColdTrailsTourProps = {
   open: boolean;
   onClose: () => void;
   onShowOnMap: (nodeIds: string[]) => void;
-  onCopyPath: (path: string) => void;
+  onCopyPath: (path: string, pathExact?: boolean) => void;
   onCopyCitation: (citation: string) => void;
   onStatus: (message: string) => void;
 };
@@ -64,19 +65,6 @@ function focusableElements(root: HTMLElement): HTMLElement[] {
 function edgeForTrail(graph: GraphDocument, trail: ColdTrail): GraphEdge | undefined {
   if (!trail.edgeId) return undefined;
   return graph.edges.find((edge) => edge.id === trail.edgeId);
-}
-
-function openSourcePath(graph: GraphDocument, trail: ColdTrail): string {
-  if (trail.nodeId) {
-    return graph.nodes.find((node) => node.id === trail.nodeId)?.path || "";
-  }
-  const edge = edgeForTrail(graph, trail);
-  const citation =
-    edge?.evidence?.source_evidence?.citation ||
-    edge?.evidence?.target_evidence?.citation ||
-    edge?.evidence?.citation ||
-    "";
-  return citationPath(citation) || graph.nodes.find((node) => node.id === trail.sourceId)?.path || "";
 }
 
 export function ColdTrailsTour({
@@ -271,12 +259,14 @@ export function ColdTrailsTour({
   }
 
   function openSource() {
-    const path = current ? openSourcePath(graph, current) : "";
+    const { path, pathExact } = current
+      ? resolveTrailSourcePath(graph, current)
+      : { path: "", pathExact: true };
     if (!path) {
       onStatus("No safe source path is available for this trail.");
       return;
     }
-    onCopyPath(path);
+    onCopyPath(path, pathExact);
   }
 
   function showOnMap() {
