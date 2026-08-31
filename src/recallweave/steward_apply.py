@@ -124,6 +124,15 @@ def _flatten(relative_path: str) -> str:
     return relative_path.replace("/", "__")
 
 
+def _relative_or_str(path: Path, root: Path) -> str:
+    """Posix relative path under ``root`` for operator-facing messages, falling
+    back to the absolute string if it does not lie under the root."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def source_in_sync_root(root: Path) -> str | None:
     """Return the marker that identifies ``root`` as living under a sync
     service, or None. Rollback semantics are undefined while another process
@@ -1347,15 +1356,22 @@ def _rollback(
     boundary: Path,
     root_identity: tuple[int, int] | None = None,
     created_dirs: list[Path] | None = None,
+    extra_failures: list[str] | None = None,
 ) -> None:
     """Reverse-order verified restore of every completed operation.
 
     Directory cleanup (``created_dirs``) happens BEFORE the terminal journal
     status is persisted, so a crash can never leave a journal marked
     ``rolled_back`` while directories the apply created still sit in the vault
-    (which a now-terminal, unrecoverable journal would strand)."""
+    (which a now-terminal, unrecoverable journal would strand).
 
-    failures: list[str] = []
+    ``extra_failures`` are unresolved mutations the CALLER could not undo (e.g. a
+    leftover create temp hardlink recovery could not remove); they are folded
+    into the failure accounting so the journal stays ``rollback_failed`` (never
+    terminal) while any of them remain, exactly as an in-band restore failure
+    would."""
+
+    failures: list[str] = list(extra_failures or [])
     for op in reversed(completed):
         target = Path(op["target"])
         after = op.get("content_hash_after")
@@ -2579,10 +2595,16 @@ def recover_journal(
     for target in creates_to_remove:
         _guarded_unlink(target, source.root, _recover_identity)
         creates_removed += 1
-    # Clean any leftover create temp hardlinks. Best-effort and hash-pinned: only
-    # a regular (non-symlink) file holding the exact planned bytes is removed, so
-    # an unrelated file that happens to sit at the temp path is never destroyed,
-    # and a temp cleanup fault never blocks the rollback the operator needs (#34).
+    # Clean any leftover create temp hardlinks. Hash-pinned: only a regular
+    # (non-symlink) file holding the exact planned bytes is a create temp we
+    # must remove, so an unrelated file that happens to sit at the temp path is
+    # never destroyed. A temp that IS ours but cannot be removed is a rollback
+    # FAILURE, not a benign skip: if recovery finalized the journal `rolled_back`
+    # while that never-approved content persisted at the hidden temp pathname (and
+    # its created directory with it), a later apply would be unblocked over
+    # undismissed vault content. Such failures are folded into _rollback's
+    # accounting below so the journal stays rollback_failed and names the temp (#34).
+    temp_failures: list[str] = []
     for temp_path, planned_hash in create_temps:
         try:
             if not temp_path.is_file() or is_link_like(temp_path):
@@ -2591,17 +2613,32 @@ def recover_journal(
                 _sha256_bytes(temp_path.read_bytes()) != planned_hash
             ):
                 continue
+        except OSError as error:
+            # The temp is present but cannot even be inspected: fail closed rather
+            # than assume it is gone.
+            temp_failures.append(
+                f"{_relative_or_str(temp_path, source.root)}: leftover create "
+                f"temp hardlink could not be inspected ({type(error).__name__}); "
+                "retained"
+            )
+            continue
+        try:
             _guarded_unlink(temp_path, source.root, _recover_identity)
             temps_removed += 1
-        except (OSError, ApplyError):
-            continue
+        except (OSError, ApplyError) as error:
+            temp_failures.append(
+                f"{_relative_or_str(temp_path, source.root)}: leftover create "
+                f"temp hardlink could not be removed ({type(error).__name__}); "
+                "retained"
+            )
     # Remove directories the interrupted apply created as part of the rollback,
     # BEFORE the terminal status is persisted, so recovery never records a
     # completed rollback while empty directories still sit in the vault. rmdir
     # is empty-only, so a directory that has since gained content is left alone.
     _rollback(completed, journal_path, journal, journal_dir,
               boundary=source.root, root_identity=_source_identity(source),
-              created_dirs=_journaled_created_dirs(journal, source.root))
+              created_dirs=_journaled_created_dirs(journal, source.root),
+              extra_failures=temp_failures)
     return {
         "schema_version": STEWARD_SCHEMA_VERSION,
         "kind": "apply_recovery_receipt",

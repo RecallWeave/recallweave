@@ -2470,21 +2470,18 @@ class ApplyHardeningFollowupTest(unittest.TestCase):
         foreign_doc = json.loads(foreign_path.read_text(encoding="utf-8"))
         self.assertNotEqual(foreign_doc.get("status"), "applied")
 
-    def test_recovery_cleans_leftover_create_temp_hardlink(self) -> None:
-        # A create that crashes after os.link installs the target but before the
-        # temp unlink leaves BOTH the target and its .name.steward-apply.tmp
-        # sibling as hardlinks. Recovery must remove the temp too, not just the
-        # journaled target (#34).
-        from recallweave.steward_apply import recover_journal
-
-        registry = self._registry(["made.md"])
+    def _seed_interrupted_create(self):
+        """Seed an interrupted create in a NEW subdirectory: target + its
+        `.name.steward-apply.tmp` hardlink both present, in a dir the apply
+        created. Returns (registry, journal_name, target, temp, subdir)."""
+        registry = self._registry(["sub/made.md"])
         content = b"# Made\n\nCreated then interrupted.\n"
-        target = self.root / "made.md"
+        subdir = self.root / "sub"
+        subdir.mkdir()
+        target = subdir / "made.md"
         target.write_bytes(content)
-        temp = self.root / ".made.md.steward-apply.tmp"
+        temp = subdir / ".made.md.steward-apply.tmp"
         os.link(target, temp)  # the leftover hardlink an interrupted create leaves
-        self.assertTrue(temp.exists())
-
         stamp = "20260101T000000000000Z"
         proposal_id = "prp-interruptcreate"
         journal = {
@@ -2498,19 +2495,32 @@ class ApplyHardeningFollowupTest(unittest.TestCase):
             "registry_sha256": registry.registry_sha256,
             "operations": [
                 {
-                    "relative_path": "made.md",
+                    "relative_path": "sub/made.md",
                     "mutation_class": "create_new_file",
                     "content_hash_before": None,
                     "content_hash_after": _sha(content),
-                    "backup_name": "0-" + _sha(b"made.md") + ".bak",
+                    "backup_name": "0-" + _sha(b"sub/made.md") + ".bak",
                     "state": "done",
                 }
             ],
+            "created_dirs": ["sub"],
             "rollback_failures": [],
         }
         journal_name = f"{stamp}-{proposal_id}.json"
         atomic_write_json(
             self.dirs["journal"] / journal_name, journal, within=self.dirs["journal"]
+        )
+        return registry, journal_name, target, temp, subdir
+
+    def test_recovery_cleans_leftover_create_temp_hardlink(self) -> None:
+        # A create that crashes after os.link installs the target but before the
+        # temp unlink leaves BOTH the target and its .name.steward-apply.tmp
+        # sibling as hardlinks. Recovery must remove the temp too, not just the
+        # journaled target -- and then remove the now-empty created dir (#34).
+        from recallweave.steward_apply import recover_journal
+
+        registry, journal_name, target, temp, subdir = (
+            self._seed_interrupted_create()
         )
         result = recover_journal(
             journal_name, registry=registry, state_dirs=self.dirs
@@ -2519,6 +2529,49 @@ class ApplyHardeningFollowupTest(unittest.TestCase):
         self.assertEqual(result["temps_removed"], 1)
         self.assertFalse(target.exists(), "the created target was not removed")
         self.assertFalse(temp.exists(), "the leftover temp hardlink was not removed")
+        self.assertFalse(subdir.exists(), "the created directory was left behind")
+
+    def test_recovery_stays_nonterminal_when_temp_cannot_be_removed(self) -> None:
+        # If the leftover temp hardlink cannot be removed, recovery must NOT
+        # finalize the journal `rolled_back`: that would unblock later applies
+        # while never-approved content persists at the hidden temp pathname (and
+        # its created directory). It must fail closed (rollback_failed, temp and
+        # dir retained), and a later retry must be able to finish (#34).
+        import recallweave.steward_apply as _ap
+        from recallweave.steward_apply import recover_journal
+
+        registry, journal_name, target, temp, subdir = (
+            self._seed_interrupted_create()
+        )
+        real_unlink = _ap._guarded_unlink
+
+        def selective_unlink(unlink_target, boundary, root_identity=None):
+            if str(unlink_target).endswith(".steward-apply.tmp"):
+                raise OSError("injected temp unlink failure")
+            return real_unlink(unlink_target, boundary, root_identity)
+
+        with patch.object(_ap, "_guarded_unlink", side_effect=selective_unlink):
+            with self.assertRaises(RollbackError):
+                recover_journal(
+                    journal_name, registry=registry, state_dirs=self.dirs
+                )
+        journal_doc = json.loads(
+            (self.dirs["journal"] / journal_name).read_text(encoding="utf-8")
+        )
+        self.assertEqual(journal_doc["status"], "rollback_failed")
+        self.assertTrue(temp.exists(), "the unremovable temp was reported gone")
+        self.assertTrue(subdir.exists(), "created dir removed despite a live temp")
+        self.assertTrue(
+            any("steward-apply.tmp" in f for f in journal_doc["rollback_failures"]),
+            journal_doc["rollback_failures"],
+        )
+        # A retry (no injection) removes the temp and finalizes cleanly.
+        result = recover_journal(
+            journal_name, registry=registry, state_dirs=self.dirs
+        )
+        self.assertEqual(result["temps_removed"], 1)
+        self.assertFalse(temp.exists())
+        self.assertFalse(subdir.exists())
 
 
 if __name__ == "__main__":
