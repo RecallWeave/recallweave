@@ -70,6 +70,12 @@ test("normalizeObsidianVaultLabel rejects hostile or invalid labels", () => {
   assert.equal([...emojiPastBoundary].length, 120);
   assert.doesNotThrow(() => encodeURIComponent(emojiPastBoundary));
   assert.ok(!emojiPastBoundary.includes("😀"));
+  // A pre-existing unpaired surrogate in the input is rejected outright (it would
+  // make encodeURIComponent throw at click time), not accepted and persisted.
+  assert.equal(normalizeObsidianVaultLabel(String.fromCharCode(0xd800) + "vault"), null);
+  assert.equal(normalizeObsidianVaultLabel("vault" + String.fromCharCode(0xdc00)), null);
+  assert.equal(isNavigableRelativePath(String.fromCharCode(0xd800) + "note.md"), false);
+  assert.equal(buildObsidianOpenUri("V", String.fromCharCode(0xd83d) + "note.md"), null);
 });
 
 // Founder proof: no absolute source path may enter a URI.
@@ -180,6 +186,11 @@ test("clearObsidianVault reports success when the value is removed", () => {
   saveObsidianVault("V", store);
   assert.equal(clearObsidianVault(store), true);
   assert.equal(loadObsidianVault(store), null);
+});
+
+test("clearObsidianVault reports failure when storage is unavailable", () => {
+  // Unavailable storage is a failed clear, not a false success.
+  assert.equal(clearObsidianVault(null), false);
 });
 
 test("subscribeObsidianVault also reacts to cross-tab storage events", () => {

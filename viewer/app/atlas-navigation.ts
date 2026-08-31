@@ -70,6 +70,26 @@ function hasControlChars(value: string): boolean {
 }
 
 /**
+ * True if the string contains an unpaired UTF-16 surrogate. Such a value would
+ * make encodeURIComponent throw at click time, so it must be rejected up front
+ * rather than accepted, persisted, and shown as configured while every launch
+ * silently fails.
+ */
+function hasLoneSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1; // valid pair; skip the low surrogate
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true; // low surrogate with no preceding high surrogate
+    }
+  }
+  return false;
+}
+
+/**
  * Validate a locally-configured Obsidian vault name as a navigation label,
  * INDEPENDENTLY of the export's provenance `vault_name`. Fail closed: return the
  * normalized label, or null for anything empty, path-shaped, scheme-shaped, or
@@ -88,6 +108,7 @@ export function normalizeObsidianVaultLabel(value: unknown): string | null {
   // shaped into a path or a URI fragment.
   if (/[/\\:]/u.test(label)) return null;
   if (hasControlChars(label)) return null;
+  if (hasLoneSurrogate(label)) return null;
   return label;
 }
 
@@ -109,6 +130,7 @@ export function isNavigableRelativePath(path: unknown): path is string {
   if (/^[A-Za-z]:/u.test(value)) return false;
   // Any `..` traversal segment, under either separator.
   if (value.split(/[/\\]/u).some((segment) => segment === "..")) return false;
+  if (hasLoneSurrogate(value)) return false;
   return true;
 }
 
@@ -184,9 +206,12 @@ export function saveObsidianVault(
 export function clearObsidianVault(
   storage: Pick<Storage, "removeItem"> | null | undefined = safeLocalStorage(),
 ): boolean {
+  // Unavailable storage (blocked, or its getter threw) is a FAILED clear, not a
+  // success: a prior value could become active again if access is restored.
+  if (!storage) return false;
   let removed = true;
   try {
-    storage?.removeItem(ATLAS_OBSIDIAN_VAULT_STORAGE_KEY);
+    storage.removeItem(ATLAS_OBSIDIAN_VAULT_STORAGE_KEY);
   } catch {
     removed = false;
   }
