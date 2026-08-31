@@ -255,6 +255,34 @@ class CommitAppliedTest(unittest.TestCase):
         staged = _git(["diff", "--cached", "--name-only"], self.root).stdout
         self.assertNotIn("a.md", staged)
 
+    def test_commit_literal_pathspec_avoids_globbing_unrelated_files(self) -> None:
+        # A note name that is a git glob ([ab].md matches a.md/b.md) must be
+        # staged/committed literally, so unrelated dirty files are not swept into
+        # steward's commit or left staged for the operator.
+        _init_repo(self.root)
+        for name in ("[ab].md", "a.md", "b.md"):
+            (self.root / name).write_text(f"seed {name}", encoding="utf-8")
+        _git(["--literal-pathspecs", "add", "[ab].md", "a.md", "b.md"], self.root)
+        _git(["commit", "-m", "seed"], self.root)
+        for name in ("[ab].md", "a.md", "b.md"):
+            (self.root / name).write_text(f"changed {name}", encoding="utf-8")
+
+        result = commit_applied(
+            self.root,
+            ["[ab].md"],
+            proposal_id="prp-globtesttesttest",
+            journal_ref="20260101T000000000000Z-prp-globtesttesttest.json",
+        )
+        self.assertTrue(result["committed"])
+        # Only [ab].md was committed; a.md and b.md remain modified (unstaged).
+        status = _git(
+            ["--literal-pathspecs", "status", "--porcelain"], self.root
+        ).stdout
+        paths = {line[3:] for line in status.splitlines() if len(line) >= 4}
+        self.assertIn("a.md", paths, f"a.md was swept in; status={status!r}")
+        self.assertIn("b.md", paths, f"b.md was swept in; status={status!r}")
+        self.assertNotIn("[ab].md", paths)
+
     def test_commit_succeeds_when_user_name_is_missing(self) -> None:
         # user.email configured, user.name absent, user.useConfigOnly=true so
         # git will not synthesize a name: the apply commit must still land, with

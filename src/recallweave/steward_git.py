@@ -274,12 +274,21 @@ def _unstage_paths(root: Path, paths: list[str]) -> None:
 
     if not paths:
         return
-    reset = _run_git(["reset", "--quiet", "--"] + list(paths), root, check=False)
+    # --literal-pathspecs: a note name may contain git pathspec metacharacters
+    # (e.g. `[ab].md`), and a plain pathspec would glob and touch unrelated
+    # entries. Treat every touched path as a literal string.
+    reset = _run_git(
+        ["--literal-pathspecs", "reset", "--quiet", "--"] + list(paths),
+        root,
+        check=False,
+    )
     if reset.returncode != 0:
         # Unborn HEAD (no commit yet): there is nothing to reset to, so drop the
         # staged entries outright instead.
         _run_git(
-            ["rm", "--cached", "--quiet", "--"] + list(paths), root, check=False
+            ["--literal-pathspecs", "rm", "--cached", "--quiet", "--"] + list(paths),
+            root,
+            check=False,
         )
 
 
@@ -303,7 +312,13 @@ def commit_applied(
     so a failed commit never leaves steward's staging in the operator's index."""
 
     root = Path(root)
-    _run_git(["add", "--"] + list(touched_relative_paths), root)
+    # --literal-pathspecs: a note name may contain git pathspec metacharacters
+    # (e.g. `[ab].md` globs to a.md/b.md). Staging and the path-limited commit
+    # below must treat every touched path as a literal string, so unrelated
+    # operator changes are never staged or swept into steward's commit.
+    _run_git(
+        ["--literal-pathspecs", "add", "--"] + list(touched_relative_paths), root
+    )
 
     # Every step after `git add` -- the identity queries, the temp hooks dir, the
     # commit itself, and the final rev-parse -- can fail (a git timeout, a temp
@@ -338,7 +353,8 @@ def commit_applied(
             # Pathspec-limited commit: only the touched paths enter this commit,
             # even if unrelated content was already staged before the apply ran.
             _run_git(
-                hooks_args
+                ["--literal-pathspecs"]
+                + hooks_args
                 + identity_args
                 + ["commit", "--no-verify", "-m", message, "--"]
                 + list(touched_relative_paths),
