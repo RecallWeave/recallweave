@@ -268,9 +268,11 @@ single opt-in **Open in Obsidian** action, bound by these rules:
   confirmation. The Cold Trails tour's **Open source** action carries the same
   exactness through (`resolveTrailSourcePath`), so copying a sanitized node's
   path from the tour is flagged identically rather than silently reporting an
-  exact copy; citation-derived paths keep the plain confirmation. The raw
-  unsanitized path is never reintroduced into the viewer model; the caveat
-  surfaces the divergence rather than papering over it.
+  exact copy; citation-derived paths keep the plain confirmation. The tour
+  renders that confirmation inside its own modal dialog, so the warning is
+  visible even when no note is selected and the note drawer is hidden behind the
+  backdrop. The raw unsanitized path is never reintroduced into the viewer
+  model; the caveat surfaces the divergence rather than papering over it.
 
 ## Accessibility
 

@@ -40,6 +40,14 @@ type ColdTrailsTourProps = {
   onCopyPath: (path: string, pathExact?: boolean) => void;
   onCopyCitation: (citation: string) => void;
   onStatus: (message: string) => void;
+  /**
+   * Latest copy/action confirmation from the host. The host's own status line is
+   * rendered inside the note drawer, which is hidden behind this modal (and
+   * absent when no note is selected), so the tour surfaces it here — otherwise
+   * the "Path copied (adjusted on import…)" warning that Open source produces
+   * would never be visible in the tour, the scenario it exists to protect.
+   */
+  statusMessage?: string;
 };
 
 function initialFeedback(dismissedPairs: Iterable<string> = []): ColdTrailsFeedback {
@@ -75,6 +83,7 @@ export function ColdTrailsTour({
   onCopyPath,
   onCopyCitation,
   onStatus,
+  statusMessage = "",
 }: ColdTrailsTourProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -511,6 +520,11 @@ export function ColdTrailsTour({
         </div>
         {saved.length > 0 && (
           <p className="cold-trails-saved-count" role="status">{saved.length} trail{saved.length === 1 ? "" : "s"} saved this session.</p>
+        )}
+        {statusMessage && (
+          <p className="cold-trails-status" role="status" aria-live="polite">
+            {statusMessage}
+          </p>
         )}
       </div>
     </div>

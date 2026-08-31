@@ -423,7 +423,13 @@ export function GraphExplorer({
             <button
               ref={coldTrailsTriggerRef}
               className="ghost-button"
-              onClick={() => setColdTrailsOpen(true)}
+              onClick={() => {
+                // Start the tour with no stale confirmation; the tour surfaces
+                // copyStatus in its own dialog, so a leftover drawer message
+                // must not appear there on open.
+                setCopyStatus("");
+                setColdTrailsOpen(true);
+              }}
             >
               Cold Trails
             </button>
@@ -804,6 +810,7 @@ export function GraphExplorer({
           onCopyPath={copyPlainPath}
           onCopyCitation={copyCitation}
           onStatus={setCopyStatus}
+          statusMessage={copyStatus}
         />
       )}
     </div>

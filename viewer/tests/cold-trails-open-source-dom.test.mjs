@@ -31,10 +31,12 @@ function installDom() {
     removeItem: (key) => { map.delete(key); },
   };
   window.HTMLCanvasElement.prototype.getContext = () => null;
+  // Make the clipboard fallback deterministic so a copy produces a status.
+  window.document.execCommand = () => true;
   return window;
 }
 
-async function withColdTrailsTour(run) {
+async function withModule(exportName, run) {
   const reactPlugin = (await import("@vitejs/plugin-react")).default;
   const server = await createServer({
     root: fileURLToPath(new URL("..", import.meta.url)),
@@ -44,13 +46,19 @@ async function withColdTrailsTour(run) {
     plugins: [reactPlugin()],
   });
   try {
-    const { ColdTrailsTour } = await server.ssrLoadModule(
-      "/app/components/ColdTrailsTour.tsx",
-    );
-    return await run(ColdTrailsTour);
+    const componentPath =
+      exportName === "GraphExplorer"
+        ? "/app/components/GraphExplorer.tsx"
+        : "/app/components/ColdTrailsTour.tsx";
+    const mod = await server.ssrLoadModule(componentPath);
+    return await run(mod[exportName]);
   } finally {
     await server.close();
   }
+}
+
+async function withColdTrailsTour(run) {
+  return withModule("ColdTrailsTour", run);
 }
 
 async function flush(window) {
@@ -169,5 +177,79 @@ test("Cold Trails Open source flags an import-adjusted node path end-to-end", as
   // openSource() to onCopyPath(path) would drop pathExact and fail this.
   assert.equal(copyCalls.length, 1, "Open source must invoke the copy handler once");
   assert.deepEqual(copyCalls[0], { path: "notes/leaf.md", pathExact: false });
+  window.close();
+});
+
+test("the tour renders the host copy confirmation inside its own dialog", async () => {
+  // The confirmation must be visible while the modal is open, not only in the
+  // note drawer behind it. Passing statusMessage must render it in the dialog.
+  const window = installDom();
+  const container = window.document.createElement("div");
+  window.document.body.appendChild(container);
+  await withColdTrailsTour(async (ColdTrailsTour) => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        createElement(ColdTrailsTour, {
+          graph: islandGraph(),
+          open: true,
+          onClose: () => {},
+          onShowOnMap: () => {},
+          onCopyPath: () => {},
+          onCopyCitation: () => {},
+          onStatus: () => {},
+          statusMessage: "Path copied (adjusted on import — may not match your note exactly).",
+        }),
+      );
+    });
+    for (let i = 0; i < 5; i += 1) await flush(window);
+    const status = container.querySelector(".cold-trails-dialog .cold-trails-status");
+    assert.ok(status, "the dialog must render the host status message");
+    assert.match(status.textContent, /adjusted on import/i);
+    await act(async () => { root.unmount(); });
+  });
+  window.close();
+});
+
+test("Open source surfaces the adjusted-path warning in the tour with no note selected", async () => {
+  // End-to-end through GraphExplorer: open Cold Trails without selecting a note,
+  // reach the sanitized leaf island, click Open source, and assert the adjusted
+  // warning is visible inside the dialog (not only in the hidden note drawer).
+  const window = installDom();
+  const container = window.document.createElement("div");
+  window.document.body.appendChild(container);
+  await withModule("GraphExplorer", async (GraphExplorer) => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(createElement(GraphExplorer, { initialGraph: islandGraph() }));
+    });
+    for (let i = 0; i < 5; i += 1) await flush(window);
+
+    // No note selected: the drawer status line is absent.
+    assert.equal(container.querySelector(".detail-panel .copy-status"), null);
+
+    await click(window, buttonByText(container, "Cold Trails"));
+    for (let i = 0; i < 5; i += 1) await flush(window);
+
+    let found = false;
+    for (let i = 0; i < 12 && !found; i += 1) {
+      const endpoint = container.querySelector(".cold-trails-endpoint-title");
+      if (endpoint && endpoint.textContent === "Leaf") {
+        await click(window, buttonByText(container, "Open source"));
+        found = true;
+        break;
+      }
+      const next = buttonByText(container, "Next");
+      if (!next || next.disabled) break;
+      await click(window, next);
+    }
+    assert.ok(found, "the leaf island trail must be reachable in the tour");
+
+    const status = container.querySelector(".cold-trails-dialog .cold-trails-status");
+    assert.ok(status, "the adjusted-path confirmation must be visible inside the tour dialog");
+    assert.match(status.textContent, /adjusted on import/i);
+
+    await act(async () => { root.unmount(); });
+  });
   window.close();
 });
