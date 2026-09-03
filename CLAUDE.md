@@ -1,5 +1,17 @@
 # Project Guide for AI Agents and Contributors
 
+
+## Standing operator loop
+
+After tests are green on a feature branch, do **not** wait for Josh:
+
+1. **Push** the feature branch. Never force-push protected `main`/`master`.
+2. **Open a PR.**
+3. **Independent Codex review**, max **3 rounds per PR**, **unless P1s remain** (then keep remediating until P1s are gone). P2s do not block. GitHub Actions may be dead on spend — local tests + Codex still count.
+4. **Merge** when no P1s remain, using this repo's merge path. If you temporarily drop required reviews to `0` to land, an EXIT trap **must** restore the prior count (typically `1`). Never force-push protected `main`/`master`.
+5. **Close the tracker item** (`bd close`, or the equivalent).
+6. **Immediately take the next ready work.** Escalate only for true emergencies.
+
 This file orients an AI coding agent (or a new human contributor) working on
 RecallWeave. It is generic guidance for the public OSS project — there is no
 private tooling or account you need to reproduce anything here.
