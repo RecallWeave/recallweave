@@ -31,7 +31,7 @@
     "eslint-plugin-react-a11y": "2.1.7",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.8.0",
-    "happy-dom": "^20.11.14",
+    "happy-dom": "^21.0.4",
     "react-server-dom-webpack": "19.2.8",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
